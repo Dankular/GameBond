@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="86px" height="86px" viewBox="0 0 86 86" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <!-- Generator: sketchtool 43.1 (39012) - http://www.bohemiancoding.com/sketch -->
+    <title>63AB7DFE-05DE-4999-BCD5-8CA31AC94488</title>
+    <desc>Created with sketchtool.</desc>
+    <defs>
+        <linearGradient x1="50%" y1="-24.2449576%" x2="50%" y2="72.1678358%" id="linearGradient-1">
+            <stop stop-color="#69E16D" offset="0%"></stop>
+            <stop stop-color="#0DA8CD" offset="100%"></stop>
+        </linearGradient>
+        <linearGradient x1="50%" y1="0%" x2="50%" y2="100%" id="linearGradient-2">
+            <stop stop-color="#6AD157" offset="0%"></stop>
+            <stop stop-color="#4DC464" offset="100%"></stop>
+        </linearGradient>
+        <path d="M34.1966671,0.0509395425 C53.0520311,0.0509395425 68.3450572,15.3375343 68.3450572,34.1979984 C68.3450572,53.0584624 53.0520311,68.3450572 34.1966671,68.3450572 C15.3386407,68.3450572 0.0509395425,53.0584624 0.0509395425,34.1979984 C0.0509395425,15.3375343 15.3386407,0.0509395425 34.1966671,0.0509395425" id="path-3"></path>
+        <linearGradient x1="50%" y1="8.13881479%" x2="50%" y2="92.1624905%" id="linearGradient-5">
+            <stop stop-color="#81E46A" offset="0%"></stop>
+            <stop stop-color="#62BE7D" offset="100%"></stop>
+        </linearGradient>
+        <path d="M64.2538319,17.9782717 C66.863396,22.803116 68.3450572,28.3274304 68.3450572,34.1979984 C68.3450572,53.0584624 53.0520311,68.3450572 34.1966671,68.3450572 C25.9706234,68.3450572 18.4239355,65.436348 12.5291596,60.5910997 C15.3338257,60.0920698 18.9433134,58.7604669 24.4998272,54.6707659 C32.8069365,48.5565735 40.5337798,32.5493407 49.4366695,25.7162401 C56.5774132,20.2356127 60.8637048,18.7389318 64.2538319,17.9782717 L64.2538319,17.9782717 Z" id="path-6"></path>
+        <linearGradient x1="50%" y1="0%" x2="50%" y2="86.7854363%" id="linearGradient-8">
+            <stop stop-color="#88E564" offset="0%"></stop>
+            <stop stop-color="#63BE7D" offset="100%"></stop>
+        </linearGradient>
+        <path d="M65.6342972,47.5529578 C60.4344596,59.7756747 48.3140538,68.3450572 34.1966671,68.3450572 C15.3386407,68.3450572 0.0509395425,53.0584624 0.0509395425,34.1979984 C0.0509395425,34.0570609 0.0517932128,33.9163231 0.053495664,33.7757896 C0.652320584,33.6470985 1.07761024,33.5642271 1.16161795,33.5552357 C5.13729155,33.1700479 9.8592095,33.4992968 17.1942169,36.0014464 C24.5292243,38.503596 31.888689,43.8344446 42.7866895,47.8373176 C51.8738247,51.1750536 59.6513784,50.4561448 65.6342972,47.5529578 Z" id="path-9"></path>
+    </defs>
+    <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Activate-Popup" transform="translate(-1288.000000, -190.000000)">
+            <g id="Group-3" transform="translate(1045.000000, 152.000000)">
+                <g id="logo" transform="translate(243.000000, 38.000000)">
+                    <path d="M0,76.7623269 C0,81.8641529 4.13999371,86 9.23767313,86 C9.23767313,86 31.1258779,86 43,86 C66.7482442,86 86,66.7482442 86,43 C86,19.2517558 66.7482442,0 43,0 C19.2517558,0 0,19.2517558 0,43 L0,76.7623269 Z" id="Oval-Copy"  fill="$(gw_alert_bubble_stroke)" fill-opacity="$(gw_alert_bubble_stroke#opacity)"></path>
+                    <circle id="Oval-Copy-2" fill="$(gw_alert_bubble_fill)" fill-opacity="$(gw_alert_bubble_fill#opacity)" cx="43" cy="43" r="38.4336283"></circle>
+                    <g id="Group-Copy" transform="translate(43.241564, 43.325132) rotate(-360.000000) translate(-43.241564, -43.325132) translate(8.741564, 8.825132)">
+                        <mask id="mask-4" fill="white">
+                            <use xlink:href="#path-3"></use>
+                        </mask>
+                        <use id="Path" fill="url(#linearGradient-2)" xlink:href="#path-3"></use>
+                        <mask id="mask-7" fill="white">
+                            <use xlink:href="#path-6"></use>
+                        </mask>
+                        <use id="Combined-Shape" fill="url(#linearGradient-5)" opacity="0.631821362" xlink:href="#path-6"></use>
+                        <mask id="mask-10" fill="white">
+                            <use xlink:href="#path-9"></use>
+                        </mask>
+                        <use id="Combined-Shape" fill-opacity="0.62" fill="url(#linearGradient-8)" xlink:href="#path-9"></use>
+                    </g>
+                </g>
+            </g>
+        </g>
+    </g>
+</svg>

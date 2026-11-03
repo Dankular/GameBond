@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="16px" height="16px" viewBox="0 0 16 16" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <!-- Generator: sketchtool 63.1 (101010) - https://sketch.com -->
+    <title>1E38BDF2-ED19-4122-BF95-DE1E122EDA56</title>
+    <desc>Created with sketchtool.</desc>
+    <defs>
+        <radialGradient cx="50%" cy="28.9353407%" fx="50%" fy="28.9353407%" r="75.0587096%" id="radialGradient-1">
+            <stop stop-color="#FFE563" offset="0%"></stop>
+            <stop stop-color="#FF923B" offset="54.8472518%"></stop>
+            <stop stop-color="#FF923B" offset="50.065984%"></stop>
+            <stop stop-color="#FFC633" offset="100%"></stop>
+        </radialGradient>
+        <linearGradient x1="50%" y1="13.3959039%" x2="50%" y2="90.7365267%" id="linearGradient-2">
+            <stop stop-color="#FFE76F" offset="0%"></stop>
+            <stop stop-color="#FFB43A" offset="100%"></stop>
+        </linearGradient>
+        <linearGradient x1="50%" y1="72.8380526%" x2="50%" y2="-32.2023114%" id="linearGradient-3">
+            <stop stop-color="#BD840E" offset="0%"></stop>
+            <stop stop-color="#5E3400" offset="100%"></stop>
+        </linearGradient>
+        <linearGradient x1="50%" y1="86.5816835%" x2="50%" y2="-18.4586805%" id="linearGradient-4">
+            <stop stop-color="#BD840E" offset="0%"></stop>
+            <stop stop-color="#5E3400" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="main" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="GW3.0_Extend_states" transform="translate(-196.000000, -72.000000)">
+            <g id="Group-4" transform="translate(196.000000, 72.000000)">
+                <circle id="Oval" fill="url(#radialGradient-1)" cx="8" cy="8" r="7"></circle>
+                <circle id="Oval" fill="url(#linearGradient-2)" cx="8" cy="8" r="7"></circle>
+                <g id="Group" transform="translate(3.000000, 4.000000)">
+                    <g id="Group-2" transform="translate(0.514714, 0.000000)">
+                        <path d="M1.97949645,3.76719675 C2.69746663,3.76719675 3.27949645,3.12248679 3.27949645,2.32719675 C3.27949645,1.53190671 2.69746663,0.887196751 1.97949645,0.887196751 C1.26152628,0.887196751 0.679496453,1.53190671 0.679496453,2.32719675 C0.679496453,3.12248679 1.26152628,3.76719675 1.97949645,3.76719675 Z" id="Oval" fill="#FFE881"></path>
+                        <path d="M7.00391154,3.86491597 C7.72188171,3.86491597 8.30391154,3.22020601 8.30391154,2.42491597 C8.30391154,1.62962593 7.72188171,0.984915966 7.00391154,0.984915966 C6.28594136,0.984915966 5.70391154,1.62962593 5.70391154,2.42491597 C5.70391154,3.22020601 6.28594136,3.86491597 7.00391154,3.86491597 Z" id="Oval" fill="#FFE881"></path>
+                        <path d="M1.96478241,3.46888867 C2.62752411,3.46888867 3.16478241,2.82417871 3.16478241,2.02888867 C3.16478241,1.23359863 2.62752411,0.588888671 1.96478241,0.588888671 C1.30204071,0.588888671 0.764782409,1.23359863 0.764782409,2.02888867 C0.764782409,2.82417871 1.30204071,3.46888867 1.96478241,3.46888867 Z" id="Oval" fill="url(#linearGradient-3)"></path>
+                        <path d="M7.00391154,3.56660789 C7.66665323,3.56660789 8.20391154,2.92189793 8.20391154,2.12660789 C8.20391154,1.33131785 7.66665323,0.686607886 7.00391154,0.686607886 C6.34116984,0.686607886 5.80391154,1.33131785 5.80391154,2.12660789 C5.80391154,2.92189793 6.34116984,3.56660789 7.00391154,3.56660789 Z" id="Oval" fill="url(#linearGradient-3)"></path>
+                    </g>
+                    <path d="M5,9 C6.15979797,9 7.1,8.63602292 7.1,7.53145342 C7.1,6.42688392 6.15979797,5.53145342 5,5.53145342 C3.84020203,5.53145342 2.9,6.42688392 2.9,7.53145342 C2.9,8.63602292 3.84020203,9 5,9 Z" id="Oval" fill-opacity="0.7" fill="#FFDE68"></path>
+                </g>
+                <path d="M8,12.5016976 C9.1045695,12.5016976 10,12.1045695 10,11 C10,9.8954305 9.1045695,9 8,9 C6.8954305,9 6,9.8954305 6,11 C6,12.1045695 6.8954305,12.5016976 8,12.5016976 Z" id="Oval" fill="url(#linearGradient-4)"></path>
+                <path d="M3.89288859,3.30944744 C4.42666256,2.92665005 4.96043653,2.73525135 5.4942105,2.73525135" id="Path-6" stroke="#7A4904" stroke-width="0.8" stroke-linecap="round" stroke-linejoin="round"></path>
+                <path d="M10.2173037,3.29397681 C10.7510776,2.91117942 11.2848516,2.71978072 11.8186256,2.71978072" id="Path-6" stroke="#7A4904" stroke-width="0.8" stroke-linecap="round" stroke-linejoin="round" transform="translate(11.017965, 3.006879) scale(-1, 1) translate(-11.017965, -3.006879) "></path>
+            </g>
+        </g>
+    </g>
+</svg>

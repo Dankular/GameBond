@@ -1,0 +1,10 @@
+{
+  "name": "Call of Duty (local Xbox installation)",
+  "dscp": 46,
+  "executables": [
+    "C:\\XboxGames\\Call of Duty\\Content\\cod.exe",
+    "C:\\XboxGames\\Call of Duty\\Content\\cod25\\cod25-cod.exe",
+    "C:\\XboxGames\\Call of Duty\\Content\\sp26\\sp26-cod.exe"
+  ],
+  "verification": "Three executable files exist. Local live CoD traffic was observed on UDP3075 with inner DSCP46. Process policies now match UDP only; verify again after game updates."
+}

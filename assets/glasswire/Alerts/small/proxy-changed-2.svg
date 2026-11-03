@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="37" viewBox="0 0 32 37">
+    <g fill="none" fill-rule="evenodd">
+        <path fill="$(gw_alert_bubble_stroke)" fill-opacity="$(gw_alert_bubble_stroke#opacity)" fill-rule="nonzero" d="M26.71 4.12c6.597 5.912 7.048 15.94 1.215 22.576a91.777 91.777 0 0 1-4.588 4.734c-3.692 3.492-5.733 5.018-5.733 5.018-.842.702-2.223.698-3.07-.007 0 0-8.613-6.815-11.14-10.564-4.54-6.304-4.713-14.737.619-20.613C9.951-1.28 20.111-1.793 26.711 4.121z"/>
+        <circle cx="15.96" cy="16.06" r="14.6" fill="$(gw_alert_bubble_fill)" fill-opacity="$(gw_alert_bubble_fill#opacity)"/>
+        <circle cx="16.014" cy="16.07" r="13.054" fill="#FC813D"/>
+        <g fill-rule="nonzero" transform="translate(7 7)">
+            <path fill="#FFF" d="M11.496 17h-5.03c-.982 0-1.778-.896-1.778-2s.796-2 1.778-2h5.03c.982 0 1.779.896 1.779 2s-.797 2-1.779 2z"/>
+            <path fill="#FFF" d="M17.385 15c-.18.55-.93 1-1.662 1H1.698c-.734 0-1.48-.45-1.659-1-.18-.55.275-1 1.008-1h15.334c.733 0 1.185.45 1.004 1z"/>
+            <path fill="#FFF" d="M8 15.435V6l2 .05v9.897z"/>
+            <path fill="#FFF" d="M5 0h8v11H5z"/>
+            <path fill="#FC7A33" d="M9.053 7.238c.5 0 .942-2.06.942-3.82 0-1.76-.498-2.001-.998-2.001s-1.009.24-1.009 2.001c0 1.76.565 3.82 1.065 3.82z" opacity=".95"/>
+            <circle cx="9.009" cy="9.009" r="1" fill="#FC7A33" opacity=".95"/>
+        </g>
+    </g>
+</svg>

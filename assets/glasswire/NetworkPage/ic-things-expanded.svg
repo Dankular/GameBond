@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+    <g fill="$(things_secondary)" fill-opacity="$(things_secondary#opacity)" fill-rule="evenodd">
+        <g>
+            <path d="M4.366 5.55L3.637 6.259 8.011 10.515 12.394 6.246 11.665 5.537 8.009 9.094z"/>
+        </g>
+    </g>
+</svg>

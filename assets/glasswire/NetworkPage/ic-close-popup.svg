@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+    <g fill="$(popup_actions_icon)" fill-opacity="$(popup_actions_icon#opacity)" fill-rule="evenodd">
+        <path d="M4.82 3.757L8.002 6.94l3.182-3.182c.293-.293.768-.293 1.061 0 .293.293.293.768 0 1.061L9.062 8l3.183 3.182c.293.293.293.768 0 1.06-.293.294-.768.294-1.06 0L8.001 9.06 4.82 12.243c-.293.293-.767.293-1.06 0-.293-.293-.293-.768 0-1.061L6.94 8 3.76 4.818c-.293-.293-.293-.768 0-1.06.293-.294.767-.294 1.06 0z" transform="translate(-709 -3008) translate(700 2876) translate(0 20) translate(9 73) translate(0 39)"/>
+    </g>
+</svg>

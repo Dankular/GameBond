@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="33px" height="29px" viewBox="0 0 33 29" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <!-- Generator: sketchtool 39.1 (31720) - http://www.bohemiancoding.com/sketch -->
+    <title>F4E83DB6-FEE8-4524-986E-962A65A121C6</title>
+    <desc>Created with sketchtool.</desc>
+    <defs></defs>
+    <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd" opacity="0.400711287">
+        <g id="Design-assets" transform="translate(-965.000000, -190.000000)">
+            <g id="Windows_Buttons_normal-Copy-3" transform="translate(931.000000, 140.000000)">
+                <g id="window_fullscreen_normal" transform="translate(34.000000, 50.000000)">
+                    <rect id="window_fullscreen_disable" x="0" y="0" width="33" height="29"></rect>
+                    <path d="M20,18 L22,18 L22,9 L13,9 L13,11 L14,11 L14,10 L21,10 L21,17 L20,17 L20,18 Z" id="Combined-Shape" fill-opacity="$(top_winbtn.d#opacity)" fill="$(top_winbtn.d)"></path>
+                    <path d="M20,20 L11,20 L11,11 L20,11 L20,20 Z M12,19 L19,19 L19,12 L12,12 L12,19 Z" id="Shape" fill-opacity="$(top_winbtn.d#opacity)" fill="$(top_winbtn.d)"></path>
+                </g>
+            </g>
+        </g>
+    </g>
+</svg>

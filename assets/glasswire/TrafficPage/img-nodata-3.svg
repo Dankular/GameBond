@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="168" height="74" viewBox="0 0 168 74">
+    <g fill="none" fill-rule="evenodd">
+        <g fill="$(nodata_img)" fill-opacity="$(nodata_img#opacity)">
+            <path d="M152 73s-4.779-5-12.5-5-12.5 5-12.5 5h25z"/>
+            <path d="M67 73s-6.136-12.193-12.5-11.998C48.136 61.197 42 73 42 73h25z"/>
+        </g>
+    </g>
+</svg>

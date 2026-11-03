@@ -1,0 +1,3 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+    <path fill="$(menu_more_icon)"  fill-opacity="$(menu_more_icon#opacity)" fill-rule="evenodd" d="M11.156 7.96L6.048 2.807l-.853.844 4.299 4.31-4.3 4.354.855.842z"/>
+</svg>

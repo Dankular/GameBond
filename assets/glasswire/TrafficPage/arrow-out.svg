@@ -1,0 +1,3 @@
+<svg width="8" height="8" viewBox="0 0 8 8" xmlns="http://www.w3.org/2000/svg">
+    <path d="M4 8V1.729L2.403 3.34l-.71-.703c.007-.009.131-.145 2.433-2.485.212-.134.417-.251.7 0l2.566 2.473-.688.726L5 1.735V8H4z" fill="$(legend_arrow)" fill-rule="evenodd" opacity="$(legend_arrow#opacity)"/>
+</svg>

@@ -1,0 +1,9 @@
+# Whitelist the app build inputs. Keys, local configs, drivers, evidence,
+# decompilation exports and private SSH material never enter the build context.
+**
+!Dockerfile
+!pyproject.toml
+!gamebond/
+!gamebond/*.py
+!tools/
+!tools/container-entrypoint.sh

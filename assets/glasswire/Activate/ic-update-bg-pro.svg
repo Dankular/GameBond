@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="86px" height="86px" viewBox="0 0 86 86" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <!-- Generator: sketchtool 43.1 (39012) - http://www.bohemiancoding.com/sketch -->
+    <title>B8A986C3-298D-4841-A5DC-FF74A0464D84</title>
+    <desc>Created with sketchtool.</desc>
+    <defs>
+        <linearGradient x1="50%" y1="-24.2449576%" x2="50%" y2="72.1678358%" id="linearGradient-1">
+            <stop stop-color="#69E16D" offset="0%"></stop>
+            <stop stop-color="#0DA8CD" offset="100%"></stop>
+        </linearGradient>
+        <linearGradient x1="50%" y1="100%" x2="50%" y2="0%" id="linearGradient-2">
+            <stop stop-color="#3DB7D6" offset="0%"></stop>
+            <stop stop-color="#3BD0F6" offset="100%"></stop>
+        </linearGradient>
+        <path d="M42.9382315,8.87607149 C61.7935955,8.87607149 77.0866216,24.1626663 77.0866216,43.0231303 C77.0866216,61.8835944 61.7935955,77.1701891 42.9382315,77.1701891 C24.0802051,77.1701891 8.7925039,61.8835944 8.7925039,43.0231303 C8.7925039,24.1626663 24.0802051,8.87607149 42.9382315,8.87607149" id="path-3"></path>
+    </defs>
+    <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Activate-Popup" transform="translate(-1929.000000, -638.000000)">
+            <g id="Group-3-Copy-3" transform="translate(1686.000000, 600.000000)">
+                <g id="Group-9" transform="translate(243.000000, 35.000000)">
+                    <g id="logo">
+                        <g id="Group-Copy" transform="translate(43.241564, 46.325132) rotate(-360.000000) translate(-43.241564, -46.325132) translate(8.741564, 11.825132)"></g>
+                        <g id="Group-10" transform="translate(0.000000, 3.000000)">
+                            <path d="M0,76.7623269 C0,81.8641529 4.13999371,86 9.23767313,86 C9.23767313,86 31.1258779,86 43,86 C66.7482442,86 86,66.7482442 86,43 C86,19.2517558 66.7482442,0 43,0 C19.2517558,0 0,19.2517558 0,43 L0,76.7623269 Z" id="Oval-Copy"  fill="$(gw_alert_bubble_stroke)" fill-opacity="$(gw_alert_bubble_stroke#opacity)"></path>
+                            <circle id="Oval-Copy-2" fill="$(gw_alert_bubble_fill)" fill-opacity="$(gw_alert_bubble_fill#opacity)" cx="43" cy="43" r="38.4336283"></circle>
+                            <mask id="mask-4" fill="white">
+                                <use xlink:href="#path-3"></use>
+                            </mask>
+                            <use id="Path" fill="url(#linearGradient-2)" xlink:href="#path-3"></use>
+                        </g>
+                    </g>
+                </g>
+            </g>
+        </g>
+    </g>
+</svg>

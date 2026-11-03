@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">
+    <g fill="none" fill-rule="evenodd">
+        <g fill="$(fw_info_ico)" fill-opacity="$(fw_info_ico#opacity)" fill-rule="nonzero">
+            <g>
+                <path fill-rule="nonzero" d="M3.916 7.779L7 4.695 10.084 7.779 9.377 8.487 7 6.109 4.623 8.487z" transform="translate(-1683 -1918) translate(1683 1918)"/>
+                <path d="M7 13.6C3.272 13.6.382 10.728.382 7 .382 3.272 3.272.415 7 .415S13.61 3.272 13.61 7c0 3.728-2.882 6.6-6.61 6.6zm0-.5c3.452 0 6.11-2.648 6.11-6.1C13.11 3.548 10.452.915 7 .915 3.548.915.882 3.548.882 7S3.548 13.1 7 13.1z" transform="translate(-1683 -1918) translate(1683 1918)"/>
+            </g>
+        </g>
+    </g>
+</svg>

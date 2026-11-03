@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="46" height="54" viewBox="0 0 46 54">
+    <g fill="none" fill-rule="evenodd">
+        <path fill="$(gw_alert_bubble_stroke)" fill-opacity="$(gw_alert_bubble_stroke#opacity)" fill-rule="nonzero" d="M38.397 5.923c9.482 8.497 10.13 22.914 1.745 32.453-1.373 1.553-4.36 4.688-6.594 6.805-5.308 5.02-8.242 7.213-8.242 7.213-1.21 1.009-3.195 1.004-4.414-.01 0 0-12.38-9.797-16.013-15.186-6.525-9.062-6.774-21.184.89-29.63 8.536-9.408 23.14-10.146 32.628-1.645z"/>
+        <circle cx="23" cy="23" r="21" fill="$(gw_alert_bubble_fill)" fill-opacity="$(gw_alert_bubble_fill#opacity)"/>
+        <circle cx="23" cy="23" r="19" fill="#6AC427"/>
+        <path fill="#FFF" d="M17.479 28h-1.564l-3.184-6.076V28h-1.564v-9h1.564l3.196 6.105V19h1.552v9zm6.07-4.018h-3.487v2.77h4.112V28h-5.676v-9h5.633v1.261h-4.07v2.485h3.489v1.236zm8.761 1.793L33.384 19h1.552l-1.766 9h-1.496l-1.785-6.57L28.247 28h-1.502l-1.795-9H26.5l1.115 6.762L29.228 19h1.31l1.772 6.775z"/>
+    </g>
+</svg>

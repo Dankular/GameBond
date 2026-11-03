@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="94" height="56" viewBox="0 0 94 56">
+    <g fill="none" fill-rule="evenodd">
+        <path fill="$(servercard_bg)" fill-opacity="$(servercard_bg#opacity)" d="M1 4c0-1.657 1.336-3 3.009-3H89.99A2.999 2.999 0 0 1 93 4v48c0 1.657-1.336 3-3.009 3H4.01A2.999 2.999 0 0 1 1 52V4z"/>
+        <path fill="$(servercard_stroke_out)" fill-opacity="$(servercard_stroke_out#opacity)" fill-rule="nonzero" d="M1 4v48c0 1.665 1.347 3 3.009 3H89.99A2.997 2.997 0 0 0 93 52V4c0-1.665-1.347-3-3.009-3H4.01A2.997 2.997 0 0 0 1 4zM0 4c0-2.213 1.788-4 4.009-4H89.99A3.999 3.999 0 0 1 94 4v48c0 2.213-1.788 4-4.009 4H4.01A3.999 3.999 0 0 1 0 52V4z"/>
+        <path fill="$(servercard_stroke_in)" fill-opacity="$(servercard_stroke_in#opacity)" fill-rule="nonzero" d="M2 4v48c0 1.109.895 2 2.009 2H89.99A1.997 1.997 0 0 0 92 52V4c0-1.109-.895-2-2.009-2H4.01A1.997 1.997 0 0 0 2 4zM1 4c0-1.657 1.336-3 3.009-3H89.99A2.999 2.999 0 0 1 93 4v48c0 1.657-1.336 3-3.009 3H4.01A2.999 2.999 0 0 1 1 52V4z"/>
+        <path fill="$(servercard_graph_bg)" d="M8 25.004C8 23.897 8.903 23 10.006 23h73.988A2 2 0 0 1 86 25.004v20.992A2.008 2.008 0 0 1 83.994 48H10.006A2 2 0 0 1 8 45.996V25.004z"/>
+        <path fill="$(servercard_graph_stroke)" fill-opacity="$(servercard_graph_stroke#opacity)" fill-rule="nonzero" d="M8 25.004v20.992A2 2 0 0 0 10.006 48h73.988A2.008 2.008 0 0 0 86 45.996V25.004A2 2 0 0 0 83.994 23H10.006A2.008 2.008 0 0 0 8 25.004zm-1 0A3.008 3.008 0 0 1 10.006 22h73.988A3 3 0 0 1 87 25.004v20.992A3.008 3.008 0 0 1 83.994 49H10.006A3 3 0 0 1 7 45.996V25.004z"/>
+    </g>
+</svg>

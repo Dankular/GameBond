@@ -1,0 +1,6 @@
+<svg width="20" height="12" viewBox="0 0 20 12" xmlns="http://www.w3.org/2000/svg">
+    <g fill="none" fill-rule="evenodd">
+        <path d="M6 0h8a6 6 0 1 1 0 12H6A6 6 0 1 1 6 0z" fill="$(gw_caution_btn_fill)" fill-opacity="$(gw_caution_btn_fill#opacity)"/>
+        <path d="M14 1a5 5 0 1 1 0 10 5 5 0 0 1 0-10z" fill="$(fw_list_item_light)" fill-opacity="$(fw_list_item_light#opacity)"/>
+    </g>
+</svg>

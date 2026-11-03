@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+    <g fill="none" fill-rule="evenodd">
+        <g fill="$(fw_oldapps_ico)" fill-opacity="$(fw_oldapps_ico#opacity)">
+            <path d="M5.54 4.376l.71-.729 4.255 4.374-4.269 4.383-.709-.729L9.084 8.02z"/>
+        </g>
+    </g>
+</svg>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="46" height="54" viewBox="0 0 46 54">
+    <g fill="none" fill-rule="evenodd">
+        <path fill="$(gw_alert_bubble_stroke)" fill-opacity="$(gw_alert_bubble_stroke#opacity)" fill-rule="nonzero" d="M38.397 5.923c9.482 8.497 10.13 22.914 1.745 32.453-1.373 1.553-4.36 4.688-6.594 6.805-5.308 5.02-8.242 7.213-8.242 7.213-1.21 1.009-3.195 1.004-4.414-.01 0 0-12.38-9.797-16.013-15.186-6.525-9.062-6.774-21.184.89-29.63 8.536-9.408 23.14-10.146 32.628-1.645z"/>
+        <circle cx="23" cy="23" r="21" fill="$(gw_alert_bubble_fill)" fill-opacity="$(gw_alert_bubble_fill#opacity)"/>
+        <circle cx="23" cy="23" r="19" fill="#FFAD00"/>
+        <rect width="4" height="15" x="21" y="19" fill="#FFF" rx="2"/>
+        <path fill="#FFF" d="M23 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>
+    </g>
+</svg>

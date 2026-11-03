@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="56px" height="56px" viewBox="0 0 56 56" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <!-- Generator: sketchtool 43.1 (39012) - http://www.bohemiancoding.com/sketch -->
+    <title>83459EB8-4209-4949-9342-41E12B08338E</title>
+    <desc>Created with sketchtool.</desc>
+    <defs>
+        <linearGradient x1="50%" y1="-24.2449576%" x2="50%" y2="72.1678358%" id="linearGradient-1">
+            <stop stop-color="#69E16D" offset="0%"></stop>
+            <stop stop-color="#0DA8CD" offset="100%"></stop>
+        </linearGradient>
+        <linearGradient x1="50%" y1="-24.2449576%" x2="50%" y2="72.1678358%" id="linearGradient-2">
+            <stop stop-color="#7BFE80" offset="0%"></stop>
+            <stop stop-color="#05B8E3" offset="100%"></stop>
+        </linearGradient>
+        <linearGradient x1="50%" y1="8.13881479%" x2="50%" y2="92.1624905%" id="linearGradient-3">
+            <stop stop-color="#FFFF58" offset="0%"></stop>
+            <stop stop-color="#FFCF12" offset="100%"></stop>
+        </linearGradient>
+        <linearGradient x1="50%" y1="0%" x2="50%" y2="86.7854363%" id="linearGradient-4">
+            <stop stop-color="#FF2424" offset="0%"></stop>
+            <stop stop-color="#FF00B6" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="GlassWire-2.0---Connection-Attempts" transform="translate(-394.000000, -291.000000)">
+            <g id="Group-2" transform="translate(394.000000, 291.000000)">
+                <g id="logo">
+                    <path d="M0,49.9996382 C0,53.3135465 2.69580986,56 6.00036182,56 C6.00036182,56 20.2680135,56 28,56 C43.463973,56 56,43.463973 56,28 C56,12.536027 43.463973,0 28,0 C12.536027,0 0,12.536027 0,28 L0,49.9996382 Z" id="Oval-Copy" fill="#B3B6BA"></path>
+                    <circle id="Oval-Copy-2" fill="#FFFFFF" cx="28" cy="28" r="25.0265487"></circle>
+                    <g id="Group-Copy" transform="translate(28.069959, 28.124375) rotate(-360.000000) translate(-28.069959, -28.124375) translate(5.069959, 5.124375)">
+                        <path d="M45.100011,22.8906863 C45.100011,35.1719187 35.1677309,45.091061 22.8898194,45.091061 C10.6101743,45.091061 0.673295833,35.1719187 0.673295833,22.8906863 C0.673295833,10.6094539 10.6101743,0.655392157 22.8898194,0.655392157 C35.1677309,0.655392157 45.100011,10.6094539 45.100011,22.8906863 Z" id="Path" fill="url(#linearGradient-2)"></path>
+                        <path d="M8.78074475,40.0768918 C12.6192035,43.2319372 17.5333258,45.1259804 22.8898194,45.1259804 C35.1677309,45.1259804 45.1259804,35.1719187 45.1259804,22.8906863 C45.1259804,19.0679909 44.1611777,15.4707629 42.4619267,12.3290038 C40.2544021,12.8243173 37.4633285,13.7989003 32.8135419,17.3676809 C27.0163114,21.8171418 21.9848785,32.2404562 16.575598,36.2217907 C12.9574031,38.8848518 10.607039,39.7519421 8.78074475,40.0768918 L8.78074475,40.0768918 Z" id="Combined-Shape" fill="url(#linearGradient-3)"></path>
+                        <path d="M43.3608343,31.5869389 C39.9748936,39.5459174 32.0825363,45.1259804 22.8898194,45.1259804 C10.6101743,45.1259804 0.655392157,35.1719187 0.655392157,22.8906863 C0.655392157,22.7989131 0.655948035,22.7072698 0.657056608,22.6157597 C1.04698911,22.5319608 1.32392191,22.477998 1.37862461,22.4721432 C3.96743533,22.2213232 7.04217259,22.4357178 11.8184565,24.0650246 C16.5947404,25.6943313 21.38695,29.1655815 28.4833224,31.7721035 C34.4005267,33.9455129 39.4649803,33.4773863 43.3608343,31.5869389 L43.3608343,31.5869389 Z" id="Combined-Shape" fill-opacity="0.62" fill="url(#linearGradient-4)"></path>
+                    </g>
+                </g>
+            </g>
+        </g>
+    </g>
+</svg>

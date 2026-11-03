@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="17" height="16" viewBox="0 0 17 16">
+    <g fill="none" fill-rule="evenodd">
+        <g fill="$(menu_more_icon)"  fill-opacity="$(menu_more_icon#opacity)">
+            <path d="M8.071 8.364l2.828 2.828-.707.707-2.828-2.828L4.536 11.9l-.708-.707 2.829-2.828-2.829-2.828.708-.708 2.828 2.829 2.828-2.829.707.708-2.828 2.828z"/>
+        </g>
+    </g>
+</svg>

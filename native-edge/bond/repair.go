@@ -1,0 +1,171 @@
+package bond
+
+import (
+	"container/list"
+	"encoding/binary"
+	"math"
+	"time"
+)
+
+type repairEntry struct {
+	key      MissingPacket
+	payload  []byte
+	at       time.Time
+	attempts int
+	order    *list.Element
+}
+type askedRepair struct {
+	key      MissingPacket
+	at       time.Time
+	attempts int
+	order    *list.Element
+}
+
+func repairable(packet []byte) bool {
+	p, err := ParseIPv4(packet)
+	return err == nil && p.Protocol == 6 && !p.Fragmented
+}
+func (s *Sender) cacheRepair(key MissingPacket, payload []byte, now time.Time) {
+	if len(payload) > 2048 || !repairable(payload) {
+		return
+	}
+	entry := &repairEntry{key: key, payload: append([]byte(nil), payload...), at: now}
+	entry.order = s.repairOrder.PushBack(entry)
+	s.repairs[key] = entry
+	for len(s.repairs) > 2048 {
+		old := s.repairOrder.Front().Value.(*repairEntry)
+		delete(s.repairs, old.key)
+		s.repairOrder.Remove(old.order)
+	}
+}
+
+// Maintenance requests only short-lived TCP holes and sends at most four
+// cached repairs per call. Repairs use fresh AEAD nonces but retain flow IDs
+// and sequence numbers, so first arrival wins without injecting duplicates.
+func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
+	s.syncPeer()
+	for s.repairOrder.Len() > 0 {
+		old := s.repairOrder.Front().Value.(*repairEntry)
+		if now.Sub(old.at) < time.Second {
+			break
+		}
+		delete(s.repairs, old.key)
+		s.repairOrder.Remove(old.order)
+	}
+	for s.askedOrder.Len() > 0 {
+		old := s.askedOrder.Front().Value.(*askedRepair)
+		if now.Sub(old.at) < time.Second && len(s.asked) <= 2048 {
+			break
+		}
+		delete(s.asked, old.key)
+		s.askedOrder.Remove(old.order)
+	}
+	paths := s.eligible(now, true)
+	if len(paths) == 0 {
+		return nil
+	}
+	best := paths[0]
+	minimum, maximum, jitter := math.Inf(1), 0., 0.
+	for _, p := range paths {
+		score, bestScore := 1., 1.
+		if p.hasRTT {
+			score = p.rtt
+		}
+		if best.hasRTT {
+			bestScore = best.rtt
+		}
+		if score < bestScore {
+			best = p
+		}
+		minimum = math.Min(minimum, p.rtt)
+		maximum = math.Max(maximum, p.rtt)
+		jitter = math.Max(jitter, p.jitter)
+	}
+	if s.nextRepairRequest.IsZero() || !now.Before(s.nextRepairRequest) {
+		delay := time.Duration(math.Max(.015, (maximum-minimum)/2+2*jitter) * float64(time.Second))
+		missing := s.r.reorder.Missing(now, delay, 4, repairable)
+		if len(missing) > 0 {
+			s.nextRepairRequest = now.Add(10 * time.Millisecond)
+		}
+		for _, key := range missing {
+			asked := s.asked[key]
+			if asked != nil && (asked.attempts >= 2 || now.Sub(asked.at) < 40*time.Millisecond) {
+				continue
+			}
+			body := make([]byte, 16)
+			binary.BigEndian.PutUint64(body, key.Flow)
+			binary.BigEndian.PutUint64(body[8:], key.Number)
+			frame, err := s.r.codec.Encode(Repair, body)
+			if err != nil {
+				return err
+			}
+			if s.written(Datagram{best.endpoint, frame}, best, now, writer) {
+				if asked == nil {
+					asked = &askedRepair{key: key}
+					asked.order = s.askedOrder.PushBack(asked)
+					s.asked[key] = asked
+				} else {
+					s.askedOrder.MoveToBack(asked.order)
+				}
+				asked.at = now
+				asked.attempts++
+				s.stats.RepairRequests++
+			}
+		}
+	}
+	timestamp := s.r.seconds(now)
+	for i := 0; i < 4 && s.requestOrder.Len() > 0; i++ {
+		e := s.requestOrder.Front()
+		key := e.Value.(MissingPacket)
+		cached := s.repairs[key]
+		if cached == nil || cached.attempts >= 2 {
+			delete(s.repairRequests, key)
+			s.requestOrder.Remove(e)
+			continue
+		}
+		size := len(cached.payload) + Overhead + 24
+		var target *receivePath
+		bestScore := math.Inf(1)
+		for _, p := range paths {
+			ready, err := p.budget.ReadyAt(size, timestamp)
+			if err != nil {
+				return err
+			}
+			if math.Max(ready, p.pacer.ReadyAt(size+28, timestamp)) > timestamp+.000001 {
+				continue
+			}
+			probe := 0.
+			if p.hasRTT {
+				probe = p.rtt
+			}
+			score := ready + p.budget.TransitSeconds(size, probe)
+			if score < bestScore {
+				bestScore = score
+				target = p
+			}
+		}
+		if target == nil {
+			break
+		}
+		body := make([]byte, 24+len(cached.payload))
+		binary.BigEndian.PutUint64(body, key.Flow)
+		binary.BigEndian.PutUint64(body[8:], key.Number)
+		binary.BigEndian.PutUint64(body[16:], target.txEpoch)
+		copy(body[24:], cached.payload)
+		frame, err := s.r.codec.Encode(Striped, body)
+		if err != nil {
+			return err
+		}
+		if s.written(Datagram{target.endpoint, frame}, target, now, writer) {
+			target.budget.Sent(binary.BigEndian.Uint64(frame[37:]), len(frame), timestamp)
+			cached.attempts++
+			delete(s.repairRequests, key)
+			s.requestOrder.Remove(e)
+			s.stats.RepairCopies++
+			s.stats.Copies++
+		} else {
+			break
+		}
+	}
+	return nil
+}

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="37" viewBox="0 0 32 37">
+    <g fill="none" fill-rule="evenodd">
+        <g>
+            <g>
+                <g transform="translate(-1302.000000, -724.000000) translate(1302.000000, 724.000000)">
+                    <path fill="$(gw_alert_bubble_stroke)" fill-opacity="$(gw_alert_bubble_stroke#opacity)" fill-rule="nonzero" d="M26.71 4.12c6.597 5.912 7.048 15.94 1.215 22.576-.955 1.08-3.034 3.261-4.588 4.734-3.692 3.492-5.733 5.018-5.733 5.018-.842.702-2.223.698-3.07-.007 0 0-8.613-6.815-11.14-10.564-4.54-6.304-4.713-14.737.619-20.613C9.951-1.28 20.111-1.793 26.711 4.121z"/>
+                    <circle cx="15.96" cy="16.06" r="14.6" fill="$(gw_alert_bubble_fill)" fill-opacity="$(gw_alert_bubble_fill#opacity)"/>
+                    <circle cx="16.014" cy="16.07" r="13.054" fill="#6AC427"/>
+                </g>
+                <g fill="#FFF">
+                    <g>
+                        <path d="M0.104 0.528H2.254V7.992000000000001H0.104z" transform="translate(-1302.000000, -724.000000) translate(1302.000000, 724.000000) translate(3.000000, 7.000000) translate(18.867966, 7.016314) rotate(-315.000000) translate(-18.867966, -7.016314) translate(14.701299, 2.604549)"/>
+                        <path d="M3.207 2.926L5.171 2.926 5.171 11.095 3.207 11.095z" transform="translate(-1302.000000, -724.000000) translate(1302.000000, 724.000000) translate(3.000000, 7.000000) translate(18.867966, 7.016314) rotate(-315.000000) translate(-18.867966, -7.016314) translate(14.701299, 2.604549) translate(4.189185, 7.010556) rotate(-270.000000) translate(-4.189185, -7.010556)"/>
+                    </g>
+                    <g>
+                        <path d="M0.278 0.804L2.428 0.804 2.428 8.268 0.278 8.268z" transform="translate(-1302.000000, -724.000000) translate(1302.000000, 724.000000) translate(3.000000, 7.000000) translate(6.843619, 11.156877) scale(-1, 1) rotate(-315.000000) translate(-6.843619, -11.156877) translate(2.343619, 6.656877)"/>
+                        <path d="M3.381 3.201L5.345 3.201 5.345 11.371 3.381 11.371z" transform="translate(-1302.000000, -724.000000) translate(1302.000000, 724.000000) translate(3.000000, 7.000000) translate(6.843619, 11.156877) scale(-1, 1) rotate(-315.000000) translate(-6.843619, -11.156877) translate(2.343619, 6.656877) translate(4.363131, 7.285837) rotate(-270.000000) translate(-4.363131, -7.285837)"/>
+                    </g>
+                </g>
+            </g>
+        </g>
+    </g>
+</svg>

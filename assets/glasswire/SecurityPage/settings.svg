@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="17" height="16" viewBox="0 0 17 16">
+    <g fill="none" fill-rule="evenodd">
+        <g fill="$(fw_settings_ico)" fill-opacity="$(fw_settings_ico#opacity)">
+            <path d="M5.134 11H3.029v-1h2.105c.208-.583.769-1 1.428-1 .66 0 1.22.417 1.428 1h5.134v1H7.99c-.208.583-.768 1-1.428 1-.66 0-1.22-.417-1.428-1zm3.029-4H3.029V6h5.134c.208-.583.769-1 1.428-1 .66 0 1.22.417 1.428 1h2.105v1H11.02c-.208.583-.769 1-1.428 1-.66 0-1.22-.417-1.428-1z"/>
+        </g>
+    </g>
+</svg>

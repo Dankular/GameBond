@@ -1,0 +1,3 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="6" height="4" viewBox="0 0 6 4">
+    <path fill="$(list_header_icon)" fill-opacity="$(list_header_icon#opacity)" fill-rule="evenodd" d="M2.697 3.199c.282.251.487.134.7 0C5.828.726 5.828.715 5.828.715L5.119.01l-2.08 2.096L.818 0 .13.726l2.567 2.473z"/>
+</svg>

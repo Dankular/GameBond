@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="56px" height="56px" viewBox="0 0 56 56" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <!-- Generator: sketchtool 43.1 (39012) - http://www.bohemiancoding.com/sketch -->
+    <title>6C9125D9-7281-40AF-9DA0-EDDC9B6A2962</title>
+    <desc>Created with sketchtool.</desc>
+    <defs>
+        <linearGradient x1="50%" y1="-24.2449576%" x2="50%" y2="72.1678358%" id="linearGradient-1">
+            <stop stop-color="#69E16D" offset="0%"></stop>
+            <stop stop-color="#0DA8CD" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="GlassWire-2.0---GlassWire-stopped-Copy" transform="translate(-394.000000, -291.000000)">
+            <g id="Group-145" transform="translate(288.000000, 291.000000)">
+                <g id="Group-144">
+                    <g id="Group-141-Copy-2" transform="translate(106.000000, 0.000000)">
+                        <g id="Group-2">
+                            <g id="logo">
+                                <path d="M0,49.9996382 C0,53.3135465 2.69580986,56 6.00036182,56 C6.00036182,56 20.2680135,56 28,56 C43.463973,56 56,43.463973 56,28 C56,12.536027 43.463973,0 28,0 C12.536027,0 0,12.536027 0,28 L0,49.9996382 Z" id="Oval-Copy" fill-opacity="0.345618207" fill="#212B37"></path>
+                                <circle id="Oval-Copy-2" fill="#FFFFFF" cx="28" cy="28" r="25.0265487"></circle>
+                                <g id="Group-Copy" transform="translate(28.069959, 28.124375) rotate(-360.000000) translate(-28.069959, -28.124375) translate(5.069959, 5.124375)">
+                                    <path d="M45.100011,22.8906863 C45.100011,35.1719187 35.1677309,45.091061 22.8898194,45.091061 C10.6101743,45.091061 0.673295833,35.1719187 0.673295833,22.8906863 C0.673295833,10.6094539 10.6101743,0.655392157 22.8898194,0.655392157 C35.1677309,0.655392157 45.100011,10.6094539 45.100011,22.8906863 Z" id="Path" fill="#FFCD2E"></path>
+                                    <path d="M22.9240437,36.8717762 C24.3281851,36.8717762 24.6882214,36.3317218 24.6882214,34.7595634 C24.6882214,33.187405 24.2921815,32.6233482 22.9240437,32.6233482 C21.5799083,32.6233482 21.1838684,33.187405 21.1838684,34.7595634 C21.1838684,36.3317218 21.5439047,36.8717762 22.9240437,36.8717762 Z M21.6639168,28.7268038 L24.1961718,28.7268038 L24.7002226,8.9128078 L21.1478648,8.9128078 L21.6639168,28.7268038 Z" id="!" fill="#FFFFFF"></path>
+                                </g>
+                            </g>
+                        </g>
+                    </g>
+                </g>
+            </g>
+        </g>
+    </g>
+</svg>

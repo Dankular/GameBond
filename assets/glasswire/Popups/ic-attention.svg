@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 9 9">
+    <g fill="none" fill-rule="evenodd">
+        <path d="M0 0L13 0 13 13 0 13z" transform="translate(-2 -2)"/>
+        <path fill="$(gw_attention)" fill-opacity="$(gw_attention#opacity)" d="M9.739 11c1.106 0 1.564-.777 1.02-1.74L7.465 3.435c-.544-.96-1.423-.962-1.967 0L2.204 9.26C1.66 10.22 2.118 11 3.224 11H9.74zm-3.78-.98V8.927h1.083v1.093H5.96zm0-2.013V5.095h1.083v2.912H5.958z" transform="translate(-2 -2)"/>
+    </g>
+</svg>

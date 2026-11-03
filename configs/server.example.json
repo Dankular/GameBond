@@ -1,0 +1,20 @@
+{
+  "role": "server",
+  "bind": [["0.0.0.0", 4433]],
+  "session": "REPLACE_WITH_SAME_FRESH_SESSION_AS_CLIENT",
+  "client_tunnel_ip": "10.77.0.2",
+  "tun_name": "gamebond0",
+  "mtu": 1280,
+  "redundant_mode": false,
+  "bonding_mode": true,
+  "bonding_initial_rate_mbps": 1,
+  "bonding_max_rate_mbps": 100,
+  "reorder_timeout_ms": 30,
+  "direct_priority": true,
+  "bulk_rate_mbps": 0,
+  "game_udp_ports": [3075],
+  "queues": {
+    "46": {"priority": true, "replicate": true, "max_age_ms": 20, "capacity": 128, "retransmissions": 0},
+    "0": {"priority": false, "replicate": false, "max_age_ms": 100, "capacity": 256, "retransmissions": 0}
+  }
+}

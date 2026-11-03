@@ -1,0 +1,3 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path fill-rule="evenodd"  fill-opacity="$(menu_pickeditem#opacity)" clip-rule="evenodd" d="M2.41681 7.47996L1.63081 8.26796L6.34281 13L14.7119 4.50004L13.9269 3.71204L6.34081 11.421L2.41681 7.47996Z" fill="$(menu_pickeditem)"/>
+</svg>

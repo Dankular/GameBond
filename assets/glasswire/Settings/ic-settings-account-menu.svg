@@ -1,0 +1,6 @@
+<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <g fill="none" fill-rule="evenodd">
+        <path d="M0 0h16v16H0z"/>
+        <path d="M8 0C3.58 0 0 3.58 0 8s3.58 8 8 8 8-3.58 8-8-3.58-8-8-8zm0 3a3 3 0 1 1 0 6 3 3 0 0 1 0-6zm.01 11c-1.803 0-3.419-.831-4.5-2.131C4.087 10.762 5.218 10 6.535 10a.74.74 0 0 1 .219.034c.399.132.817.216 1.256.216.44 0 .86-.084 1.256-.216A.74.74 0 0 1 9.484 10c1.318 0 2.448.762 3.026 1.869C11.429 13.169 9.813 14 8.01 14z" fill="$(popup_actions_icon)" fill-opacity="$(popup_actions_icon#opacity)"/>
+    </g>
+</svg>

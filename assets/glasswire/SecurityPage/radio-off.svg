@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <g fill="#FFF" fill-rule="evenodd">
+        <path fill="$(gw_radiobutton_stroke)" fill-opacity="$(gw_radiobutton_stroke#opacity)" d="M12 3c-4.968 0-9 4.032-9 9s4.032 9 9 9 9-4.032 9-9-4.032-9-9-9zm-7.2 9c0-3.978 3.222-7.2 7.2-7.2s7.2 3.222 7.2 7.2-3.222 7.2-7.2 7.2A7.198 7.198 0 0 1 4.8 12z"/>
+        <path fill="$(gw_radiobutton_fill)" fill-opacity="$(gw_radiobutton_fill#opacity)" d="M4.8 12c0-3.978 3.222-7.2 7.2-7.2s7.2 3.222 7.2 7.2-3.222 7.2-7.2 7.2A7.198 7.198 0 0 1 4.8 12z"/>
+    </g>
+</svg>

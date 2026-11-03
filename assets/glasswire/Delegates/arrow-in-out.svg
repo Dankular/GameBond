@@ -1,0 +1,5 @@
+<svg width="13" height="7" viewBox="0 0 13 7" xmlns="http://www.w3.org/2000/svg">
+    <g fill="$(list_header_icon)" opacity="$(list_header_icon#opacity)" fill-rule="evenodd">
+        <path d="M4 0v5.271L5.597 3.66l.71.703c-.007.009-.131.145-2.433 2.485-.212.134-.417.251-.7 0L.609 4.375l.688-.726L3 5.265V0h1zM10 7V1.729l1.597 1.611.71-.703c-.007-.009-.131-.145-2.433-2.485-.212-.134-.417-.251-.7 0L6.609 2.625l.688.726L9 1.735V7h1z"/>
+    </g>
+</svg>

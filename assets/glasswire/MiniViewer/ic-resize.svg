@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="16px" height="16px" viewBox="0 0 16 16" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <!-- Generator: sketchtool 43.1 (39012) - http://www.bohemiancoding.com/sketch -->
+    <title>E8708463-5200-4DCF-B0A4-C1C2077B852A</title>
+    <desc>Created with sketchtool.</desc>
+    <defs>
+        <linearGradient x1="55.7908961%" y1="56.0778555%" x2="94.7675109%" y2="97.0370708%" id="linearGradient-1">
+            <stop stop-color="#E9F8FA" stop-opacity="0" offset="0%"></stop>
+            <stop stop-color="#E9F8FA" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Mini-Viewer" transform="translate(-411.000000, -208.000000)">
+            <g id="Group-133" transform="translate(395.000000, 181.000000)">
+                <g id="Group-16" transform="translate(16.000000, 27.000000)">
+                    <rect id="Rectangle-108" fill="url(#linearGradient-1)" x="0" y="0" width="15" height="15"></rect>
+                    <polygon id="Combined-Shape" fill-opacity="0.153589221" fill="#000000" transform="translate(10.990497, 10.994404) rotate(-45.000000) translate(-10.990497, -10.994404) " points="14.6530894 11.4444325 14.6530894 10.4544325 7.32790513 10.5443746 7.32790513 11.5343746"></polygon>
+                    <polygon id="Combined-Shape" fill-opacity="0.153589221" fill="#000000" transform="translate(12.520655, 12.516703) rotate(-45.000000) translate(-12.520655, -12.516703) " points="13.9635968 12.9980843 13.9635968 12.0080843 11.077713 12.0353211 11.077713 13.0253211"></polygon>
+                </g>
+            </g>
+        </g>
+    </g>
+</svg>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="24px" height="24px" viewBox="0 0 24 24" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <!-- Generator: sketchtool 41.2 (35397) - http://www.bohemiancoding.com/sketch -->
+    <title>28B10DA5-38C9-448A-8B1D-D0464F9ADA7E</title>
+    <desc>Created with sketchtool.</desc>
+    <defs></defs>
+    <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Design-assets" transform="translate(-868.000000, -995.000000)">
+            <g id="Icon-24px" transform="translate(868.000000, 995.000000)">
+                <polygon id="Shape" points="0 0 24 0 24 24 0 24"></polygon>
+                <path d="M4,4 C2.9,4 2,4.9 2,6 L2,18 C2,19.1 2.9,20 4,20 L20,20 C21.1,20 22,19.1 22,18 L22,6 C22,4.9 21.1,4 20,4 L4,4 Z M10.7997551,10.5838737 L8.22458611,8.01747932 L6.81665916,9.43797951 L9.38115425,12.0024746 L6.91679001,14.4668388 L6.74375534,14.6398735 L8.18134537,16.0307106 L10.7953678,13.4166882 L12.2175144,12.0104076 L10.7997551,10.5838737 Z M15.7997551,10.5838737 L13.2245861,8.01747932 L11.8166592,9.43797951 L14.3811543,12.0024746 L11.91679,14.4668388 L11.7437553,14.6398735 L13.1813454,16.0307106 L15.7953678,13.4166882 L17.2175144,12.0104076 L15.7997551,10.5838737 Z" id="Combined-Shape" fill-opacity="$(graph_btn_current#opacity)" fill="$(graph_btn_current)"></path>
+            </g>
+        </g>
+    </g>
+</svg>

@@ -1,0 +1,3 @@
+<svg width="8" height="5" viewBox="0 0 8 5" xmlns="http://www.w3.org/2000/svg">
+    <path fill="$(topmenu_txt)" fill-opacity="$(topmenu_txt#opacity)" d="M6.943 1.056a.5.5 0 0 1 .022.707L4.425 4.47a.6.6 0 0 1-.875 0L.999 1.764a.5.5 0 0 1 .728-.686l2.258 2.398 2.25-2.397a.5.5 0 0 1 .708-.022z" fill-rule="nonzero"/>
+</svg>
