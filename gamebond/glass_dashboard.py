@@ -372,8 +372,25 @@ class GlassDashboard(QMainWindow):
         self.tray_available=bool(enabled and QSystemTrayIcon.isSystemTrayAvailable())
         if self.tray_available:self.tray.show()
 
+    def _update_panel_activity(self):
+        visible=self.isVisible() and not self.isMinimized()
+        for index,panel in enumerate(self.panels):
+            if hasattr(panel,'set_active'):panel.set_active(visible and index==self.views.currentIndex())
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        if hasattr(self,'panels'):self._update_panel_activity()
+
+    def hideEvent(self,event):
+        super().hideEvent(event)
+        if hasattr(self,'panels'):self._update_panel_activity()
+
+    def changeEvent(self,event):
+        super().changeEvent(event)
+        if hasattr(self,'panels'):self._update_panel_activity()
+
     def select_tab(self,index):
-        self.views.setCurrentIndex(index)
+        self.views.setCurrentIndex(index);self._update_panel_activity()
         for i,button in enumerate(self.nav):
             button.setChecked(i==index);button.setIcon(self.theme.icon('MainTopPanel/ico-top-'+button.property('asset')+'.svg','c' if i==index else 'n'))
 
@@ -420,7 +437,9 @@ class GlassDashboard(QMainWindow):
         if self.problem:text='Network problem · '+self.problem
         elif self.pending_settings:text+=' · Settings saved; reconnect to apply'
         self.status.setText(text);self.status.setToolTip(text)
-        self.connect_button.setStyleSheet('background:#6ad68c;color:white;border:0;border-radius:16px;' if connected else '')
+        if getattr(self,'_button_connected',None)!=connected:
+            self._button_connected=connected
+            self.connect_button.setStyleSheet('background:#6ad68c;color:white;border:0;border-radius:16px;' if connected else '')
         self._tray_tick()
 
     def _update_networks(self):

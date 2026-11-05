@@ -63,6 +63,7 @@ class TrafficPanel(QWidget):
         self.tables=QWidget();columns=QHBoxLayout(self.tables);columns.setContentsMargins(16,12,16,12)
         self.app_table=self.make_table(['Apps','Downloaded','Uploaded']);self.host_table=self.make_table(['Hosts','Application']);self.protocol_table=self.make_table(['Traffic Type','Connections'])
         columns.addWidget(self.app_table,2);columns.addWidget(self.host_table,2);columns.addWidget(self.protocol_table,1);self.views.addWidget(self.tables);layout.addWidget(self.views,1)
+        self.views.currentChanged.connect(self._render_tables)
         footer=QWidget();footer.setMinimumHeight(90);footer.setStyleSheet(f'background:{self.theme.css("gw_mainbg")};border-top:1px solid {self.theme.css("graph_bottomline")};')
         summary=QHBoxLayout(footer);summary.setContentsMargins(30,14,30,14)
         self.down=QLabel('↓  —');self.total=QLabel('—');self.up=QLabel('↑  —');self.extra=QLabel('No tunnel running')
@@ -100,6 +101,7 @@ class TrafficPanel(QWidget):
         if now-self.last_sample<.8:return
         self.last_sample=now;rates=self.rates.sample(runtime,now)
         if not runtime:
+            self.rows=[];self._render_tables()
             self.caption.setText('No tunnel running');self.down.setText('↓  —');self.up.setText('↑  —');self.total.setText('—');self.extra.setText('Disconnected');return
         if runtime['pid']!=self.pid:
             self.pid=runtime['pid'];self.previous.clear();self.graph.samples.clear()
@@ -122,6 +124,14 @@ class TrafficPanel(QWidget):
         encrypted=rates['encrypted'];self.extra.setText(f"VPS {runtime['peer'][0]} · {healthy}/{len(paths)} links\nEncrypted tunnel ↓ {human_bytes(encrypted['down'])}/s  ↑ {human_bytes(encrypted['up'])}/s")
         self.caption.setText(('Application payload · excludes duplicate copies and tunnel retransmissions' if rates['application'] else 'Tunnel IP throughput · includes inner headers and retransmissions')+
                              (' · application filter active' if self.filter_paths else ''))
+        self._render_tables()
+
+    def set_active(self,active):
+        previous=getattr(self,'_active',True);self._active=bool(active)
+        if self._active and not previous:self._render_tables()
+
+    def _render_tables(self,*args):
+        if not getattr(self,'_active',True) or self.views.currentIndex()!=1:return
         rows=[r for r in self.rows if not self.filter_paths or r['path'] in self.filter_paths]
         self.app_table.setRowCount(len(rows));hosts=[]
         for index,row in enumerate(sorted(rows,key=lambda r:r['uploaded_bytes']+r['downloaded_bytes'],reverse=True)):

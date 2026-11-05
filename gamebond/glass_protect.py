@@ -217,9 +217,13 @@ class ProtectPanel(QWidget):
                                         app_rules=applied['rules'])).snapshot()==self.evaluator.snapshot()
         except (ValueError,TypeError,KeyError):return False
 
+    def set_active(self,active):
+        previous=getattr(self,'_active',True);self._active=bool(active)
+        if self._active and not previous:self._render()
+
     def _render(self):
-        if not hasattr(self,'table'):return
-        self.rendering=True
+        if not hasattr(self,'table') or not getattr(self,'_active',True):return
+        self.rendering=True;self.table.setUpdatesEnabled(False)
         try:
             entries=dict(self.rows)
             for path in self.evaluator.rules:
@@ -231,29 +235,48 @@ class ProtectPanel(QWidget):
             entries.sort(key=lambda pair:(not bool(pair[1].get('active_connections')),not pair[1]['verified'],pair[1]['name'].casefold()))
             if self.current_path is not None and self.current_path not in {key for key,_ in entries}:
                 self.current_path=None;self._select_profile()
-            self.table.setRowCount(min(512,len(entries)))
+            paths=tuple(path for path,_ in entries[:512])
+            rebuild=paths!=getattr(self,'_row_paths',None)
+            if rebuild:
+                self.table.clearContents();self.table.setRowCount(len(paths));self._row_paths=paths
             for index,(path,row) in enumerate(entries[:512]):
-                name=QTableWidgetItem(self._icon(row['path']),row['name']);name.setData(Qt.UserRole,path)
-                name.setToolTip(row['path']+('\nVerified routed application' if row['verified'] else '\nConfigured rule; no verified tunnel usage in this session'))
-                self.table.setItem(index,0,name)
-                inbound=QLabel('Not exposed');inbound.setAlignment(Qt.AlignCenter)
-                inbound.setToolTip('This tunnel accepts replies to outbound flows; it does not expose inbound listening services.')
-                inbound.setStyleSheet('color:#9da4af;background:transparent;font-size:11px;');self.table.setCellWidget(index,1,inbound)
                 rule=self._rule(path)
-                color,bg=('#58a76c','#e4f2e7') if rule['outbound']=='allow' else ('#cf6d65','#f9e6e4')
-                outbound=PillCombo(self.theme,colors=(color,bg),radius=4);outbound.addItem('Allowed','allow');outbound.addItem('Blocked','block')
-                outbound.setCurrentIndex(outbound.findData(rule['outbound']))
-                outbound.setContentsMargins(9,4,9,4)
-                outbound.currentIndexChanged.connect(lambda _,key=path,editor=outbound:self._set_outbound(key,editor.currentData()))
-                self.table.setCellWidget(index,2,outbound)
-                self.table.setItem(index,3,QTableWidgetItem(row.get('version','—')))
-                self.table.setItem(index,4,QTableWidgetItem(row['destinations'][0]+(f"  +{len(row['destinations'])-1} more" if len(row['destinations'])>1 else '') if row['destinations'] else ''))
-                for column,value in ((5,row.get('down')),(6,row.get('up'))):
-                    cell=QTableWidgetItem(_speed(value));cell.setTextAlignment(Qt.AlignRight|Qt.AlignVCenter);self.table.setItem(index,column,cell)
-                self.table.setCellWidget(index,7,TrafficSparkline(self.histories.get(path,[]),self.theme))
-                if path==self.current_path:self.table.selectRow(index)
+                if rebuild:
+                    name=QTableWidgetItem(self._icon(row['path']),row['name']);name.setData(Qt.UserRole,path)
+                    self.table.setItem(index,0,name)
+                    inbound=QLabel('Not exposed');inbound.setAlignment(Qt.AlignCenter)
+                    inbound.setToolTip('This tunnel accepts replies to outbound flows; it does not expose inbound listening services.')
+                    inbound.setStyleSheet('color:#9da4af;background:transparent;font-size:11px;');self.table.setCellWidget(index,1,inbound)
+                    outbound=PillCombo(self.theme,radius=4);outbound.addItem('Allowed','allow');outbound.addItem('Blocked','block')
+                    outbound.setContentsMargins(9,4,9,4)
+                    outbound.currentIndexChanged.connect(lambda _,key=path,editor=outbound:self._set_outbound(key,editor.currentData()))
+                    self.table.setCellWidget(index,2,outbound)
+                    for column in range(3,7):
+                        cell=QTableWidgetItem()
+                        if column in (5,6):cell.setTextAlignment(Qt.AlignRight|Qt.AlignVCenter)
+                        self.table.setItem(index,column,cell)
+                    self.table.setCellWidget(index,7,TrafficSparkline([],self.theme))
+                name=self.table.item(index,0)
+                if name.text()!=row['name']:name.setText(row['name'])
+                tooltip=row['path']+('\nVerified routed application' if row['verified'] else '\nConfigured rule; no verified tunnel usage in this session')
+                if name.toolTip()!=tooltip:name.setToolTip(tooltip)
+                outbound=self.table.cellWidget(index,2)
+                colors=('#58a76c','#e4f2e7') if rule['outbound']=='allow' else ('#cf6d65','#f9e6e4')
+                if outbound.colors!=colors:outbound.colors=colors;outbound.update()
+                desired=outbound.findData(rule['outbound'])
+                if outbound.currentIndex()!=desired:
+                    with QSignalBlocker(outbound):outbound.setCurrentIndex(desired)
+                hosts=row['destinations']
+                values=(row.get('version','—'),hosts[0]+(f"  +{len(hosts)-1} more" if len(hosts)>1 else '') if hosts else '',
+                        _speed(row.get('down')),_speed(row.get('up')))
+                for column,value in enumerate(values,3):
+                    cell=self.table.item(index,column)
+                    if cell.text()!=value:cell.setText(value)
+                sparkline=self.table.cellWidget(index,7);sparkline.samples=list(self.histories.get(path,[]));sparkline.update()
+                if rebuild and path==self.current_path:self.table.selectRow(index)
             self.table.setToolTip('Showing the first 512 matching applications' if len(entries)>512 else '')
-        finally:self.rendering=False
+        finally:
+            self.table.setUpdatesEnabled(True);self.rendering=False
 
     def _context_menu(self,position):
         row=self.table.rowAt(position.y())

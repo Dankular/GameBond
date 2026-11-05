@@ -1,6 +1,6 @@
 # Current status
 
-Reviewed 2026-11-04 against source and retained local results.
+Reviewed 2026-11-05 against source and retained local results.
 These are completed checks, not a live process or server status.
 Raw diagnostics and live configs are excluded from Git.
 
@@ -13,7 +13,7 @@ Raw diagnostics and live configs are excluded from Git.
   rejections/errors. The real Codex process transferred traffic.
 - Protected-process creation times matched psutil for 97 processes; invalid
   PIDs were rejected. Executable authorization still independently verifies identity.
-- 282 Python tests and the netstack Go tests passed.
+- 293 Python tests passed after GUI optimization; prior netstack Go checks passed.
 - Native Linux TUN integration passed isolated VPS HTTPS and UDP egress tests.
 
 ## Remaining gaps

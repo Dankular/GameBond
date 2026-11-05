@@ -41,7 +41,7 @@ class DashboardTests(unittest.TestCase):
                 super().__init__();self.initialized=True;self.busy=False;self.command=None
                 self.toggle=Mock();self.stop=Mock(return_value=True);self.shutdown=Mock()
         class Panel(QWidget):
-            def __init__(self):super().__init__();self.update_runtime=Mock();self.shutdown=Mock()
+            def __init__(self):super().__init__();self.update_runtime=Mock();self.shutdown=Mock();self.set_active=Mock()
         self.controller=Controller();self.toasts=Mock()
         self.window=GlassDashboard(controller=self.controller,panel_factories=[Panel]*5,
             toast_factory=lambda *args:self.toasts,tray_enabled=False)
@@ -96,6 +96,23 @@ class DashboardTests(unittest.TestCase):
         with patch.object(self.window,'_dialog') as opened:
             self.window.network_button.click();dialog=opened.call_args.args[0];self.assertIn('Select networks',dialog.windowTitle());dialog.reject();dialog.deleteLater()
         self.controller.toggle.assert_not_called()
+
+    def test_page_activity_tracks_visibility_without_changing_the_connection(self):
+        self.window.show();self.app.processEvents()
+        self.window.select_tab(1)
+        self.window.protect.set_active.assert_called_with(True)
+        self.window.traffic.set_active.assert_called_with(False)
+        self.window.hardware.set_active.assert_called_with(False)
+        self.window.hide();self.app.processEvents()
+        for panel in self.window.panels[:5]:panel.set_active.assert_called_with(False)
+        self.window.show();self.app.processEvents()
+        self.window.protect.set_active.assert_called_with(True)
+        self.window.showMinimized();self.app.processEvents()
+        self.window.protect.set_active.assert_called_with(False)
+        self.window.showNormal();self.app.processEvents()
+        self.window.protect.set_active.assert_called_with(True)
+        self.controller.toggle.assert_not_called();self.controller.stop.assert_not_called()
+
 
 
 @unittest.skipUnless(QApplication is not None,'Optional Qt dashboard dependency')

@@ -51,9 +51,11 @@ def _rows(table, rows):
         table.setRowCount(len(rows))
         for row_index, values in enumerate(rows):
             for column, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
-                item.setToolTip(str(value))
-                table.setItem(row_index, column, item)
+                text=str(value);item=table.item(row_index,column)
+                if item is None:
+                    item=QTableWidgetItem(text);table.setItem(row_index,column,item)
+                elif item.text()!=text:item.setText(text)
+                if item.toolTip()!=text:item.setToolTip(text)
     finally:
         table.setUpdatesEnabled(True)
 
@@ -233,7 +235,7 @@ class HardwarePanel(QWidget):
         self.sampler=sampler or HardwareSampler()
         provider=self.sampler
         if hasattr(provider,'shutdown'):self.destroyed.connect(lambda:provider.shutdown())
-        self.last_snapshot=None;self.closed=False
+        self.last_snapshot=None;self.closed=False;self._active=True;self._autostart=autostart
         self.worker=_AsyncCall(self);self.worker.done.connect(self._sample_ready);self.worker.failed.connect(self._sample_failed)
         layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(0)
         self.chart=HardwareGraphs();layout.addWidget(self.chart,1)
@@ -279,9 +281,16 @@ class HardwarePanel(QWidget):
         detail.triggered.connect(self.show_details)
         menu.exec_(self.mapToGlobal(position))
 
+    def set_active(self,active):
+        previous=self._active;self._active=bool(active)
+        if not self._active:self.timer.stop()
+        elif not previous and not self.closed:
+            if self._autostart:self.timer.start()
+            self.refresh()
+
     @pyqtSlot()
     def refresh(self):
-        if self.closed or self.worker.busy:return
+        if self.closed or not self._active or self.worker.busy:return
         self.refresh_button.setEnabled(False);self.worker.start(self.sampler.sample)
 
     @pyqtSlot(object)
