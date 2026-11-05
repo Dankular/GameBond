@@ -9,6 +9,7 @@ from .widget_data import CONFIG,save_applications,save_selection,save_link_polic
 from .capture import normalize_apps
 from .link_policy import LinkPolicy,UsageLedger
 from .glass_theme import ROOT
+from .link_limits import MIN_LINKS,MAX_LINKS
 
 
 class SettingsDialog(QDialog):
@@ -59,7 +60,7 @@ class ApplicationsDialog(SettingsDialog):
 class NetworksDialog(SettingsDialog):
     def __init__(self,links,parent=None):
         super().__init__('Select networks',parent);self.links=[];self.choices=[]
-        note=QLabel('Choose two adapters. Offline adapters can stay selected; their addresses are discovered automatically when they return.');note.setWordWrap(True);self.body.addWidget(note)
+        note=QLabel('Choose 2 to 8 adapters. Offline adapters can stay selected; their addresses are discovered automatically when they return.');note.setWordWrap(True);self.body.addWidget(note)
         row=QHBoxLayout();self.selection_status=QLabel();self.refresh_button=QPushButton('Refresh adapters');self.refresh_button.clicked.connect(self.refresh)
         row.addWidget(self.selection_status,1);row.addWidget(self.refresh_button);self.body.addLayout(row)
         scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setFrameShape(QScrollArea.NoFrame)
@@ -94,8 +95,8 @@ class NetworksDialog(SettingsDialog):
         self._selection_changed()
 
     def _selection_changed(self):
-        count=sum(choice.isChecked() for _,choice in self.choices);self.selection_status.setText(f'{count} of 2 adapters selected')
-        self.buttons.button(QDialogButtonBox.Save).setEnabled(count==2 and not self.worker.busy)
+        count=sum(choice.isChecked() for _,choice in self.choices);self.selection_status.setText(f'{count} adapters selected (2 to {MAX_LINKS})')
+        self.buttons.button(QDialogButtonBox.Save).setEnabled(MIN_LINKS<=count<=MAX_LINKS and not self.worker.busy)
 
     def refresh(self):
         self.refresh_button.setEnabled(False);self.feedback.setText('Detecting physical adapters…')

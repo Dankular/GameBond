@@ -15,6 +15,7 @@ from tkinter import messagebox, filedialog
 
 from .widget_data import CONFIG, ROOT, Monitor, human_bytes, save_selection, save_applications, TunnelRateSampler, save_link_policies
 from .userspace import live_status, request_stop, STATUS
+from .link_limits import MIN_LINKS,MAX_LINKS
 
 BG='#0c1220'; CARD='#151e30'; BORDER='#253149'; TEXT='#eef4ff'
 MUTED='#91a0b8'; CYAN='#4bdfce'; BLUE='#8b9dff'; AMBER='#f2be70'
@@ -164,9 +165,7 @@ class Widget:
         change.pack(side='right');change.bind('<Button-1>',lambda _:self.networks())
         cards=tk.Frame(body,bg=BG);cards.pack(fill='x')
         cards.columnconfigure(0,weight=1,uniform='link');cards.columnconfigure(1,weight=1,uniform='link')
-        self.linkcards=[LinkCard(cards),LinkCard(cards)]
-        self.linkcards[0].grid(row=0,column=0,sticky='nsew',padx=(0,5))
-        self.linkcards[1].grid(row=0,column=1,sticky='nsew',padx=(5,0))
+        self.linkcards_frame=cards;self.linkcards=[];self._ensure_linkcards()
         button(body,'Link roles & limits',self.link_controls).pack(anchor='e',pady=(6,0))
         server=tk.Frame(body,bg=CARD,highlightbackground=BORDER,highlightthickness=1)
         server.pack(fill='x',pady=(14,0))
@@ -267,6 +266,7 @@ class Widget:
             text='●  Connecting to VPS' if connecting else '●  Waiting for telemetry' if data['telemetry_stale'] else '●  Tunnel idle'
             self.badge.config(text=text,fg=MUTED)
             self.tunnel.config(text='Connecting…' if connecting else 'No live tunnel telemetry' if data['telemetry_stale'] else 'No tunnel running',fg=MUTED)
+        self._ensure_linkcards()
         for i,card in enumerate(self.linkcards):
             link=links[i] if i<len(links) else None
             path=next((p for p in paths if p.get('interface_index')==selected[i]),None) if i<len(selected) else None
@@ -447,12 +447,21 @@ class Widget:
         button(controls,'Save settings',save,True).pack(side='right')
         button(controls,'Cancel',window.destroy).pack(side='left')
 
+    def _ensure_linkcards(self):
+        count=min(MAX_LINKS,len(self.config.get('interface_indices',[])))
+        if count==len(self.linkcards):return
+        while len(self.linkcards)>count:self.linkcards.pop().destroy()
+        while len(self.linkcards)<count:self.linkcards.append(LinkCard(self.linkcards_frame))
+        columns=min(4,max(1,count))
+        for column in range(4):self.linkcards_frame.columnconfigure(column,weight=1 if column<columns else 0,uniform='link')
+        for index,card in enumerate(self.linkcards):card.grid(row=index//columns,column=index%columns,sticky='nsew',padx=5,pady=4)
+
     def networks(self):
         window=tk.Toplevel(self.root);window.title('GameBond · Select networks');window.configure(bg=BG)
         window.geometry('510x430');window.resizable(False,False);window.transient(self.root)
         window.grab_set()
         label(window,'Select your networks',18,bold=True).pack(anchor='w',padx=24,pady=(22,4))
-        label(window,'Choose two physical links for the next connection.',10,MUTED).pack(anchor='w',padx=24)
+        label(window,'Choose 2 to 8 physical links for the next connection.',10,MUTED).pack(anchor='w',padx=24)
         options=tk.Frame(window,bg=BG);options.pack(fill='both',expand=True,padx=24,pady=15)
         links=self.monitor.snapshot()['links'];variables=[]
         for link in links:
@@ -468,10 +477,10 @@ class Widget:
         controls=tk.Frame(window,bg=BG);controls.pack(fill='x',padx=24,pady=(0,22))
         def save():
             selected=[index for index,value in variables if value.get()]
-            # Preserve the existing path order when the same two are selected.
+            # Preserve the existing path order when the same links are selected.
             if set(selected)==set(self.config.get('interface_indices',[])):selected=self.config['interface_indices']
-            if len(selected)!=2:
-                feedback.config(text='Choose exactly two available networks.',fg=AMBER);return
+            if not MIN_LINKS<=len(selected)<=MAX_LINKS:
+                feedback.config(text='Choose 2 to 8 different networks.',fg=AMBER);return
             apply.config(state='disabled',text='Saving…')
             def work():
                 try:self.events.put(('selection',save_selection(selected)))

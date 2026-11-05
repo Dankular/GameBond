@@ -32,3 +32,21 @@ class NetworkSettingsTests(unittest.TestCase):
                     saved=dialog.write_config()
                 self.assertEqual(saved['interface_indices'],[25,47]);self.assertEqual(saved['interface_ids'],ids)
             finally:dialog.reject();dialog.deleteLater();self.app.processEvents()
+
+
+    def test_three_to_eight_adapters_can_be_selected_but_nine_cannot(self):
+        from test_multilink import config,links
+        c=config(3);inventory=links(config(9))
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'client.json';path.write_text(json.dumps(c))
+            with patch('gamebond.glass_settings.CONFIG',path):dialog=NetworksDialog(inventory)
+            try:
+                save=dialog.buttons.button(QDialogButtonBox.Save)
+                self.assertTrue(save.isEnabled())
+                for _,choice in dialog.choices[:8]:choice.setChecked(True)
+                self.assertTrue(save.isEnabled())
+                self.assertIn('8 adapters selected',dialog.selection_status.text())
+                dialog.choices[8][1].setChecked(True);self.assertFalse(save.isEnabled())
+                for _,choice in dialog.choices:choice.setChecked(False)
+                dialog.choices[0][1].setChecked(True);self.assertFalse(save.isEnabled())
+            finally:dialog.reject();dialog.deleteLater();self.app.processEvents()

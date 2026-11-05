@@ -1,4 +1,4 @@
-"""Verify global routes cannot activate while either physical path is unhealthy."""
+"""Verify global routes cannot activate while any selected physical path is unhealthy."""
 import contextlib
 import io
 from pathlib import Path
@@ -11,11 +11,11 @@ from gamebond import app
 
 
 class ActivationTests(unittest.TestCase):
-    def exercise(self, both_healthy, *, dns=False, dns_failure=False):
+    def exercise(self, both_healthy, *, dns=False, dns_failure=False, path_count=2):
         calls = []
 
         class Node:
-            addresses = [('192.168.1.93', 1234), ('172.20.10.2', 1235)]
+            addresses = [(f'192.168.{i+1}.2',1234+i) for i in range(path_count)]
 
             def __init__(self, *args, **kwargs):
                 pass
@@ -25,7 +25,7 @@ class ActivationTests(unittest.TestCase):
 
             def stats(self):
                 calls.append('check paths')
-                return {'paths': [{'healthy': True}, {'healthy': both_healthy}]}
+                return {'paths': [{'healthy': i<path_count-1 or both_healthy} for i in range(path_count)]}
 
             def close(self):
                 calls.append('close transport')
@@ -114,7 +114,7 @@ class ActivationTests(unittest.TestCase):
                 elif both_healthy:
                     app.run(config, key, configure=True)
                 else:
-                    with self.assertRaisesRegex(RuntimeError, 'both physical paths'):
+                    with self.assertRaisesRegex(RuntimeError, 'all selected physical paths'):
                         app.run(config, key, configure=True)
         return calls
 
@@ -149,6 +149,15 @@ class ActivationTests(unittest.TestCase):
         calls = self.exercise(False, dns=True)
         self.assertNotIn('start DNS responder', calls)
         self.assertNotIn('activate exact DNS rules', calls)
+
+
+    def test_routes_wait_for_every_selected_link_with_three_and_eight_paths(self):
+        for count in (3,8):
+            with self.subTest(paths=count):
+                calls=self.exercise(False,path_count=count)
+                self.assertNotIn('activate global routes',calls)
+                calls=self.exercise(True,path_count=count)
+                self.assertIn('activate global routes',calls)
 
 
 if __name__ == '__main__':

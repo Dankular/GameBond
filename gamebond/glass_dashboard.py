@@ -16,7 +16,7 @@ import psutil
 from PyQt5.QtCore import QObject,QPoint,Qt,QTimer,pyqtSignal,pyqtSlot,QSize
 from PyQt5.QtGui import QColor,QFont,QIcon,QPainter,QPen,QPixmap,QCursor
 from PyQt5.QtWidgets import (QAbstractButton,QApplication,QFrame,QHBoxLayout,QLabel,QMainWindow,
-    QMenu,QPushButton,QSizeGrip,QStackedWidget,QSystemTrayIcon,QToolButton,QVBoxLayout,QWidget,QSizePolicy)
+    QMenu,QPushButton,QGridLayout,QSizeGrip,QStackedWidget,QSystemTrayIcon,QToolButton,QVBoxLayout,QWidget,QSizePolicy)
 
 from .glass_theme import GlassTheme,ROOT,load_fonts
 from .glass_panels import HardwarePanel,NetworkScannerPanel,_AsyncCall
@@ -24,6 +24,7 @@ from .tray import AgentLease
 from .userspace import live_status,request_stop,STATUS
 from .widget_data import CONFIG,Monitor
 from .atomic_io import read_json_shared
+from .link_limits import MAX_LINKS
 
 HIDDEN=getattr(subprocess,'CREATE_NO_WINDOW',0)
 
@@ -301,13 +302,11 @@ class GlassDashboard(QMainWindow):
         top.addWidget(controls,0,Qt.AlignTop);outer.addWidget(self.topbar)
         networks=QFrame();networks.setObjectName('glassNetworksStrip')
         network_row=QHBoxLayout(networks);network_row.setContentsMargins(14,7,14,7);network_row.setSpacing(14)
-        self.network_labels=[]
-        for slot in range(2):
-            card=QWidget();card.setMinimumWidth(0);column=QVBoxLayout(card);column.setContentsMargins(0,0,0,0);column.setSpacing(1)
-            labels=[QLabel() for _ in range(3)]
-            for label in labels:label.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);column.addWidget(label)
-            labels[0].setStyleSheet('font-weight:600;');labels[2].setStyleSheet('font-size:10px;color:#7b8490;')
-            self.network_labels.append(labels);network_row.addWidget(card,1)
+        network_cards=QWidget();self.network_grid=QGridLayout(network_cards)
+        self.network_grid.setContentsMargins(0,0,0,0);self.network_grid.setSpacing(10)
+        self.network_labels=[];self.network_cards=[]
+        network_row.addWidget(network_cards,1)
+        self._rebuild_network_cards()
         self.network_button=QPushButton('Select networks');self.network_button.setObjectName('glassSelectNetworksButton');self.network_button.clicked.connect(self.open_networks)
         self.link_limits_button=QPushButton('Link roles & limits');self.link_limits_button.setObjectName('glassLinkLimitsButton');self.link_limits_button.clicked.connect(self.open_link_controls)
         network_row.addWidget(self.network_button);network_row.addWidget(self.link_limits_button);outer.addWidget(networks)
@@ -442,7 +441,24 @@ class GlassDashboard(QMainWindow):
             self.connect_button.setStyleSheet('background:#6ad68c;color:white;border:0;border-radius:16px;' if connected else '')
         self._tray_tick()
 
+    def _rebuild_network_cards(self):
+        count=min(MAX_LINKS,len(self.config.get('interface_indices',[])))
+        if count==len(self.network_labels):return
+        for card in self.network_cards:self.network_grid.removeWidget(card);card.deleteLater()
+        self.network_labels=[];self.network_cards=[]
+        columns=min(4,max(1,count))
+        for slot in range(count):
+            card=QWidget();card.setMinimumWidth(0);column=QVBoxLayout(card)
+            column.setContentsMargins(0,0,0,0);column.setSpacing(1)
+            labels=[QLabel() for _ in range(3)]
+            for label in labels:label.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);column.addWidget(label)
+            labels[0].setStyleSheet('font-weight:600;');labels[2].setStyleSheet('font-size:10px;color:#7b8490;')
+            self.network_labels.append(labels);self.network_cards.append(card)
+            self.network_grid.addWidget(card,slot//columns,slot%columns)
+        for column in range(4):self.network_grid.setColumnStretch(column,1 if column<columns else 0)
+
     def _update_networks(self):
+        self._rebuild_network_cards()
         links=self.monitor_data.get('links',[]);indices=self.config.get('interface_indices',[]);ids=self.config.get('interface_ids',[])
         paths=(self.runtime or {}).get('transport',{}).get('paths',[])
         for slot,labels in enumerate(self.network_labels):
@@ -451,7 +467,7 @@ class GlassDashboard(QMainWindow):
             names=self.config.get('interface_names',[]);name=(row or {}).get('name') or (names[slot] if slot<len(names) else f'Adapter {index}')
             address=((row or {}).get('addresses') or ['No IPv4'])[0]
             available=bool(row and row.get('up') and row.get('addresses') and row.get('gateway'))
-            path=next((p for p in paths if p.get('slot')==slot or p.get('interface_index')==((row or {}).get('index',index))),None)
+            path=next((p for p in paths if p.get('interface_index')==((row or {}).get('index',index)) or ('interface_index' not in p and p.get('slot')==slot)),None)
             state='Connected' if path and path.get('healthy') else 'Connecting' if available and self.runtime else 'Available' if available else 'Offline'
             if path and not path.get('enabled',True):state='Disabled'
             rate=self.monitor_data.get('rates',{}).get(name,{}) if available else {}

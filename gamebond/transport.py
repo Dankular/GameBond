@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from collections import OrderedDict, deque
 import math
 
+from .link_limits import MAX_LINKS
 from .bonding import PathBudget
 from .reorder import ReorderBuffer
 from .policy import parse_packet,is_tcp_control
@@ -269,7 +270,7 @@ class Node:
             raise ValueError("key must be 32 bytes and session must be 16 bytes")
         if role not in ("client", "server"):
             raise ValueError("role must be client or server")
-        if not bind or len(bind) > 8:
+        if not bind or len(bind) > MAX_LINKS:
             raise ValueError("one to eight bind addresses required")
         if role == "client" and peer is None:
             raise ValueError("client requires a numeric IPv4 peer")
@@ -572,7 +573,7 @@ class Node:
                     self._receive_floor = sequence + 1
                 path = self._paths.get(identity)
                 if path is None:
-                    if len(self._paths) >= 8:
+                    if len(self._paths) >= MAX_LINKS:
                         oldest = min(self._paths, key=lambda item: self._paths[item].last_rx)
                         del self._paths[oldest]
                     path = self._paths[identity] = self._new_path(index, endpoint)
@@ -987,7 +988,7 @@ class Node:
                     self._paths[identity] = path
                 path.rx_bytes += len(packet)
         if path is None:
-            if len(self._paths) >= 8:
+            if len(self._paths) >= MAX_LINKS:
                 oldest = min(self._paths, key=lambda k: self._paths[k].last_rx)
                 del self._paths[oldest]
             path = self._paths[identity] = self._new_path(index, endpoint)

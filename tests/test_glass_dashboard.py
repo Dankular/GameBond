@@ -114,6 +114,32 @@ class DashboardTests(unittest.TestCase):
         self.controller.toggle.assert_not_called();self.controller.stop.assert_not_called()
 
 
+    def test_dashboard_shows_all_eight_links_and_rebuilds_after_selection_changes(self):
+        from test_multilink import config,links
+        c=config(8);inventory=links(c);current=runtime()
+        current['transport']['paths']=[dict(slot=i,interface_index=index,healthy=True) for i,index in enumerate(c['interface_indices'])]
+        self.window.config=c;self.window.show();self.window.resize(860,560)
+        self.controller.stateChanged.emit(current,dict(links=inventory,rates={}))
+        self.app.processEvents()
+        self.assertEqual(len(self.window.network_labels),8)
+        self.assertIn('8/8',self.window.status.text())
+        for i,labels in enumerate(self.window.network_labels):
+            self.assertEqual(labels[0].text(),f'Starlink {i+1}')
+            self.assertIn('Connected',labels[1].text())
+        self.assertGreater(self.window.views.height(),100)
+        self.window.config=config(3);self.window._update_networks()
+        self.assertEqual(len(self.window.network_labels),3)
+
+    def test_saved_new_adapter_is_not_mistaken_for_running_old_slot(self):
+        from test_multilink import config,links
+        c=config(3);inventory=links(c);current=runtime()
+        current['transport']['paths']=[dict(slot=0,interface_index=10,healthy=True)]
+        c['interface_indices'][0]=99;inventory[0]['index']=99
+        self.window.config=c
+        self.controller.stateChanged.emit(current,dict(links=inventory,rates={}))
+        self.assertTrue(self.window.network_labels[0][1].text().startswith('Connecting'))
+
+
 
 @unittest.skipUnless(QApplication is not None,'Optional Qt dashboard dependency')
 class CursorAndControllerTests(unittest.TestCase):

@@ -17,6 +17,7 @@ from .transport import Node, OVERHEAD, BOND_OVERHEAD
 from .tun import open_tun
 from .pacing import BulkPacer
 from . import __version__
+from .link_limits import MIN_LINKS,MAX_LINKS,stable_adapter_ids,valid_interface_indices
 from .dns import DNSResponder, load_dns_config
 from .telemetry import PriorityFlowTelemetry
 
@@ -49,25 +50,34 @@ def load_config(path,*,allow_unavailable_links=False):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("invalid bind port")
     if config["role"] == "client":
+        count=len(config['bind'])
+        if not MIN_LINKS<=count<=MAX_LINKS:
+            raise ValueError(f"client requires {MIN_LINKS} to {MAX_LINKS} physical adapters")
         identities=config.get('interface_ids')
-        stable=(isinstance(identities,list) and len(identities)==2 and all(isinstance(v,str) and len(v)==38 and v.startswith('{') and v.endswith('}') for v in identities)
-                and len({v.casefold() for v in identities})==2)
+        stable=stable_adapter_ids(identities,count)
+        indices=config.get("interface_indices",[])
+        pinned=os.name=="nt" and valid_interface_indices(indices,count)
+        if os.name=="nt" and not pinned:
+            raise ValueError("Windows client needs one distinct positive interface_index per selected link")
+        if identities is not None:
+            if (not isinstance(identities,list) or len(identities)!=count or
+                    any(not isinstance(v,str) or (v and (len(v)!=38 or v[0]!='{' or v[-1]!='}')) for v in identities)):
+                raise ValueError('interface_ids must contain one stable adapter identifier per selected link')
+            present=[v.casefold() for v in identities if v]
+            if len(set(present))!=len(present):raise ValueError('Selected adapter identifiers must be distinct')
         hosts=[b[0] for b in config['bind']]
-        if len(hosts)!=2 or (len(set(hosts))!=2 and not (allow_unavailable_links and stable and hosts==['0.0.0.0','0.0.0.0'])):
-            raise ValueError("client requires two distinct physical adapter IPv4 addresses")
-        for position,(host, _) in enumerate(config["bind"]):
-            ip = ipaddress.IPv4Address(host)
+        live_hosts=[host for host in hosts if host!='0.0.0.0']
+        # Overlapping LANs are distinguishable only by stable Windows adapter
+        # identity and per-socket interface pinning. Offline slots retain identity.
+        repeated=len(set(hosts))!=count
+        offline_only=(allow_unavailable_links and stable and len(set(live_hosts))==len(live_hosts))
+        if repeated and not (offline_only or (stable and pinned)):
+            raise ValueError("client requires distinct adapter IPv4 addresses or stable pinned Windows adapter identities")
+        for host,_ in config["bind"]:
+            ip=ipaddress.IPv4Address(host)
             if ip.is_unspecified and allow_unavailable_links and stable:continue
-            if ip.is_unspecified or ip.is_loopback or ip.is_link_local:
+            if ip.is_unspecified or ip.is_loopback or ip.is_link_local or ip.is_multicast:
                 raise ValueError("client paths need usable physical adapter IPv4 addresses")
-        indices = config.get("interface_indices", [])
-        identities=config.get('interface_ids')
-        if identities is not None and (not isinstance(identities,list) or len(identities)!=len(config['bind']) or
-                any(not isinstance(value,str) or (value and (len(value)!=38 or value[0]!='{' or value[-1]!='}')) for value in identities)):
-            raise ValueError('interface_ids must contain one stable adapter identifier per selected link')
-        if os.name == "nt" and (len(indices) != 2 or len(set(indices)) != 2 or
-                                 any(type(i) is not int or i <= 0 for i in indices)):
-            raise ValueError("Windows client needs two distinct positive interface_indices")
         peer = config["peer"]
         peer_ip = ipaddress.IPv4Address(peer[0])  # Avoid DNS route ambiguity.
         if peer_ip.is_unspecified or peer_ip.is_multicast or peer_ip.is_link_local:
@@ -296,16 +306,16 @@ def run(config, key_path, configure=False, *, stop_event=None, on_ready=None):
         for sig in (signal.SIGINT, signal.SIGTERM):
             previous[sig] = signal.signal(sig, lambda *_: stop.set())
         if configure:
-            print(json.dumps({"status": "waiting_for_two_healthy_physical_paths"}), flush=True)
+            print(json.dumps({"status": "waiting_for_healthy_physical_paths", "selected_paths": len(config["bind"])}), flush=True)
             deadline = time.perf_counter() + 12
             while time.perf_counter() < deadline and not stop.wait(.05):
                 paths = node.stats()["paths"]
-                if len(paths) == 2 and all(path["healthy"] for path in paths):
+                if len(paths) == len(config["bind"]) and all(path["healthy"] for path in paths):
                     break
             else:
                 if stop.is_set():
                     return  # Cooperative startup stop still executes cleanup below.
-                raise RuntimeError("both physical paths must authenticate before tunnel routes are activated; disconnect other VPNs and check endpoint/routes")
+                raise RuntimeError("all selected physical paths must authenticate before tunnel routes are activated; disconnect other VPNs and check endpoint/routes")
         for fn in (capture, transmit, inject):
             thread = threading.Thread(target=guarded(fn), daemon=True)
             workers.append(thread)

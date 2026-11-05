@@ -1,11 +1,12 @@
-"""Explicit, transactional Windows IPv4 setup for the two-path client.
+"""Explicit, transactional Windows IPv4 setup for the multipath client.
 
 The app creates its own Wintun adapter first. prepare() pins endpoint routes and
-addresses that adapter; the caller checks both authenticated paths before
+addresses that adapter; the caller checks all selected authenticated paths before
 activate() adds full IPv4 routes and optional executable UDP DSCP policies. No
 PowerShell execution-policy settings are changed. IPv6 is outside this helper.
 """
 from __future__ import annotations
+from .link_limits import MIN_LINKS,MAX_LINKS
 
 import ctypes
 import ipaddress
@@ -337,11 +338,11 @@ class WindowsNetwork:
             raise ValueError("Windows auto-configuration supports client mode only")
         bind, indices, gateways = (config.get(name) for name in
                                    ("bind", "interface_indices", "gateways"))
-        if (not isinstance(bind, list) or len(bind) != 2 or
-                not isinstance(indices, list) or len(indices) != 2 or
-                any(type(i) is not int or i <= 0 for i in indices) or len(set(indices)) != 2 or
-                not isinstance(gateways, list) or len(gateways) != 2):
-            raise ValueError("two binds, distinct interface_indices and gateways are required")
+        if (not isinstance(bind, list) or not MIN_LINKS<=len(bind)<=MAX_LINKS or
+                not isinstance(indices, list) or len(indices) != len(bind) or
+                any(type(i) is not int or i <= 0 for i in indices) or len(set(indices)) != len(bind) or
+                not isinstance(gateways, list) or len(gateways) != len(bind)):
+            raise ValueError("2 to 8 binds with matching distinct interface_indices and gateways are required")
         source_ips = []
         for source, gateway in zip(bind, gateways):
             if not isinstance(source, (list, tuple)) or len(source) != 2:
@@ -353,8 +354,8 @@ class WindowsNetwork:
                    or address.is_link_local for address in (ip, route_gateway)):
                 raise ValueError("physical source and gateway must be usable IPv4 addresses")
             source_ips.append(str(ip))
-        if len(set(source_ips)) != 2:
-            raise ValueError("two distinct source IPv4 addresses are required")
+        if len(set(source_ips)) != len(bind):
+            raise ValueError("The legacy route backend requires distinct source IPv4 addresses")
         peer = config.get("peer")
         if not isinstance(peer, (list, tuple)) or len(peer) != 2:
             raise ValueError("a fixed IPv4 peer is required")

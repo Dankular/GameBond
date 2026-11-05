@@ -5,6 +5,7 @@ Stripes bulk traffic across IPv4 uplinks and duplicates selected traffic for res
 
 ## Features
 
+- Bond 2 to 8 independent uplinks.
 - All-app or selected-app capture, with application traffic profiles.
 - Adaptive redundancy, link roles, speed limits, and usage caps.
 - Dashboard and tray controls for connection health and app traffic.
@@ -23,6 +24,8 @@ Configure `configs/local-client.json` from [the example](configs/client.example.
 Choose **Connect** in the dashboard. **Manage apps** controls capture;
 **Link roles & limits** controls uplinks. Reconnect after settings changes.
 Closing the window hides it in the tray; **Quit (stop tunnel)** exits.
+
+For several Starlinks, see [multiple uplinks](docs/multiple-uplinks.md).
 
 The default uses a userspace network stack. Administrator/Wintun commands
 belong to a separate legacy backend.

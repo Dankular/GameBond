@@ -11,6 +11,7 @@ import threading
 import time
 
 import psutil
+from .link_limits import MIN_LINKS,MAX_LINKS,stable_adapter_ids,valid_interface_indices
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT/'configs/local-client.json'
@@ -129,8 +130,8 @@ class TunnelRateSampler:
 
 
 def save_selection(indices, config_path=CONFIG, links=None):
-    if len(indices) != 2 or len(set(indices)) != 2:
-        raise ValueError('Choose exactly two different links')
+    if not MIN_LINKS<=len(indices)<=MAX_LINKS or not valid_interface_indices(indices,len(indices)):
+        raise ValueError(f'Choose {MIN_LINKS} to {MAX_LINKS} different links')
     links = discover_links() if links is None else links
     path = Path(config_path)
     original = path.read_bytes()
@@ -146,8 +147,13 @@ def save_selection(indices, config_path=CONFIG, links=None):
         chosen.append(row)
     if any(not (r['up'] and r['addresses'] and r['gateway']) for r in chosen):
         ids=[r.get('id','') for r in chosen]
-        if not all(isinstance(v,str) and len(v)==38 and v.startswith('{') and v.endswith('}') for v in ids) or len({v.casefold() for v in ids})!=2:
+        if not stable_adapter_ids(ids,len(indices)):
             raise ValueError('Refresh the adapters to obtain stable identities before saving an offline link')
+    present_ids=[row.get('id','').casefold() for row in chosen if row.get('id')]
+    if len(set(present_ids))!=len(present_ids):raise ValueError('Choose different physical adapters')
+    live_sources=[row['addresses'][0] for row in chosen if row['up'] and row['addresses'] and row['gateway']]
+    if len(set(live_sources))!=len(live_sources) and not stable_adapter_ids([row.get('id','') for row in chosen],len(indices)):
+        raise ValueError('Matching IPv4 addresses require distinct stable adapter identifiers')
     config['bind'] = [[row['addresses'][0] if row['up'] and row['addresses'] and row['gateway'] else '0.0.0.0',0] for row in chosen]
     config['interface_indices'] = list(indices)
     config['interface_ids'] = [row.get('id','') for row in chosen]

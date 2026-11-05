@@ -13,7 +13,7 @@ Raw diagnostics and live configs are excluded from Git.
   rejections/errors. The real Codex process transferred traffic.
 - Protected-process creation times matched psutil for 97 processes; invalid
   PIDs were rejected. Executable authorization still independently verifies identity.
-- 293 Python tests passed after GUI optimization; prior netstack Go checks passed.
+- 305 Python tests passed, including multi-link and GUI checks; native Go tests passed.
 - Native Linux TUN integration passed isolated VPS HTTPS and UDP egress tests.
 
 ## Remaining gaps
@@ -32,6 +32,13 @@ Raw diagnostics and live configs are excluded from Git.
 Adaptive QoS, application profiles, link roles, persistent usage tracking,
 adapter rebinding, and fallback carriers exist. Their endurance, enforcement,
 and rollout checks above remain incomplete.
+
+## Multiple uplinks
+
+Selection, configuration, and dashboard display support 2 to 8 adapters.
+Three- and eight-path loopback checks cover both directions, replication, and
+failover; eight-path Python/native interoperability includes repair and roles.
+Physical multi-Starlink performance is unverified. See [setup](multiple-uplinks.md).
 
 ## Recent fixes
 

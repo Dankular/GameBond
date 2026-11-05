@@ -131,7 +131,7 @@ def available_link_config(config, links, *, require_available=True):
         active.append((index,[saved if saved in addresses else addresses[0],config['bind'][position][1]],row['gateway']))
         active[-1]=(row['index'],active[-1][1],active[-1][2]);available.append(True)
     if require_available and not any(available):
-        raise RuntimeError('No selected network is available. Connect Starlink or enable phone USB tethering, then retry.')
+        raise RuntimeError('No selected network is available. Connect a selected uplink, then retry.')
     resolved=dict(config)
     resolved.update(interface_indices=[r[0] for r in active],bind=[r[1] for r in active],gateways=[r[2] for r in active],
                     path_availability=available,interface_ids=ids)
