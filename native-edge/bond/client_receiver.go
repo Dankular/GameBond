@@ -104,6 +104,7 @@ func (r *Receiver) adoptClientPeer(peer [16]byte, sequence uint64, now time.Time
 	r.replay = ReplayWindow{}
 	r.floor = sequence + 1
 	r.reorder, _ = NewReorder(DefaultReorderConfig())
+	r.copies = newCopyLedger()
 	r.reorder.config.Timeout = r.reorderBase
 	for _, p := range r.paths {
 		fresh, err := r.freshPath(p.local, p.endpoint, now)
@@ -111,6 +112,9 @@ func (r *Receiver) adoptClientPeer(peer [16]byte, sequence uint64, now time.Time
 			return err
 		}
 		fresh.hello = p.hello
+		fresh.copySeen, fresh.copyMissed, fresh.copyLate = p.copySeen, p.copyMissed, p.copyLate
+		fresh.copyLagMS, fresh.hasCopyLag = p.copyLagMS, p.hasCopyLag
+		fresh.copyReported, fresh.lastCopyReport = p.copyReported, p.lastCopyReport
 		if p.policy != nil { // keep the configured policy; it must be confirmed again
 			fresh.policy, fresh.policyRevision = p.policy, p.policyRevision
 			fresh.pacer = p.pacer

@@ -47,6 +47,11 @@ type ReceiverStats struct {
 	PolicyDrops                                                                               uint64
 }
 type receivePath struct {
+	copySeen, copyMissed, copyLate   uint64
+	copyLagMS                        float64
+	hasCopyLag                       bool
+	copyReported                     [3]uint64
+	lastCopyReport                   time.Time
 	hello                            ClientHandshake
 	local                            int
 	endpoint                         netip.AddrPort
@@ -94,6 +99,7 @@ type Receiver struct {
 	floor                uint64
 	paths                map[PathKey]*receivePath
 	recovery             map[int]recoveryState
+	copies               *CopyLedger[PathKey]
 	reorder              *Reorder
 	mtu                  int
 	stats                ReceiverStats
@@ -114,7 +120,7 @@ func NewReceiver(codec *Codec, mtu int) (*Receiver, error) {
 		return nil, ErrFrame
 	}
 	r, _ := NewReorder(DefaultReorderConfig())
-	return &Receiver{role: codec.role, codec: codec, handshake: NewServerHandshake(), paths: make(map[PathKey]*receivePath), reorder: r, mtu: mtu, initialRate: 1, maxRate: 100, probes: make(map[[24]byte]pendingProbe), reorderBase: 30 * time.Millisecond}, nil
+	return &Receiver{role: codec.role, codec: codec, handshake: NewServerHandshake(), paths: make(map[PathKey]*receivePath), reorder: r, mtu: mtu, initialRate: 1, maxRate: 100, probes: make(map[[24]byte]pendingProbe), reorderBase: 30 * time.Millisecond, copies: newCopyLedger()}, nil
 }
 func (r *Receiver) SetReorderTimeout(timeout time.Duration) error {
 	if len(r.paths) > 0 || timeout < time.Millisecond || timeout > 200*time.Millisecond {
@@ -272,6 +278,7 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 			r.replay = ReplayWindow{}
 			r.floor = h.Sequence + 1
 			r.reorder, _ = NewReorder(DefaultReorderConfig())
+			r.copies = newCopyLedger()
 			r.reorder.config.Timeout = r.reorderBase
 			p = nil
 		}
@@ -323,8 +330,12 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		r.stats.FloorDrops++
 		return out, nil
 	}
+	tooOld := r.replay.initialized && h.Sequence < r.replay.highest && r.replay.highest-h.Sequence >= replayWidth
 	if !r.replay.Accept(h.Sequence) {
 		r.stats.Duplicates++
+		if h.Kind == DataCopy && p != nil && !tooOld {
+			r.noteCopy(p, key, h.Sequence, timestamp)
+		}
 		return out, nil
 	}
 	valid := true
@@ -481,6 +492,13 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 	case CopyReport:
 		p.peerCopy = [3]uint64{binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:]), binary.BigEndian.Uint64(payload[16:])}
 	case Data, DataCopy:
+		if h.Kind == DataCopy {
+			expected := make([]PathKey, 0, 4)
+			for _, e := range (&Sender{r: r}).eligible(now, true) {
+				expected = append(expected, e.key())
+			}
+			r.copies.First(h.Sequence, p.key(), expected, timestamp)
+		}
 		r.stats.PayloadPackets++
 		r.stats.PayloadBytes += uint64(len(payload))
 		out.Deliver = append(out.Deliver, payload)
@@ -489,6 +507,9 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 }
 func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 	out := ReceiveResult{Deliver: r.reorder.Poll(now)}
+	if err := r.resolveCopies(now, &out); err != nil {
+		return out, err
+	}
 	for _, p := range r.paths {
 		if p.policy != nil && (p.policy.Blocked || p.policy.Role == Never) {
 			continue
@@ -632,4 +653,87 @@ func (r *Receiver) StartRecovery(local int, now time.Time) (Datagram, error) {
 		return Datagram{}, err
 	}
 	return Datagram{Endpoint: path.endpoint, Frame: frame, Local: local, DirectUDP: true}, nil
+}
+
+func newCopyLedger() *CopyLedger[PathKey] {
+	l, _ := NewCopyLedger[PathKey](4096)
+	return l
+}
+
+const copyReportInterval = 500 * time.Millisecond
+
+// noteCopy is Node._note_copy: a further copy of a replicated packet arrived.
+func (r *Receiver) noteCopy(p *receivePath, key PathKey, sequence uint64, now float64) {
+	kind, lag, ok := r.copies.Duplicate(sequence, key, now)
+	if !ok {
+		return
+	}
+	ms := lag * 1000
+	if !p.hasCopyLag {
+		p.copyLagMS, p.hasCopyLag = ms, true
+	} else {
+		p.copyLagMS = .8*p.copyLagMS + .2*ms
+	}
+	if kind == DuplicateLate {
+		if p.copyMissed > 0 {
+			p.copyMissed--
+		}
+		p.copyLate++
+	}
+}
+
+// copyResolveDelay is Node._copy_resolve_delay.
+func (r *Receiver) copyResolveDelay() float64 {
+	var n int
+	var lo, hi, jitter float64
+	for _, p := range r.paths {
+		if !p.ready || !p.hasRTT {
+			continue
+		}
+		ms := p.rtt * 1000
+		if n == 0 || ms < lo {
+			lo = ms
+		}
+		if n == 0 || ms > hi {
+			hi = ms
+		}
+		jitter = math.Max(jitter, p.jitter*1000)
+		n++
+	}
+	if n < 2 {
+		return .05
+	}
+	spread := (hi - lo) / 2000
+	return math.Min(.25, math.Max(.05, spread+4*(jitter/1000)+.02))
+}
+
+// resolveCopies scores replicated copies and reports the cumulative counters
+// to the peer (Node.maintenance, after the reorder poll).
+func (r *Receiver) resolveCopies(now time.Time, out *ReceiveResult) error {
+	if r.copies.HasPending() {
+		for _, o := range r.copies.Resolve(r.seconds(now), r.copyResolveDelay()) {
+			if t := r.paths[o.Identity]; t != nil {
+				if o.Outcome == CopySeen {
+					t.copySeen++
+				} else {
+					t.copyMissed++
+				}
+			}
+		}
+	}
+	for _, p := range r.paths {
+		counters := [3]uint64{p.copySeen, p.copyMissed, p.copyLate}
+		if counters == p.copyReported || !p.ready || now.Sub(p.last) >= 3*time.Second || now.Sub(p.lastCopyReport) < copyReportInterval {
+			continue
+		}
+		payload := make([]byte, 24)
+		for i, v := range counters {
+			binary.BigEndian.PutUint64(payload[8*i:], v)
+		}
+		if err := r.write(CopyReport, payload, p.local, p.endpoint, out); err != nil {
+			return err
+		}
+		p.copyReported, p.lastCopyReport = counters, now
+	}
+	return nil
 }

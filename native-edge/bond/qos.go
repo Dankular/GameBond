@@ -256,7 +256,7 @@ func (q *AdaptiveQoS) Observe(sender *Sender, now time.Time) {
 		b := p.budget
 		qp := QoSPath{Slot: k.Local, Local: strconv.Itoa(k.Local), Remote: p.endpoint.String(), Available: true, Enabled: true, Healthy: eligible[p],
 			JitterMS: p.jitter * 1000, Expired: b.expiredPackets, Acked: b.ackedPackets, ProbeLost: p.probeLost, ProbeAcked: p.probeAcked,
-			DeliveredBytes: b.deliveryCounter, SettledLoss: b.lossRatio}
+			DeliveredBytes: b.deliveryCounter, SettledLoss: b.lossRatio, CopySeen: p.peerCopy[0], CopyMissed: p.peerCopy[1]}
 		if p.hasRTT {
 			rtt := p.rtt * 1000
 			qp.RTTMS = &rtt
