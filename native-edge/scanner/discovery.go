@@ -136,6 +136,9 @@ func (j *DiscoveryJob) run() {
 		go func() {
 			defer wg.Done()
 			for t := range targets {
+				if j.ctx.Err() != nil {
+					return
+				}
 				res, err := func() (r ProbeResult, err error) {
 					defer func() {
 						if p := recover(); p != nil {
@@ -159,6 +162,9 @@ func (j *DiscoveryJob) run() {
 	}
 feed:
 	for _, t := range j.Targets {
+		if j.ctx.Err() != nil {
+			break feed
+		}
 		select {
 		case <-j.ctx.Done():
 			break feed
