@@ -42,6 +42,8 @@ ONE_MIN = 60 * ONE_SEC
 TIME_MASK = (1 << (TIME_SIZE * 8)) - 2   # microseconds, bit 0 reserved as the "control message" mark
 KEEPALIVE, TIME_TOLERANCE, KX_TIMEOUT = 25 * ONE_SEC, 10 * ONE_MIN, 60 * ONE_MIN
 
+ROLE_PREF = {"primary": 1, "secondary": 1, "backup": 125}   # "never" disables the path
+DEMOTION = 2                                                 # added to a degrading path's preference
 # path status (mud.h)
 DELETING, PROBING, DEGRADED, LOSSY, WAITING, READY, RUNNING = range(7)
 
@@ -236,7 +238,7 @@ class _MsgState:
 @dataclass
 class Path:
     local_ip: str
-    sock: socket.socket
+    sock: socket.socket | None
     remote: tuple
     tx_max_rate: int           # bytes per second
     rx_max_rate: int
@@ -255,6 +257,18 @@ class Path:
     mtu_probe: int = 0
     mtu_last: int = 0
     mtu_ok: int = 0
+    slot: int = 0
+    index: int | None = None       # Windows interface index used to pin the socket
+    enabled: bool = True           # False: adapter missing or role "never"
+    role: str = "primary"
+    base_pref: int = 1
+    demoted: bool = False          # advertised with a worse preference so the server also avoids it
+    bad_since: float = 0.0
+    good_since: float = 0.0
+    bad: bool = False
+    base_rtt: float | None = None
+    reason: str = ""
+    data_tx: int = 0               # data packets (not control probes) sent on this path
 
     def update_mtu(self, size: int) -> None:
         if not self.mtu_probe:
@@ -270,11 +284,21 @@ class Path:
         self.mtu_probe = 0 if self.mtu_min > self.mtu_max else (self.mtu_min + self.mtu_max) >> 1
 
 
+def windows_pin(sock: socket.socket, index: int) -> None:
+    """Pin a socket's outgoing interface (Winsock IP_UNICAST_IF takes a DWORD in network byte order)."""
+    if not hasattr(socket, "IP_UNICAST_IF") and os.name != "nt":
+        raise OSError("interface pinning is supported on Windows only")
+    sock.setsockopt(socket.IPPROTO_IP, getattr(socket, "IP_UNICAST_IF", 31), struct.pack("=I", socket.htonl(index)))
+
+
 class MudClient:
     """One Glorytun UDP session from several local addresses to one server."""
 
     def __init__(self, key: bytes, server: tuple, local_ips: list[str], *, rate_mbps: float = 100.0,
-                 prefs: list[int] | None = None, beat_ms: int = 100, clock: Clock | None = None):
+                 prefs: list[int] | None = None, beat_ms: int = 100, clock: Clock | None = None,
+                 interface_indices: list[int] | None = None, available: list[bool] | None = None,
+                 roles: list[str] | None = None, pin=None, jitter_threshold_ms: float = 8.0,
+                 demote_after: float = 0.3, recovery_seconds: float = 3.0):
         if len(key) != KEY_SIZE or not local_ips:
             raise ValueError("a 32-byte key and at least one local address are required")
         self.server = (server[0], int(server[1]))
@@ -290,23 +314,120 @@ class MudClient:
         self.mtu = 0
         self.window = 0
         self.window_time = self.clock.now()
+        self.pin = pin if pin is not None else windows_pin
+        self.beat = beat_ms * ONE_MSEC
+        self.rate_bps = int(rate_mbps * 1_000_000 / 8)
+        self.jitter_threshold_ms, self.demote_after, self.recovery_seconds = jitter_threshold_ms, demote_after, recovery_seconds
+        self.last_assess = 0.0
+        self.pause = False
+        self.sel_lock = threading.Lock()
         self.last_recv_time = 0
         self.errors = dict(decrypt=0, clocksync=0, keyx=0, malformed=0, dropped_window=0, no_path=0)
-        bytes_per_second = int(rate_mbps * 1_000_000 / 8)
+        count = len(local_ips)
+        for name, value in (("interface_indices", interface_indices), ("available", available), ("roles", roles), ("prefs", prefs)):
+            if value is not None and len(value) != count:
+                raise ValueError(f"{name} must have one entry per local address")
         self.selector = selectors.DefaultSelector()
         try:
-            for index, ip in enumerate(local_ips):
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.setblocking(False)
-                sock.bind((ip, 0))
-                path = Path(ip, sock, self.server, bytes_per_second, bytes_per_second,
-                            pref=(prefs[index] if prefs else 1), beat=beat_ms * ONE_MSEC, idle=self.clock.now())
-                path.tx.rate = bytes_per_second     # fixed rate: tx.rate == tx_max_rate
+            for slot, ip in enumerate(local_ips):
+                up = True if available is None else bool(available[slot])
+                role = roles[slot] if roles else "primary"
+                if role not in ROLE_PREF and role != "never":
+                    raise ValueError("unknown link role " + role)
+                path = self._new_path(slot, ip, interface_indices[slot] if interface_indices else None, up, role,
+                                      prefs[slot] if prefs else None)
                 self.paths.append(path)
-                self.selector.register(sock, selectors.EVENT_READ, path)
         except BaseException:
             self.close()
             raise
+
+    def _new_path(self, slot: int, ip: str, index, up: bool, role: str, pref=None) -> Path:
+        """A path for one uplink slot. Missing adapters and role "never" get no socket and carry no traffic."""
+        enabled = up and role != "never" and ip not in ("", "0.0.0.0")
+        sock = None
+        reason = "" if enabled else ("role never" if role == "never" else "adapter unavailable")
+        if enabled:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.setblocking(False)
+                if index is not None:
+                    self.pin(sock, index)            # same Winsock IP_UNICAST_IF pinning the GameBond transport uses
+                sock.bind((ip, 0))
+            except OSError as exc:
+                if sock is not None:
+                    sock.close()
+                sock, enabled, reason = None, False, str(exc)
+        base = pref if pref is not None else ROLE_PREF.get(role, 1)
+        path = Path(ip, sock, self.server, self.rate_bps, self.rate_bps, pref=base, beat=self.beat,
+                    idle=self.clock.now(), slot=slot, index=index, enabled=enabled, role=role, base_pref=base, reason=reason)
+        path.tx.rate = self.rate_bps                # fixed rate: tx.rate == tx_max_rate
+        if sock is not None:
+            self.selector.register(sock, selectors.EVENT_READ, path)
+        return path
+
+    def update_paths(self, local_ips: list[str], interface_indices: list[int] | None = None,
+                     available: list[bool] | None = None) -> list[dict]:
+        """Follow adapter changes: rebind only slots whose address, interface or availability changed."""
+        if len(local_ips) != len(self.paths):
+            raise ValueError("path slots must remain stable")
+        errors = []
+        self.pause = True
+        try:
+            with self.sel_lock, self.lock:
+                for slot, ip in enumerate(local_ips):
+                    old = self.paths[slot]
+                    index = interface_indices[slot] if interface_indices else None
+                    up = True if available is None else bool(available[slot])
+                    wanted = up and old.role != "never" and ip not in ("", "0.0.0.0")
+                    if ip == old.local_ip and index == old.index and wanted == old.enabled:
+                        continue
+                    if old.sock is not None:
+                        try:
+                            self.selector.unregister(old.sock)
+                        except (KeyError, ValueError):
+                            pass
+                        old.sock.close()
+                    custom = old.base_pref if old.base_pref != ROLE_PREF.get(old.role) else None
+                    fresh = self._new_path(slot, ip, index, up, old.role, custom)
+                    for name in ("total", "bytes"):                       # keep usage counters across a rebind
+                        setattr(fresh.tx, name, getattr(old.tx, name))
+                        setattr(fresh.rx, name, getattr(old.rx, name))
+                    if wanted and not fresh.enabled:
+                        errors.append(dict(slot=slot, error=fresh.reason))
+                    self.paths[slot] = fresh
+                self.errors["rebinds"] = self.errors.get("rebinds", 0) + 1
+        finally:
+            self.pause = False
+        return errors
+
+    def set_roles(self, roles: list[str]) -> None:
+        """Link roles from GameBond's link controls: primary and secondary aggregate, backup is hot standby, never is off."""
+        if len(roles) != len(self.paths) or any(r not in ROLE_PREF and r != "never" for r in roles):
+            raise ValueError("one valid role per path is required")
+        with self.lock:
+            for path, role in zip(self.paths, roles):
+                if role == path.role:
+                    continue
+                path.role = role
+                path.base_pref = ROLE_PREF.get(role, path.base_pref)
+                if role == "never" and path.enabled:
+                    path.enabled, path.reason = False, "role never"
+                elif role != "never" and not path.enabled and path.reason == "role never":
+                    path.enabled, path.reason = path.sock is not None, ""
+                path.pref = path.base_pref + (DEMOTION if path.demoted else 0)
+
+    def set_rates(self, upload_mbps: list[float], download_mbps: list[float]) -> None:
+        """Per-link speed limits (0 = unlimited). Upload caps what we send; download is advertised so the server
+        sends no faster than that toward us (the server copies it from every control message)."""
+        if len(upload_mbps) != len(self.paths) or len(download_mbps) != len(self.paths):
+            raise ValueError("one limit per path is required")
+        with self.lock:
+            for path, up, down in zip(self.paths, upload_mbps, download_mbps):
+                if up < 0 or down < 0:
+                    raise ValueError("limits must not be negative")
+                path.tx_max_rate = int(up * 125_000) if up else self.rate_bps
+                path.rx_max_rate = int(down * 125_000) if down else self.rate_bps
+                path.tx.rate = min(path.tx.rate or path.tx_max_rate, path.tx_max_rate) if path.fixed_rate == 0 else path.tx_max_rate
 
     # lifecycle
     def start(self) -> "MudClient":
@@ -322,6 +443,8 @@ class MudClient:
         for thread in self.threads:
             thread.join(2)
         for path in self.paths:
+            if path.sock is None:
+                continue
             try:
                 self.selector.unregister(path.sock)
             except (KeyError, ValueError):
@@ -340,13 +463,16 @@ class MudClient:
     def stats(self) -> dict:
         with self.lock:
             return dict(ready=self.ready, tunnel_mtu=self.tunnel_mtu, errors=dict(self.errors), paths=[
-                dict(local=p.local_ip, status=p.status, mtu=p.mtu_ok, rtt_ms=p.rtt.val / 1000,
-                     tx_bytes=p.tx.bytes, rx_bytes=p.rx.bytes, tx_packets=p.tx.total, rx_packets=p.rx.total,
-                     loss=p.tx.loss) for p in self.paths])
+                dict(slot=p.slot, local=p.local_ip, enabled=p.enabled, reason=p.reason, role=p.role, status=p.status,
+                     mtu=p.mtu_ok, rtt_ms=p.rtt.val / 1000, jitter_ms=p.rtt.var / 1000, pref=p.pref, demoted=p.demoted,
+                     bad=p.bad, tx_bytes=p.tx.bytes, rx_bytes=p.rx.bytes, tx_packets=p.tx.total, rx_packets=p.rx.total,
+                     data_tx=p.data_tx, loss=p.tx.loss) for p in self.paths])
 
     # data plane
-    def send(self, packet: bytes) -> bool:
-        """Encrypt and send one IP packet on a path chosen by rate weight. False if not ready or throttled."""
+    def send(self, packet: bytes, urgent: bool = False) -> bool:
+        """Encrypt and send one IP packet. Normal traffic is striped by rate weight; urgent traffic uses the
+        single best path (lowest predicted latency, not suspect) so a degrading link never carries it.
+        False if not ready or throttled."""
         if not packet:
             return False
         with self.lock:
@@ -358,21 +484,34 @@ class MudClient:
             now = self.clock.now()
             wire = self.kx.encrypt(now, bytes(packet))
             cursor = struct.unpack("<H", wire[-2:])[0]
-            path = self._select_path(cursor)
+            path = self._best_path() if urgent else self._select_path(cursor)
             if path is None:
                 self.errors["no_path"] += 1
                 return False
             path.idle = now
+            path.data_tx += 1
             self._send_path(path, now, wire)
             return True
 
     def recv(self, timeout: float | None = None) -> bytes:
         return self.inbox.get(timeout=timeout)
 
+    @staticmethod
+    def predicted_ms(path: Path) -> float:
+        """Same shape as GameBond's own estimate: half the round trip plus twice the jitter."""
+        return path.rtt.val / 2000 + 2 * path.rtt.var / 1000 if path.rtt.setup else 1000.0
+
+    def _best_path(self) -> Path | None:
+        usable = [p for p in self.paths if p.enabled and p.status == RUNNING]
+        if not usable:
+            return None
+        usable.sort(key=lambda p: (p.bad or p.msg.sent >= 2, self.predicted_ms(p)))
+        return usable[0]
+
     def _select_path(self, cursor: int) -> Path | None:
         k = (cursor * self.rate) >> 16
         for path in self.paths:
-            if path.status != RUNNING:
+            if path.status != RUNNING or not path.enabled:
                 continue
             if k < path.tx.rate:
                 return path
@@ -447,20 +586,29 @@ class MudClient:
 
     def _reader(self) -> None:
         while not self.stop.is_set():
-            for key, _ in self.selector.select(0.1):
+            if self.pause:                       # update_paths is swapping sockets
+                time.sleep(0.002)
+                continue
+            with self.sel_lock:
+                try:
+                    events = self.selector.select(0.02)
+                except (OSError, ValueError):
+                    events = []
+            for key, _ in events:
                 path = key.data
                 for _ in range(64):
+                    if path.sock is None:
+                        break
                     try:
                         packet, address = path.sock.recvfrom(PKT_MAX)
-                    except (BlockingIOError, InterruptedError):
-                        break
-                    except OSError:
+                    except (BlockingIOError, InterruptedError, OSError):
                         break
                     with self.lock:
-                        self._on_packet(path, address, packet)
+                        if path in self.paths:
+                            self._on_packet(path, address, packet)
 
     def _on_packet(self, path: Path, address: tuple, packet: bytes) -> None:
-        if len(packet) <= PKT_MIN or address != path.remote:
+        if not path.enabled or len(packet) <= PKT_MIN or address != path.remote:
             return
         now = self.clock.now()
         header_time = _load(packet[:TIME_SIZE])
@@ -520,6 +668,10 @@ class MudClient:
         if path.status == RUNNING:
             if tmask(now - path.idle) >= ONE_SEC:
                 timeout = KEEPALIVE
+        elif path.status == READY:
+            # Beyond the original: keep a hot standby (or a demoted path) measured and alive with a cheap probe,
+            # so its quality is known and its recovery is noticed.
+            timeout = max(path.beat, 250 * ONE_MSEC)
         elif path.status not in (DEGRADED, LOSSY, PROBING):
             return now
         if not path.msg.time or tmask(now - path.msg.time) >= timeout:
@@ -529,11 +681,53 @@ class MudClient:
             now = self.clock.now()
         return now
 
+    def _assess(self, now_s: float) -> None:
+        """Judge each path (missed echoes, RTT spike against its own baseline, jitter, loss) with hysteresis and
+        advertise a worse preference for a degrading path whenever a better one exists. The server copies the
+        preference from every control message, so it stops sending downstream on that path too."""
+        if now_s - self.last_assess < 0.05:
+            return
+        elapsed, self.last_assess = now_s - self.last_assess if self.last_assess else 0.05, now_s
+        for path in self.paths:
+            if not path.enabled:
+                path.bad = False
+                continue
+            rtt, jitter = path.rtt.val / 1000, path.rtt.var / 1000
+            known = path.rtt.setup and path.mtu_ok
+            if known:
+                path.base_rtt = rtt if path.base_rtt is None else min(rtt, path.base_rtt + 0.5 * elapsed)   # relearns over time
+            spike = known and rtt > 2 * (path.base_rtt or rtt) + 20
+            reasons = [name for name, hit in (("missed", path.msg.sent >= 2), ("latency", spike),
+                       ("jitter", known and jitter > self.jitter_threshold_ms), ("loss", path.tx.loss > 5)) if hit]
+            path.bad, path.reason = bool(reasons), ",".join(reasons)
+            if path.bad:
+                path.bad_since = path.bad_since or now_s
+                path.good_since = 0.0
+            else:
+                path.good_since = path.good_since or now_s
+                path.bad_since = 0.0
+        for path in self.paths:
+            if not path.enabled:
+                continue
+            other_good = any(o is not path and o.enabled and not o.bad and o.mtu_ok for o in self.paths)
+            if not path.demoted and path.bad and other_good and now_s - path.bad_since >= self.demote_after:
+                path.demoted, path.pref = True, path.base_pref + DEMOTION
+                self.errors["demotions"] = self.errors.get("demotions", 0) + 1
+            elif path.demoted and not path.bad and now_s - path.good_since >= self.recovery_seconds:
+                path.demoted, path.pref = False, path.base_pref
+            elif path.demoted and path.bad and not other_good:
+                path.demoted, path.pref = False, path.base_pref   # nothing better to prefer: do not strand the traffic
+
     def _update(self) -> None:
+        self._assess(time.monotonic())
         now = self.clock.now()
         self.kx.rotate_if_due(now)
         pref, next_pref, rate, mtu = 255, 255, 0, 0
+        active = [p for p in self.paths if p.enabled]
         for path in self.paths:
+            if not path.enabled:
+                path.status = PROBING
+        for path in active:
             if self._path_update(path):
                 if next_pref > path.pref > self.pref:
                     next_pref = path.pref
@@ -547,7 +741,7 @@ class MudClient:
             self.pref = pref
         else:
             self.pref = next_pref
-            for path in self.paths:
+            for path in active:
                 if self._path_update(path) and path.status == RUNNING:
                     rate += path.tx.rate
         self.rate, self.mtu = rate, mtu

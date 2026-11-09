@@ -5,7 +5,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (QLineEdit,QDialog,QVBoxLayout,QHBoxLayout,QLabel,QRadioButton,QButtonGroup,QListWidget,
     QPushButton,QFileDialog,QDialogButtonBox,QCheckBox,QMessageBox,QScrollArea,QWidget,QFormLayout,QComboBox,QDoubleSpinBox,QSpinBox,QGroupBox)
 
-from .widget_data import CONFIG,save_applications,save_selection,save_link_policies,human_bytes,discover_links,save_lan_devices,lan_candidates
+from .widget_data import CONFIG,save_applications,save_selection,save_link_policies,human_bytes,discover_links,save_lan_devices,lan_candidates,save_omr_settings,write_omr_password
 from .capture import normalize_apps
 from .link_policy import LinkPolicy,UsageLedger
 from .glass_theme import ROOT
@@ -189,6 +189,157 @@ class LanDevicesDialog(SettingsDialog):
             devices.append(dict(name=row['name'].text().strip(),tunnel_ip=row['ip'].text().strip(),
                                 interface_id=link['id'],interface_index=link['index']))
         return save_lan_devices(devices)
+
+
+PATH_STATUS={0:'removed',1:'connecting',2:'down',3:'lossy',4:'waiting',5:'standby',6:'active'}
+
+
+def omr_status_text(runtime,names=()):
+    """Plain-text status of both transports from the runtime snapshot (kept free of Qt so it can be tested directly)."""
+    if not runtime:return 'The tunnel is not running. Status appears here while it is connected.'
+    omr=runtime.get('omr');transport=runtime.get('transport') or {}
+    if omr is None:return 'GameBond only. Choose "GameBond + OpenMPTCProuter" to add the OMR tunnel.'
+    lines=[]
+    paths=transport.get('paths') or []
+    healthy=sum(1 for p in paths if p.get('healthy'))
+    lines.append(f'GameBond tunnel: {healthy} of {len(paths)} links healthy (gameplay and calls)')
+    if not omr.get('active'):
+        lines.append('OpenMPTCProuter tunnel: not running'+(f" - {omr['error']}" if omr.get('error') else ''))
+        if omr.get('blocked'):lines.append('The server refused the login, so it will not be retried automatically.')
+        else:lines.append('Bulk traffic uses the GameBond tunnel until it comes up (retrying every 30 seconds).')
+        return '\n'.join(lines)
+    leg=transport.get('omr') or {};router=transport.get('router') or {}
+    lines.append(f"OpenMPTCProuter tunnel: {'ready' if leg.get('ready') else 'not ready'}"+(f", MTU {leg['tunnel_mtu']}" if leg.get('tunnel_mtu') else ''))
+    for path in leg.get('paths',[]):
+        name=names[path['slot']] if path.get('slot') is not None and path['slot']<len(names) else f"Link {path.get('slot',0)+1}"
+        if not path.get('enabled',True):lines.append(f"  {name}: off ({path.get('reason') or 'unavailable'})");continue
+        note=' - demoted, server steered away' if path.get('demoted') else (f" - {path['reason']}" if path.get('bad') and path.get('reason') else '')
+        lines.append(f"  {name}: {PATH_STATUS.get(path.get('status'),'?')}, RTT {path.get('rtt_ms',0):.0f} ms, jitter {path.get('jitter_ms',0):.1f} ms, role {path.get('role','primary')}{note}")
+    nat=router.get('nat') or {}
+    lines.append(f"Routing: {router.get('sent_gamebond',0)} packets via GameBond, {router.get('sent_omr',0)} via OMR, {router.get('fallbacks',0)} fallbacks; {nat.get('active',0)} NAT mappings")
+    return '\n'.join(lines)
+
+
+class OmrDialog(SettingsDialog):
+    """Run the OpenMPTCProuter tunnel beside GameBond's own: server, key source, certificate pin, and live status."""
+    def __init__(self,runtime=None,parent=None):
+        super().__init__('OpenMPTCProuter',parent);self.resize(720,720);self.runtime=runtime
+        stored=self.config.get('omr') or self.config.get('omr_draft') or {};admin=stored.get('admin') or {}
+        from .glass_panels import _AsyncCall
+        intro=QLabel('Gameplay and calls keep using the GameBond tunnel; everything else can use your OpenMPTCProuter server. '
+                     'Both run on the same uplinks. Changes apply on your next connection.')
+        intro.setWordWrap(True);self.body.addWidget(intro)
+        form=QFormLayout();self.body.addLayout(form)
+        self.mode=QComboBox();self.mode.addItems(['GameBond only','GameBond + OpenMPTCProuter'])
+        self.mode.setCurrentIndex(1 if self.config.get('server_type')=='both' else 0);form.addRow('Mode',self.mode)
+        server=stored.get('server') or ['',65001]
+        self.server=QLineEdit(server[0]);self.server.setPlaceholderText('VPS address');self.port=QSpinBox();self.port.setRange(1,65535);self.port.setValue(int(server[1]))
+        row=QHBoxLayout();row.addWidget(self.server,1);row.addWidget(QLabel('UDP port'));row.addWidget(self.port);form.addRow('Tunnel server',self._wrap(row))
+        self.use_admin=QRadioButton('Admin login (fetches the key)');self.use_key=QRadioButton('Key file')
+        (self.use_key if stored.get('key_file') else self.use_admin).setChecked(True)
+        row=QHBoxLayout();row.addWidget(self.use_admin);row.addWidget(self.use_key);form.addRow('Key source',self._wrap(row))
+        self.key_file=QLineEdit(stored.get('key_file',''));self.key_file.setPlaceholderText('File with the 64-character Glorytun key')
+        browse=QPushButton('Browse…');browse.clicked.connect(self._browse)
+        row=QHBoxLayout();row.addWidget(self.key_file,1);row.addWidget(browse);form.addRow('Key file',self._wrap(row))
+        self.admin_host=QLineEdit(admin.get('host',''));self.admin_host.setPlaceholderText('same as the tunnel server')
+        self.admin_port=QSpinBox();self.admin_port.setRange(1,65535);self.admin_port.setValue(int(admin.get('port',65500)))
+        row=QHBoxLayout();row.addWidget(self.admin_host,1);row.addWidget(QLabel('port'));row.addWidget(self.admin_port);form.addRow('Admin API',self._wrap(row))
+        self.username=QLineEdit(admin.get('username','openmptcprouter'));form.addRow('Username',self.username)
+        self.password=QLineEdit();self.password.setEchoMode(QLineEdit.Password)
+        self.password.setPlaceholderText('saved in a private file' if admin.get('password_file') else 'password from /root/openmptcprouter_config.txt');form.addRow('Password',self.password)
+        self.pin=QLineEdit(admin.get('pin',''));self.pin.setPlaceholderText('server certificate pin (sha256//…)')
+        self.learn=QPushButton('Read from server');self.learn.clicked.connect(self.learn_pin)
+        row=QHBoxLayout();row.addWidget(self.pin,1);row.addWidget(self.learn);form.addRow('Certificate pin',self._wrap(row))
+        self.test=QPushButton('Test login');self.test.clicked.connect(self.test_login);form.addRow('',self.test)
+        self.tunnel_ip=QLineEdit(stored.get('tunnel_ip',''));self.tunnel_ip.setPlaceholderText('taken from the server (usually 10.255.254.2)');form.addRow('Tunnel address',self.tunnel_ip)
+        self.dscp=QLineEdit(', '.join(str(v) for v in stored.get('gamebond_dscp',[46,26])));form.addRow('GameBond classes (DSCP)',self.dscp)
+        self.status=QLabel();self.status.setWordWrap(True);self.status.setStyleSheet('font-family:Consolas,monospace;padding:8px;')
+        self.status.setText(omr_status_text(runtime,self.config.get('interface_names',[])));self.body.addWidget(self.status)
+        self.pin_worker=_AsyncCall(self);self.pin_worker.done.connect(self._pin_read);self.pin_worker.failed.connect(self._failed)
+        self.test_worker=_AsyncCall(self);self.test_worker.done.connect(self._tested);self.test_worker.failed.connect(self._failed)
+        self.finished.connect(lambda _:(self.pin_worker.shutdown(),self.test_worker.shutdown()))
+        for control in (self.use_admin,self.use_key,self.mode):
+            (control.toggled if hasattr(control,'toggled') else control.currentIndexChanged).connect(self._sync)
+        self._sync()
+
+    @staticmethod
+    def _wrap(layout):
+        holder=QWidget();layout.setContentsMargins(0,0,0,0);holder.setLayout(layout);return holder
+
+    def _sync(self,*_):
+        on=self.mode.currentIndex()==1;admin=on and self.use_admin.isChecked()
+        for widget in (self.server,self.port,self.use_admin,self.use_key,self.tunnel_ip,self.dscp):widget.setEnabled(on)
+        self.key_file.setEnabled(on and self.use_key.isChecked())
+        for widget in (self.admin_host,self.admin_port,self.username,self.password,self.pin,self.learn,self.test):widget.setEnabled(admin)
+
+    def _browse(self):
+        name,_=QFileDialog.getOpenFileName(self,'Glorytun key file')
+        if name:self.key_file.setText(name)
+
+    def _host(self):
+        host=self.admin_host.text().strip() or self.server.text().strip()
+        if not host:raise ValueError('Enter the tunnel server address first')
+        return host
+
+    def learn_pin(self):
+        try:host=self._host()
+        except ValueError as exc:self.feedback.setText(str(exc));return
+        port=self.admin_port.value();self.learn.setEnabled(False);self.feedback.setText('Reading the server certificate…')
+        from .omr_admin import learn_pin
+        self.pin_worker.start(lambda:learn_pin(host,port))
+
+    def confirm_pin(self,pin):
+        return QMessageBox.question(self,'Trust this server?','The server presents this public-key pin:\n\n'+pin+
+            '\n\nCompare it with the pin your VPS installer printed. Only continue if they match.')==QMessageBox.Yes
+
+    def _pin_read(self,pin):
+        self.learn.setEnabled(True)
+        if self.confirm_pin(pin):self.pin.setText(pin);self.feedback.setText('Pin accepted. Save, or test the login.')
+        else:self.feedback.setText('Pin not accepted.')
+
+    def _failed(self,message):
+        self.learn.setEnabled(True);self.test.setEnabled(True);self.feedback.setText(message)
+
+    def _password_value(self):
+        if self.password.text().strip():return self.password.text().strip()
+        name=((self.config.get('omr') or self.config.get('omr_draft') or {}).get('admin') or {}).get('password_file')
+        if not name:raise ValueError('Enter the admin password')
+        from pathlib import Path
+        path=Path(name);path=path if path.is_absolute() else ROOT/path
+        return path.read_text(encoding='utf-8').strip()
+
+    def test_login(self):
+        try:host=self._host();password=self._password_value();pin=self.pin.text().strip()
+        except (ValueError,OSError) as exc:self.feedback.setText(str(exc));return
+        if not pin:self.feedback.setText('Read and confirm the certificate pin first.');return
+        port,user=self.admin_port.value(),self.username.text().strip();self.test.setEnabled(False);self.feedback.setText('Testing the login…')
+        def work():
+            from .omr_admin import OmrAdmin,tunnel_settings
+            admin=OmrAdmin(host,port,pin=pin);admin.login(user,password)     # a single attempt
+            info=tunnel_settings(admin.get_config())
+            return 'Login works. The server supplied the Glorytun key'+(f", tunnel address {info['tunnel_ip']}." if info['tunnel_ip'] else '.')
+        self.test_worker.start(work)
+
+    def _tested(self,message):
+        self.test.setEnabled(True);self.feedback.setText(message)
+
+    def write_config(self):
+        if self.mode.currentIndex()==0:
+            stored=self.config.get('omr') or self.config.get('omr_draft') or {}
+            return save_omr_settings('gamebond',stored)
+        omr=dict(server=[self.server.text().strip(),self.port.value()])
+        if self.use_key.isChecked():omr['key_file']=self.key_file.text().strip()
+        else:
+            existing=((self.config.get('omr') or self.config.get('omr_draft') or {}).get('admin') or {}).get('password_file')
+            password_file=existing
+            if self.password.text().strip():password_file=write_omr_password(self.password.text())
+            omr['admin']=dict(username=self.username.text().strip(),password_file=password_file or '',pin=self.pin.text().strip())
+            if self.admin_host.text().strip():omr['admin']['host']=self.admin_host.text().strip()
+            if self.admin_port.value()!=65500:omr['admin']['port']=self.admin_port.value()
+        if self.tunnel_ip.text().strip():omr['tunnel_ip']=self.tunnel_ip.text().strip()
+        try:omr['gamebond_dscp']=[int(v) for v in self.dscp.text().replace(';',',').replace(' ',',').split(',') if v]
+        except ValueError:raise ValueError('GameBond classes must be numbers 0 to 63')
+        return save_omr_settings('both',omr)
 
 
 class LinkControlsDialog(SettingsDialog):

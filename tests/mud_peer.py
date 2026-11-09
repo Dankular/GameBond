@@ -7,6 +7,7 @@ import queue
 import socket
 import struct
 import threading
+import time
 
 from gamebond.omr_glorytun import (Clock, KeyExchange, MSG_SIZE, Msg, PKT_MAX, PKT_MIN, TIME_SIZE, TIME_TOLERANCE, _load,
                                    _store, seal, tmask, unseal)
@@ -27,6 +28,9 @@ class MudPeer:
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.errors = dict(decrypt=0, clocksync=0)
+        self.blocked = set()                  # source IPs whose packets are silently dropped (a dead link)
+        self.delays = {}                      # source IP -> seconds added to everything sent back (a slow link)
+        self.arrivals = {}                    # source IP -> data packets received from it
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
         self._turn = 0
@@ -44,7 +48,7 @@ class MudPeer:
                 continue
             except OSError:
                 return
-            if len(packet) > self.mtu_limit or len(packet) <= PKT_MIN:
+            if len(packet) > self.mtu_limit or len(packet) <= PKT_MIN or remote[0] in self.blocked:
                 continue
             with self.lock:
                 self._on_packet(packet, remote)
@@ -61,7 +65,8 @@ class MudPeer:
             self.errors["decrypt"] += 1
             return
         path = self.paths.setdefault(remote, dict(mtu_last=0, rx_bytes=0, rx_total=0, tx_bytes=0, tx_total=0, beat=0,
-                                                  max_rate=0, pref=0, fixed_rate=0, loss_limit=0))
+                                                  max_rate=0, pref=0, fixed_rate=0, loss_limit=0, seen=0.0, sent_data=0))
+        path["seen"] = time.monotonic()
         if is_msg:
             msg = Msg.unpack(plain)
             if not msg.sent_time:                     # a probe: copy the initiator's parameters, then echo
@@ -75,6 +80,7 @@ class MudPeer:
                 body = echo.pack().ljust(len(packet) - PKT_MIN, b"\0")
                 self._tx(path, remote, seal(self.kx.private[0], _store(now | 1, TIME_SIZE), body))
         else:
+            self.arrivals[remote[0]] = self.arrivals.get(remote[0], 0) + 1
             self.inbox.put(plain)
         path["rx_total"] += 1
         path["rx_bytes"] += len(packet)
@@ -82,15 +88,35 @@ class MudPeer:
     def _tx(self, path, remote, wire):
         path["tx_total"] += 1
         path["tx_bytes"] += len(wire)
-        self.sock.sendto(wire, remote)
+        delay = self.delays.get(remote[0], 0)
+        if delay:
+            def late():
+                try:
+                    self.sock.sendto(wire, remote)
+                except OSError:
+                    pass                      # the peer was closed while a delayed packet was pending
+            threading.Timer(delay, late).start()
+        else:
+            self.sock.sendto(wire, remote)
+
+    def usable_remotes(self):
+        """What the real server does: only paths with the lowest advertised preference among those still heard from."""
+        newest = max((p["seen"] for p in self.paths.values()), default=0.0)
+        fresh = [(r, p) for r, p in self.paths.items()
+                 if p["mtu_last"] and newest - p["seen"] <= max(5 * p["beat"] / 1e6, 0.1)]
+        if not fresh:
+            return []
+        lowest = min(p["pref"] for _, p in fresh)
+        return [r for r, p in fresh if p["pref"] == lowest]
 
     def send(self, packet):
-        """Send one IP packet to the peer's known paths, round robin."""
+        """Send one IP packet downstream on the preferred paths, round robin."""
         with self.lock:
-            remotes = [r for r, p in self.paths.items() if p["mtu_last"]]
+            remotes = self.usable_remotes()
             if not remotes:
                 return False
             remote = remotes[self._turn % len(remotes)]
             self._turn += 1
+            self.paths[remote]["sent_data"] += 1
             self._tx(self.paths[remote], remote, self.kx.encrypt(self.clock.now(), packet))
             return True

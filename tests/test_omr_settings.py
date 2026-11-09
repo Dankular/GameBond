@@ -35,6 +35,21 @@ class ServerModeTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=str(config)):
                 load_server_mode(config)
 
+    def test_admin_login_replaces_the_key_file_and_exactly_one_is_required(self):
+        pin = "sha256//" + "A" * 43 + "="
+        admin = dict(username="openmptcprouter", password_file="secrets/omr.pass", pin=pin)
+        omr = dict(server=["203.0.113.10", 65001], admin=admin)
+        _, settings = load_server_mode(dict(GOOD, omr=omr))
+        self.assertEqual((settings.key_file, settings.admin["host"], settings.admin["port"], settings.admin["pin"], settings.tunnel_ip_set),
+                         ("", "203.0.113.10", 65500, "A" * 43 + "=", False))
+        self.assertTrue(load_server_mode(dict(GOOD, omr=dict(omr, tunnel_ip="10.255.254.9")))[1].tunnel_ip_set)
+        for bad in (dict(omr, key_file="k"), dict(server=omr["server"]),
+                    dict(omr, admin=dict(admin, pin="short")), dict(omr, admin=dict(admin, password="plain-text-password")),
+                    dict(omr, admin=dict(username="u", pin=pin)), dict(omr, admin=dict(admin, port=0)),
+                    dict(omr, admin=dict(admin, host="224.0.0.1")), dict(omr, admin=dict(admin, username=" "))):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                load_server_mode(dict(GOOD, omr=bad))
+
 
 if __name__ == "__main__":
     unittest.main()

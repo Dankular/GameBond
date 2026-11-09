@@ -28,6 +28,9 @@ class FakeGameBond:
         self.links.append(args)
         return []
 
+    def set_link_states(self, states):
+        self.states = states
+
     def close(self):
         self.closed = True
 
@@ -35,13 +38,25 @@ class FakeGameBond:
 class FakeOmr:
     def __init__(self):
         self.sent, self.inbox, self.ready, self.closed = [], queue.Queue(), True, False
+        self.urgent, self.updates, self.roles, self.rates = [], [], None, None
 
-    def send(self, packet):
+    def send(self, packet, urgent=False):
         self.sent.append(packet)
+        self.urgent.append(urgent)
         return True
 
     def recv(self, timeout=None):
         return self.inbox.get(timeout=timeout)
+
+    def update_paths(self, ips, indices, available):
+        self.updates.append((ips, indices, available))
+        return []
+
+    def set_roles(self, roles):
+        self.roles = roles
+
+    def set_rates(self, up, down):
+        self.rates = (up, down)
 
     def stats(self):
         return dict(ready=self.ready, tunnel_mtu=1450)
@@ -126,6 +141,23 @@ class RouterTests(unittest.TestCase):
         gre = gre[:9] + b"\x2f" + gre[10:]
         self.assertEqual(self.router.send(gre, replicate=False, flow_id="x", dscp=0), 0)
         self.assertEqual((self.omr.sent, self.router.counts["nat_dropped"]), ([], 1))
+
+    def test_urgent_marks_follow_the_traffic_class_onto_the_omr_leg(self):
+        packet = udp("10.77.0.3", "198.51.100.5", 40000, 443)
+        self.router.send(packet, replicate=False, flow_id="bulk", dscp=0)
+        self.gb.healthy = False
+        self.router.send(udp("10.77.0.3", "203.0.113.9", 3074, 3074), replicate=True, flow_id="game", urgent=False, dscp=46)
+        self.assertEqual(self.omr.urgent, [False, True])                      # gameplay that fell back to OMR rides the best path only
+
+    def test_adapter_changes_and_link_policy_reach_both_legs(self):
+        self.router.update_client_paths([("1.2.3.4", 0), ("5.6.7.8", 0)], [5, 6], [True, False])
+        self.assertEqual(self.omr.updates, [(["1.2.3.4", "5.6.7.8"], [5, 6], [True, False])])
+        states = [dict(role="primary", blocked=False, upload_mbps=20, download_mbps=50),
+                  dict(role="secondary", blocked=True, upload_mbps=0, download_mbps=0)]
+        self.router.set_link_states(states)
+        self.assertEqual(self.gb.states, states)
+        self.assertEqual(self.omr.roles, ["primary", "never"])                  # over its cap counts as off
+        self.assertEqual(self.omr.rates, ([20, 0], [50, 0]))
 
     def test_node_surface_is_delegated_and_stats_combine_both(self):
         self.router.update_client_paths([("1.2.3.4", 0)], [5], [True])

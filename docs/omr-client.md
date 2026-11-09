@@ -19,9 +19,15 @@ package does not offer.
 ## What is NOT there yet
 
 - It is wired into the runtime only as the OMR leg of `server_type: "both"`
-  ([side-by-side.md](side-by-side.md)); there is no GUI for it yet.
-- No admin-API client yet (`/token`, `/config`, `/wan`).
+  ([side-by-side.md](side-by-side.md)), configured from the dashboard's
+  OpenMPTCProuter dialog.
+- The admin-API client (`gamebond/omr_admin.py`) covers login and `/config` only.
+  It does not call `/wan` (not needed for the Glorytun tunnel as far as the
+  source shows, but unconfirmed against a real server) or any write endpoint.
 - IPv4 only, ChaCha only, client side only.
+- Bad-link handling on this leg is client-only (fast failure detection, best-path
+  urgent traffic, steering the server away from a degrading link through the
+  advertised preference, hot standby); see [side-by-side.md](side-by-side.md).
 - On this path GameBond cannot replicate packets or reorder: the protocol has
   no sequence numbers, so its replicated gameplay queue, reorder buffer and
   adaptive QoS do not apply. Downloads arrive in the order the server's

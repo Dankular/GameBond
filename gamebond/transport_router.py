@@ -101,6 +101,25 @@ class TransportRouter:
                     self.flows.popitem(last=False)
             return want
 
+    # --- link changes: the GameBond transport owns them, the OMR leg follows --------------------------------
+
+    def update_client_paths(self, bind, interface_indices=None, available=None):
+        errors = list(self.gamebond.update_client_paths(bind, interface_indices, available) or [])
+        try:
+            errors += [dict(leg="omr", **e) for e in self.omr.update_paths([b[0] for b in bind], interface_indices, available)]
+        except (ValueError, OSError) as exc:
+            errors.append(dict(leg="omr", error=str(exc)))
+        return errors
+
+    def set_link_states(self, states):
+        """Roles, caps and speed limits apply to both legs; a blocked (over-cap) link counts as role "never"."""
+        self.gamebond.set_link_states(states)
+        try:
+            self.omr.set_roles(["never" if s.get("blocked") else s.get("role", "primary") for s in states])
+            self.omr.set_rates([s.get("upload_mbps", 0) or 0 for s in states], [s.get("download_mbps", 0) or 0 for s in states])
+        except (ValueError, AttributeError):
+            self.counts["link_state_errors"] = self.counts.get("link_state_errors", 0) + 1
+
     # --- data plane -------------------------------------------------------------------------------------------
 
     def send(self, payload: bytes, replicate: bool = True, flow_id=None, *, urgent: bool = False, dscp: int = 0) -> int:
@@ -111,7 +130,7 @@ class TransportRouter:
             if translated is None:
                 self.counts["nat_dropped"] += 1
                 return 0
-            sent = 1 if self.omr.send(translated) else 0
+            sent = 1 if self.omr.send(translated, urgent=urgent or dscp in self.gamebond_dscp) else 0
             self.counts["sent_omr" if sent else "send_failed"] += 1
             return sent
         sent = self.gamebond.send(payload, replicate=replicate, flow_id=flow_id, urgent=urgent)
