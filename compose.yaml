@@ -12,6 +12,9 @@ services:
       - tunnel
     ports:
       - "4433:4433/udp"
+      # Admin portal (HTTPS). Only used when the config has an "admin" block listening on 0.0.0.0:8443.
+      # Bind a specific host address (e.g. "127.0.0.1:8443:8443/tcp") to keep it off the public interface.
+      - "${GAMEBOND_ADMIN_PUBLISH:-8443}:8443/tcp"
     cap_drop:
       - ALL
     cap_add:
@@ -27,9 +30,16 @@ services:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
     volumes:
       - type: bind
+        source: ${GAMEBOND_ADMIN_TLS_DIR:-./secrets/admin}
+        target: /run/secrets/admin
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: ${GAMEBOND_SERVER_CONFIG:-./configs/server.json}
         target: /run/config/server.json
-        read_only: true
+        # Writable so the admin portal can save configuration. Written in place; no sibling files are created.
+        read_only: false
         bind:
           create_host_path: false
       - type: bind

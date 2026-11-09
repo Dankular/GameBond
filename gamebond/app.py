@@ -22,6 +22,9 @@ from .dns import DNSResponder, load_dns_config
 from .telemetry import PriorityFlowTelemetry
 
 
+restart_requested = threading.Event()
+
+
 def load_config(path,*,allow_unavailable_links=False):
     config = json.loads(Path(path).read_text(encoding="utf-8"))
     from .adaptive_qos import QoSSettings
@@ -128,6 +131,11 @@ def load_config(path,*,allow_unavailable_links=False):
     load_lan_devices(config)
     load_lan_tunnel_ips(config)
     if config["role"]=="client" and config.get("lan_tunnel_ips"):raise ValueError("lan_tunnel_ips belong to the server configuration; the client uses lan_devices")
+    if config.get("admin") is not None:
+        if config["role"] != "server":
+            raise ValueError("the admin portal belongs to the server configuration")
+        from .admin.server import AdminSettings
+        AdminSettings(config["admin"])
     dns_config = load_dns_config(config.get("dns"))
     if dns_config is not None:
         if config["role"] != "client":
@@ -140,7 +148,7 @@ def load_config(path,*,allow_unavailable_links=False):
     return config
 
 
-def run(config, key_path, configure=False, *, stop_event=None, on_ready=None):
+def run(config, key_path, configure=False, *, stop_event=None, on_ready=None, config_path=None):
     if configure and (os.name != "nt" or config["role"] != "client"):
         raise ValueError("automatic network setup is for the Windows client only")
     if config.get("lan_devices"):
@@ -292,6 +300,18 @@ def run(config, key_path, configure=False, *, stop_event=None, on_ready=None):
                 if classification.policy.priority:
                     observe_timing("priority_inject_ms", started)
 
+    admin = None
+
+    def snapshot():
+        telemetry = {"version": __version__, "pid": os.getpid(),
+                     "observed_at": datetime.now(timezone.utc).isoformat(),
+                     "transport": node.stats(), "queues": scheduler.stats(), "packets": counters,
+                     "priority_flows": flow_telemetry.stats(), "classifier": classifier.stats(), "qos": qos.stats(),
+                     "stream_relays": [relay.stats() for relay in stream_relays]}
+        if dns is not None:
+            telemetry["dns"] = dns.stats()
+        return telemetry
+
     previous = {}
     try:
         tun = open_tun(config.get("tun_name", "GameBond"), mtu=config.get("mtu", 1280),
@@ -338,23 +358,31 @@ def run(config, key_path, configure=False, *, stop_event=None, on_ready=None):
         if dns_scope is not None:
             dns_scope.activate()
             print(json.dumps({"status": "dns_overrides_active", "scope": dns_scope.status()}), flush=True)
+        if config.get("admin") and config["admin"].get("enabled", True) and config_path is not None:
+            from .admin.server import AdminSettings, AdminPortal
+            def request_restart():
+                restart_requested.set(); stop.set()
+            admin = AdminPortal(AdminSettings(config["admin"]), snapshot=lambda: {**snapshot(), "config": {
+                "lan_tunnel_ips": config.get("lan_tunnel_ips", []), "client_tunnel_ip": config["client_tunnel_ip"],
+                "game_udp_ports": config.get("game_udp_ports", []), "queues": config.get("queues", {}),
+                "bonding_mode": bonding_mode, "bind": config["bind"], "mtu": config.get("mtu", 1280)}},
+                config_path=config_path, validate=load_config, request_restart=request_restart).start()
+            print(json.dumps({"status": "admin_portal", "bind": admin.settings.bind, "tls": bool(admin.settings.tls_cert)}), flush=True)
         print(json.dumps({"status": "running", "version": __version__, "tun": tun.name,
                           "bind": node.addresses, "bonding_mode": bonding_mode}), flush=True)
         if on_ready is not None:
             on_ready()
         while not stop.wait(5):
-            telemetry = {"version": __version__, "pid": os.getpid(),
-                         "observed_at": datetime.now(timezone.utc).isoformat(),
-                         "transport": node.stats(), "queues": scheduler.stats(), "packets": counters,
-                         "priority_flows": flow_telemetry.stats(), "classifier": classifier.stats(),"qos":qos.stats(),
-                         "stream_relays":[relay.stats() for relay in stream_relays]}
-            if dns is not None:
-                telemetry["dns"] = dns.stats()
+            telemetry = snapshot()
+            if admin is not None:
+                admin.note(f"paths healthy: {sum(1 for p in telemetry['transport']['paths'] if p['healthy'])}/{len(telemetry['transport']['paths'])}")
             print(json.dumps(telemetry), flush=True)
         if not errors.empty():
             raise RuntimeError("tunnel worker failed") from errors.get()
     finally:
         stop.set()
+        if admin is not None:
+            admin.close()
         try:
             try:
                 if dns_scope is not None:
@@ -392,6 +420,10 @@ def main():
     start.add_argument("config")
     start.add_argument("--key", required=True)
     start.add_argument("--configure", action="store_true", help="Windows: configure routes and CoD QoS after both links authenticate; Administrator required")
+    sub.add_parser("admin-passwd", help="read a password from stdin and print an admin.password_hash value")
+    cert = sub.add_parser("admin-cert", help="write a self-signed certificate and key for the admin portal")
+    cert.add_argument("directory")
+    cert.add_argument("--host", action="append", default=[], help="DNS name or IPv4 address to include (repeatable)")
     dns_command = sub.add_parser("dns", help="manage project DNS overrides; applies on the next client restart")
     dns_command.add_argument("action", choices=("show", "set", "remove", "enable", "disable"))
     dns_command.add_argument("hostname", nargs="?")
@@ -404,6 +436,14 @@ def main():
         with os.fdopen(fd, "wb") as file:
             file.write(secrets.token_bytes(32))
         print(json.dumps({"session": secrets.token_hex(16), "key_file": args.path}))
+    elif args.command == "admin-passwd":
+        import getpass, sys
+        from .admin.auth import hash_password
+        password = sys.stdin.readline().rstrip("\n") if not sys.stdin.isatty() else getpass.getpass("Admin password: ")
+        print(hash_password(password))
+    elif args.command == "admin-cert":
+        from .admin.cert import write_self_signed
+        print(json.dumps(write_self_signed(args.directory, args.host)))
     elif args.command == "check":
         config = load_config(args.config)
         print(json.dumps({"valid": True, "role": config["role"]}))
@@ -411,4 +451,6 @@ def main():
         from .dns_management import manage
         print(json.dumps(manage(args.config, args.action, args.hostname, args.address), indent=2))
     else:
-        run(load_config(args.config), args.key, configure=args.configure)
+        run(load_config(args.config), args.key, configure=args.configure, config_path=args.config)
+        if restart_requested.is_set():
+            raise SystemExit(75)

@@ -50,6 +50,8 @@ docker compose --env-file deploy.env logs --tail 30
 The Python server owns TUN/NAT inside its container and publishes UDP4433.
 Keep keys and live configs private. Server restarts require matching session handling.
 
+An optional HTTPS admin portal (status, config editing, restart) is described in [admin-portal.md](docs/admin-portal.md).
+
 ## Remaining gaps
 
 Live HTTPS, QUIC, persistent connections, and Codex traffic have passed checks.
