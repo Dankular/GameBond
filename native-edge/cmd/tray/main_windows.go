@@ -5,16 +5,19 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"gamebond.local/nativeedge/atomicio"
 	"gamebond.local/nativeedge/dashboard"
+	"gamebond.local/nativeedge/hwmon"
 	"gamebond.local/nativeedge/tray"
 	"gamebond.local/nativeedge/ttyrelay"
 )
@@ -25,6 +28,7 @@ const (
 	cmdApps
 	cmdNetworks
 	cmdLinks
+	cmdAutostart
 	cmdQuit
 )
 
@@ -59,7 +63,18 @@ func main() {
 		defer busy.Store(false)
 		return ttyrelay.Control(abs(*relayPath), command, 60*time.Second, io.Discard)
 	}
-	server, url, err := dashboard.Start(dashboard.Options{StatusPath: abs(*statusPath), ConfigPath: abs(*configPath), Control: control})
+	var hardware func() map[string]any
+	if sampler, err := hwmon.New(hwmon.WindowsBackend{}, hwmon.Options{}); err == nil {
+		hardware = sampler.Sample
+	}
+	logLines := func() []string {
+		var buf bytes.Buffer
+		if ttyrelay.Attach(abs(*relayPath), 200, 400*time.Millisecond, &buf) != nil {
+			return []string{}
+		}
+		return strings.Split(strings.TrimRight(strings.ReplaceAll(buf.String(), "\r\n", "\n"), "\n"), "\n")
+	}
+	server, url, err := dashboard.Start(dashboard.Options{StatusPath: abs(*statusPath), ConfigPath: abs(*configPath), Control: control, Hardware: hardware, Log: logLines})
 	if err != nil {
 		fail(err)
 	}
@@ -89,6 +104,7 @@ func main() {
 			{ID: cmdApps, Label: "Manage apps", Enabled: true},
 			{ID: cmdNetworks, Label: "Network settings", Enabled: true},
 			{ID: cmdLinks, Label: "Link roles & limits", Enabled: true},
+			{ID: cmdAutostart, Label: autostartLabel(), Enabled: true},
 			{},
 			{ID: cmdQuit, Label: "Quit (stop tunnel)", Enabled: true},
 		}
@@ -105,6 +121,8 @@ func main() {
 				command = "stop"
 			}
 			go control(command)
+		case cmdAutostart:
+			_ = setAutostart(!autostartEnabled(), autostartValue(absRoot, *configPath))
 		case cmdQuit:
 			go func() {
 				control("stop")
@@ -128,4 +146,11 @@ func main() {
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "tray:", err)
 	os.Exit(1)
+}
+
+func autostartLabel() string {
+	if autostartEnabled() {
+		return "Start with Windows (on)"
+	}
+	return "Start with Windows (off)"
 }

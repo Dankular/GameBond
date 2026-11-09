@@ -147,3 +147,38 @@ func TestLinkPolicyEditValidatesAndKeepsPrevious(t *testing.T) {
 		t.Fatal("a rejected edit changed the config")
 	}
 }
+
+func TestAppsDNSNetworksSections(t *testing.T) {
+	srv, url, config, _ := start(t)
+	tok := srv.token
+	base := url[:strings.Index(url, "/?t=")]
+	if c, b := do(t, "PUT", base+"/api/apps", tok, `["C:\\Games\\a.exe","C:\\Games\\A.EXE"]`); c != 200 {
+		t.Fatalf("apps put %d %s", c, b)
+	}
+	if c, b := do(t, "GET", base+"/api/apps", tok, ""); c != 200 || !strings.Contains(b, "a.exe") || strings.Count(strings.ToLower(b), "a.exe") != 1 {
+		t.Fatalf("apps not normalised: %d %s", c, b)
+	}
+	before, _ := os.ReadFile(config)
+	if c, _ := do(t, "PUT", base+"/api/apps", tok, `"x"`); c != 422 {
+		t.Fatalf("non-list accepted: %d", c)
+	}
+	if c, _ := do(t, "PUT", base+"/api/apps", tok, `["relative.exe"]`); c != 422 {
+		t.Fatalf("relative path accepted: %d", c)
+	}
+	if c, _ := do(t, "PUT", base+"/api/dns", tok, `{"records":"nope"}`); c != 422 {
+		t.Fatalf("bad dns accepted: %d", c)
+	}
+	after, _ := os.ReadFile(config)
+	if strings.Contains(string(after), "nope") || len(after) < len(before)-200 {
+		t.Fatal("rejected edits changed the config")
+	}
+	if c, b := do(t, "GET", base+"/api/networks", tok, ""); c != 200 || !strings.Contains(b, "adapters") || !strings.Contains(b, "10.0.0.2") {
+		t.Fatalf("networks: %d %s", c, b)
+	}
+	if c, _ := do(t, "GET", base+"/api/hardware", tok, ""); c != 200 {
+		t.Fatal("hardware")
+	}
+	if c, b := do(t, "GET", base+"/api/log", tok, ""); c != 200 || !strings.Contains(b, "lines") {
+		t.Fatalf("log: %d %s", c, b)
+	}
+}

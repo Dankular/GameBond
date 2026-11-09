@@ -50,6 +50,21 @@
     <textarea id="policies" spellcheck="false"></textarea>
     <div class="row"><button id="save">Save</button><button id="restart" class="secondary">Save &amp; restart tunnel</button><span id="savemsg"></span></div>
   </section>
+  <section><h2>Traffic</h2><canvas id="graph" width="900" height="140" style="width:100%;height:140px"></canvas>
+    <div class="kv" id="rates"></div></section>
+  <section id="hw"><h2>This PC</h2><div class="kv" id="hwkv"></div></section>
+  <section><h2>Captured applications</h2>
+    <p style="margin-top:0;color:var(--mute)">Full paths of the programs whose traffic goes through the tunnel, one per line.</p>
+    <textarea id="appslist" spellcheck="false" style="min-height:90px"></textarea>
+    <div class="row"><button id="saveapps">Save</button><span id="appsmsg"></span></div></section>
+  <section><h2>Network adapters</h2>
+    <table><thead><tr><th>Index</th><th>Name</th><th>Address</th><th>In use</th></tr></thead><tbody id="nets"></tbody></table>
+    <p style="color:var(--mute);margin-bottom:0">Choosing adapters needs gateway discovery, which this build does not do; edit <code>bind</code>, <code>interface_indices</code> and <code>gateways</code> in the client config.</p></section>
+  <section><h2>DNS overrides</h2>
+    <p style="margin-top:0;color:var(--mute)">The <code>dns</code> block (records, bind, ttl, upstream). Checked with the daemon's own loader.</p>
+    <textarea id="dnsjson" spellcheck="false" style="min-height:120px"></textarea>
+    <div class="row"><button id="savedns">Save</button><span id="dnsmsg"></span></div></section>
+  <section><h2>Daemon log</h2><pre id="log" style="max-height:220px;overflow:auto;margin:0;font:12px/1.4 ui-monospace,Consolas,monospace"></pre></section>
 </main>
 <script>
 const TOKEN = "__TOKEN__";
@@ -65,6 +80,7 @@ function cell(tr, s) { const td = document.createElement("td"); td.textContent =
 async function poll() {
   try {
     const d = await (await fetch("/api/status", { headers: H })).json();
+    sample(d);
     const state = d.state || "unavailable";
     const paths = (d.transport && d.transport.paths) || [];
     const healthy = paths.filter(p => p.healthy).length;
@@ -124,6 +140,74 @@ async function save(thenRestart) {
 $("save").onclick = () => save(false);
 $("restart").onclick = () => save(true);
 loadPolicies(); poll(); setInterval(poll, 1000);
+
+// ---- traffic graph: wire bytes per second per direction, last 120 s
+const hist = []; let last = null;
+function sample(d) {
+  const paths = (d.transport && d.transport.paths) || [];
+  const tx = paths.reduce((a, p) => a + (p.wire_tx_bytes || 0), 0), rx = paths.reduce((a, p) => a + (p.wire_rx_bytes || 0), 0), t = performance.now() / 1000;
+  if (last && t > last.t) { hist.push({ up: Math.max(0, (tx - last.tx) / (t - last.t)), down: Math.max(0, (rx - last.rx) / (t - last.t)) }); if (hist.length > 120) hist.shift(); }
+  last = { tx, rx, t }; draw();
+}
+function draw() {
+  const c = $("graph"), g = c.getContext("2d"), w = c.width, h = c.height;
+  g.clearRect(0, 0, w, h);
+  const max = Math.max(1e5, ...hist.map(x => Math.max(x.up, x.down)));
+  for (const [key, color] of [["down", "#00c853"], ["up", "#6aa6ff"]]) {
+    g.beginPath(); g.strokeStyle = color; g.lineWidth = 2;
+    hist.forEach((x, i) => { const px = i * w / 119, py = h - 4 - x[key] / max * (h - 12); i ? g.lineTo(px, py) : g.moveTo(px, py); });
+    g.stroke();
+  }
+  const l = hist[hist.length - 1] || { up: 0, down: 0 };
+  const kv = $("rates"); kv.replaceChildren();
+  for (const [k, v] of [["Download", fmtBytes(l.down) + "/s"], ["Upload", fmtBytes(l.up) + "/s"], ["Graph scale", fmtBytes(max) + "/s"]]) {
+    const a = document.createElement("span"); a.textContent = k; const b = document.createElement("span"); b.textContent = v; kv.append(a, b);
+  }
+}
+async function hardware() {
+  try {
+    const d = await (await fetch("/api/hardware", { headers: H })).json();
+    if (d.available === false) { $("hw").style.display = "none"; return; }
+    const kv = $("hwkv"); kv.replaceChildren();
+    const rows = [];
+    if (d.cpu) rows.push(["CPU", (d.cpu.percent ?? "–") + " %"]);
+    if (d.memory) rows.push(["Memory", fmtBytes(d.memory.used_bytes) + " / " + fmtBytes(d.memory.total_bytes) + " (" + d.memory.percent + " %)"]);
+    if (d.gpu && d.gpu.name) rows.push(["GPU", d.gpu.name + (d.gpu.utilization != null ? " · " + d.gpu.utilization + " %" : "")]);
+    if (!rows.length) rows.push(["Sample", JSON.stringify(d).slice(0, 200)]);
+    for (const [k, v] of rows) { const a = document.createElement("span"); a.textContent = k; const b = document.createElement("span"); b.textContent = v; kv.append(a, b); }
+  } catch (e) {}
+}
+async function loadApps() {
+  const d = await (await fetch("/api/apps", { headers: H })).json();
+  $("appslist").value = (d.cod_executables || []).join("
+");
+}
+$("saveapps").onclick = async () => {
+  const list = $("appslist").value.split("
+").map(x => x.trim()).filter(Boolean);
+  const r = await fetch("/api/apps", { method: "PUT", headers: H, body: JSON.stringify(list) }); const d = await r.json();
+  text($("appsmsg"), r.ok ? "Saved. Restart the tunnel to apply." : "Rejected: " + d.error);
+};
+async function loadNets() {
+  const d = await (await fetch("/api/networks", { headers: H })).json();
+  const used = new Set((d.interface_indices || []).map(String)); const tb = $("nets"); tb.replaceChildren();
+  for (const a of d.adapters || []) { const tr = document.createElement("tr"); cell(tr, a.index); cell(tr, a.name); cell(tr, a.address); cell(tr, used.has(String(a.index)) ? "yes" : ""); tb.appendChild(tr); }
+}
+async function loadDns() {
+  const d = await (await fetch("/api/dns", { headers: H })).json();
+  $("dnsjson").value = JSON.stringify(d.dns ?? {}, null, 2);
+}
+$("savedns").onclick = async () => {
+  let body; try { body = JSON.parse($("dnsjson").value); } catch (e) { text($("dnsmsg"), "Not valid JSON: " + e.message); return; }
+  const r = await fetch("/api/dns", { method: "PUT", headers: H, body: JSON.stringify(body) }); const d = await r.json();
+  text($("dnsmsg"), r.ok ? "Saved. Restart the tunnel to apply." : "Rejected: " + d.error);
+};
+async function logs() {
+  try { const d = await (await fetch("/api/log", { headers: H })).json(); const el = $("log"); const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 8; text(el, (d.lines || []).join("
+")); if (atEnd) el.scrollTop = el.scrollHeight; } catch (e) {}
+}
+loadApps(); loadNets(); loadDns(); hardware(); logs(); setInterval(hardware, 3000); setInterval(logs, 2000);
+
 </script>
 </body>
 </html>
