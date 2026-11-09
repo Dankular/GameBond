@@ -192,6 +192,9 @@ class _Path:
     probe_sent: int = field(default=0,init=False)
     probe_acked: int = field(default=0,init=False)
     probe_lost: int = field(default=0,init=False)
+    probe_lost_early: int = field(default=0,init=False)
+    probe_late: int = field(default=0,init=False)
+    probe_acked_sent_at: float = field(default=-1.0,init=False)
     socket_index: int
     endpoint: tuple[str, int]
     last_rx: float = 0.0
@@ -337,6 +340,10 @@ class Node:
         self._sockets: list[socket.socket] = []
         self._paths: dict[tuple[int, tuple[str, int]], _Path] = {}
         self._pending: dict[bytes, tuple[float, tuple[int, tuple[str, int]]]] = {}
+        # Probes declared lost before path_timeout because a later probe on the
+        # same path was answered. A reply that still arrives is a late sample,
+        # not a loss, and must keep feeding the RTT/jitter estimate.
+        self._lost_probes: dict[bytes, tuple[float, tuple[int, tuple[str, int]]]] = {}
         self._flow_paths: OrderedDict[object, tuple[tuple[int, tuple[str, int]], float]] = OrderedDict()
         self._challenges: OrderedDict[tuple[int, tuple[str, int], bytes], tuple[bytes, bytes, float]] = OrderedDict()
         self._counts = dict(tx_packets=0, tx_copies=0, rx_packets=0,
@@ -473,6 +480,7 @@ class Node:
                     fresh.remote_wire_offset=path.remote_wire_offset+path.remote_wire_tx
                     self._paths[identity]=fresh
                 self._pending={token:value for token,value in self._pending.items() if value[1][0]!=index}
+                self._lost_probes={token:value for token,value in self._lost_probes.items() if value[1][0]!=index}
                 previous.close()
                 self._counts['path_rebinds']=self._counts.get('path_rebinds',0)+1
             self._interface_indices=list(interface_indices) if interface_indices is not None else None
@@ -509,6 +517,7 @@ class Node:
         self._remote_prefix, self._rx = prefix, cipher
         self._replay = ReplayWindow()
         self._pending.clear()
+        self._lost_probes.clear()
         self._flow_paths.clear()
         self._stripe_flows.clear()
         self._repair_cache.clear()
@@ -867,7 +876,7 @@ class Node:
                  "link_policy":p.link_state,"policy_confirmed":p.policy_confirmed,
                  "wire_tx_bytes":p.tx_bytes+28*p.transmitted,
                  "wire_rx_bytes":p.rx_bytes+28*p.rx_wire_packets,
-                 "probe_quality":dict(sent=p.probe_sent,acked=p.probe_acked,lost=p.probe_lost,scope='round_trip_probe'),
+                 "probe_quality":dict(sent=p.probe_sent,acked=p.probe_acked,lost=p.probe_lost,lost_early=p.probe_lost_early,late=p.probe_late,scope='round_trip_probe'),
                  "metered_download_bytes":max(p.rx_bytes+28*p.rx_wire_packets,p.remote_wire_offset+p.remote_wire_tx),
                  "rtt_ms": p.rtt_ms, "rtt_jitter_ms":p.rtt_jitter_ms,"bulk_filtered":p.bulk_filtered,"rx": p.received, "tx": p.transmitted,
                  "rx_bytes": p.rx_bytes, "tx_bytes": p.tx_bytes,
@@ -1007,8 +1016,17 @@ class Node:
             self._write(self._encode(PONG, payload), path)
         elif kind == PONG:
             pending = self._pending.pop(payload, None)
+            if pending is None:
+                late = self._lost_probes.pop(payload, None)
+                if late is not None and late[1] == identity:
+                    # Reclassify: the reply arrived, merely later than a newer
+                    # probe's. The delay is real jitter evidence, not loss.
+                    path.probe_lost = max(0, path.probe_lost - 1)
+                    path.probe_late += 1
+                    pending = late
             if pending is not None and pending[1] == identity:
                 path.probe_acked+=1
+                path.probe_acked_sent_at = max(path.probe_acked_sent_at, pending[0])
                 sample = (time.perf_counter() - pending[0]) * 1000
                 path.rtt_jitter_ms = (sample/2 if path.rtt_ms is None else
                                       .75*path.rtt_jitter_ms+.25*abs(sample-path.rtt_ms))
@@ -1158,16 +1176,39 @@ class Node:
         self._reorder.timeout=min(.2,max(self._reorder_timeout,
             (max(spread,slowest/2)+4*jitter)/1000+self._reorder_timeout))
 
+    def _early_loss_delay(self, path) -> float:
+        """Minimum age before an overtaken probe counts as lost.
+
+        Two smoothed round trips plus four jitter units, never below 100 ms,
+        and bounded by half of path_timeout so the guard stays useful when a
+        caller configures long timeouts.
+        """
+        rtt = path.rtt_ms or 0.0
+        return min(self.path_timeout / 2, max(.1, (2 * rtt + 4 * path.rtt_jitter_ms) / 1000))
+
     def _probe(self) -> None:
         now = time.perf_counter()
         if self.bonding_mode and self.role == "server":
             self._challenges = OrderedDict((key, value) for key, value in self._challenges.items()
                                            if value[2] > now)
         for token,(sent,identity) in list(self._pending.items()):
-            if now-sent>=self.path_timeout:
-                path=self._paths.get(identity)
+            path=self._paths.get(identity)
+            age=now-sent
+            if age>=self.path_timeout:
                 if path:path.probe_lost+=1
                 self._pending.pop(token,None)
+            elif path is not None and sent<path.probe_acked_sent_at and age>=self._early_loss_delay(path):
+                # A probe sent after this one has already completed its round
+                # trip, so this one is lost or badly late. Waiting the full
+                # path_timeout would leave a lossy episode undefended for
+                # seconds; the late-reply branch above undoes a false positive.
+                path.probe_lost+=1
+                path.probe_lost_early+=1
+                self._pending.pop(token,None)
+                self._lost_probes[token]=(sent,identity)
+        while self._lost_probes and (len(self._lost_probes)>256 or
+                now-next(iter(self._lost_probes.values()))[0]>=self.path_timeout):
+            del self._lost_probes[next(iter(self._lost_probes))]
         # Client always probes configured sockets, including failed links. Server
         # probes learned paths until expiration and relies on new client probes
         # for recovery or NAT rebinding.
