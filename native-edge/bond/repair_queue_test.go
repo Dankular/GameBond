@@ -106,7 +106,7 @@ func TestTransmitQueueAdmitsUrgentDuringBulkPressureAndOwnsBuffers(t *testing.T)
 	}
 	ack[20] ^= 1
 	for i := 0; i < maxPending; i++ {
-		s.r.paths[a[0]].budget.Sent(uint64(i), 1400, 0)
+		s.r.paths[pk(a[0])].budget.Sent(uint64(i), 1400, 0)
 	}
 	var delivered [][]byte
 	writer := func(d Datagram) error {

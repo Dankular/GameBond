@@ -182,7 +182,7 @@ func (s *Sender) Controls(result ReceiveResult, now time.Time, writer DatagramWr
 		}
 	}
 	for _, d := range result.Send {
-		s.written(d, s.r.paths[d.Endpoint], now, writer)
+		s.written(d, s.r.paths[PathKey{d.Local, d.Endpoint}], now, writer)
 	}
 }
 func (s *Sender) Urgent(payload []byte, replicate bool, now time.Time, writer DatagramWriter) (int, error) {
@@ -211,7 +211,7 @@ func (s *Sender) Urgent(payload []byte, replicate bool, now time.Time, writer Da
 	}
 	sent := 0
 	for _, p := range paths {
-		if s.written(Datagram{p.endpoint, frame}, p, now, writer) {
+		if s.written(Datagram{Endpoint: p.endpoint, Frame: frame, Local: p.local}, p, now, writer) {
 			p.budget.UnpacedSent(len(frame), s.r.seconds(now), false)
 			sent++
 			s.stats.PriorityCopies++
@@ -377,7 +377,7 @@ func (s *Sender) Bulk(payload []byte, key string, now time.Time, writer Datagram
 		if err != nil {
 			return false, now, err
 		}
-		if s.written(Datagram{p.endpoint, frame}, p, now, writer) {
+		if s.written(Datagram{Endpoint: p.endpoint, Frame: frame, Local: p.local}, p, now, writer) {
 			sequence := binary.BigEndian.Uint64(frame[37:])
 			p.budget.Sent(sequence, len(frame), timestamp)
 			p.bulkFinish = math.Max(p.bulkFinish, s.bulkClock) + float64(len(frame)+28)/p.budget.rate

@@ -8,9 +8,19 @@ import (
 	"time"
 )
 
+// PathKey identifies a path by local socket index and remote endpoint. A server
+// has a single bound socket (Local 0); a client binds one socket per uplink, so
+// several paths share one remote endpoint and the index tells them apart.
+type PathKey struct {
+	Local  int
+	Remote netip.AddrPort
+}
+
 type Datagram struct {
 	Endpoint netip.AddrPort
 	Frame    []byte
+	// Local is the index of the socket to send from (0 for a server).
+	Local int
 }
 type ReceiveResult struct {
 	Send    []Datagram
@@ -25,6 +35,7 @@ type ReceiverStats struct {
 	PolicyDrops                                                                               uint64
 }
 type receivePath struct {
+	local                            int
 	endpoint                         netip.AddrPort
 	ready                            bool
 	last                             time.Time
@@ -61,7 +72,7 @@ type Receiver struct {
 	handshake            *ServerHandshake
 	replay               ReplayWindow
 	floor                uint64
-	paths                map[netip.AddrPort]*receivePath
+	paths                map[PathKey]*receivePath
 	reorder              *Reorder
 	mtu                  int
 	stats                ReceiverStats
@@ -79,7 +90,7 @@ func NewReceiver(codec *Codec, mtu int) (*Receiver, error) {
 		return nil, ErrFrame
 	}
 	r, _ := NewReorder(DefaultReorderConfig())
-	return &Receiver{codec: codec, handshake: NewServerHandshake(), paths: make(map[netip.AddrPort]*receivePath), reorder: r, mtu: mtu, initialRate: 1, maxRate: 100, probes: make(map[[24]byte]pendingProbe), reorderBase: 30 * time.Millisecond}, nil
+	return &Receiver{codec: codec, handshake: NewServerHandshake(), paths: make(map[PathKey]*receivePath), reorder: r, mtu: mtu, initialRate: 1, maxRate: 100, probes: make(map[[24]byte]pendingProbe), reorderBase: 30 * time.Millisecond}, nil
 }
 func (r *Receiver) SetReorderTimeout(timeout time.Duration) error {
 	if len(r.paths) > 0 || timeout < time.Millisecond || timeout > 200*time.Millisecond {
@@ -106,12 +117,13 @@ func (r *Receiver) ReadyPaths(now time.Time) int {
 	}
 	return n
 }
-func (r *Receiver) write(kind byte, payload []byte, endpoint netip.AddrPort, out *ReceiveResult) error {
+func (p *receivePath) key() PathKey { return PathKey{p.local, p.endpoint} }
+func (r *Receiver) write(kind byte, payload []byte, local int, endpoint netip.AddrPort, out *ReceiveResult) error {
 	frame, err := r.codec.Encode(kind, payload)
 	if err != nil {
 		return err
 	}
-	out.Send = append(out.Send, Datagram{endpoint, frame})
+	out.Send = append(out.Send, Datagram{Endpoint: endpoint, Frame: frame, Local: local})
 	return nil
 }
 
@@ -124,11 +136,11 @@ func (r *Receiver) Sent(d Datagram, err error) {
 	}
 	n := uint64(len(d.Frame) + 28)
 	r.stats.WireTX += n
-	if p := r.paths[d.Endpoint]; p != nil {
+	if p := r.paths[PathKey{d.Local, d.Endpoint}]; p != nil {
 		p.wireTX += n
 	}
 }
-func (r *Receiver) newPath(endpoint netip.AddrPort, now time.Time) (*receivePath, error) {
+func (r *Receiver) newPath(local int, endpoint netip.AddrPort, now time.Time) (*receivePath, error) {
 	if len(r.paths) >= 8 {
 		var oldest *receivePath
 		for _, p := range r.paths {
@@ -136,19 +148,27 @@ func (r *Receiver) newPath(endpoint netip.AddrPort, now time.Time) (*receivePath
 				oldest = p
 			}
 		}
-		delete(r.paths, oldest.endpoint)
+		delete(r.paths, oldest.key())
 	}
 	var epoch [8]byte
 	if _, err := rand.Read(epoch[:]); err != nil {
 		return nil, err
 	}
-	p := &receivePath{endpoint: endpoint, txEpoch: binary.BigEndian.Uint64(epoch[:]), last: now}
+	p := &receivePath{local: local, endpoint: endpoint, txEpoch: binary.BigEndian.Uint64(epoch[:]), last: now}
 	p.budget, _ = NewBudget(r.initialRate, r.maxRate)
-	r.paths[endpoint] = p
+	r.paths[p.key()] = p
 	return p, nil
 }
+
+// Receive processes a datagram that arrived on the server's only socket.
 func (r *Receiver) Receive(frame []byte, endpoint netip.AddrPort, now time.Time) (ReceiveResult, error) {
+	return r.ReceiveOn(0, frame, endpoint, now)
+}
+
+// ReceiveOn processes a datagram that arrived on local socket index local.
+func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, now time.Time) (ReceiveResult, error) {
 	var out ReceiveResult
+	key := PathKey{local, endpoint}
 	timestamp := r.seconds(now)
 	if len(frame) > r.mtu || !endpoint.IsValid() {
 		r.stats.Malformed++
@@ -167,7 +187,7 @@ func (r *Receiver) Receive(frame []byte, endpoint netip.AddrPort, now time.Time)
 	payload := packet.Payload
 	r.stats.Authenticated++
 	r.stats.WireRX += uint64(len(frame) + 28)
-	p := r.paths[endpoint]
+	p := r.paths[key]
 	if p != nil {
 		p.wireRX += uint64(len(frame) + 28)
 	}
@@ -198,9 +218,9 @@ func (r *Receiver) Receive(frame []byte, endpoint netip.AddrPort, now time.Time)
 			p = nil
 		}
 		if reply.Kind == Ready && reply.FreshProof {
-			p = r.paths[endpoint]
+			p = r.paths[key]
 			if p == nil {
-				p, err = r.newPath(endpoint, now)
+				p, err = r.newPath(local, endpoint, now)
 				if err != nil {
 					return out, err
 				}
@@ -211,7 +231,7 @@ func (r *Receiver) Receive(frame []byte, endpoint netip.AddrPort, now time.Time)
 				p.lastSequence = h.Sequence
 			}
 		}
-		err = r.write(reply.Kind, reply.Payload, endpoint, &out)
+		err = r.write(reply.Kind, reply.Payload, local, endpoint, &out)
 		return out, err
 	}
 	if !r.handshake.hasPeer || h.Prefix != r.handshake.peer {
@@ -231,7 +251,7 @@ func (r *Receiver) Receive(frame []byte, endpoint netip.AddrPort, now time.Time)
 	var migrated *receivePath
 	if hasEpoch {
 		for _, candidate := range r.paths {
-			if candidate.ready && candidate.hasEpoch && candidate.rxEpoch == epoch && candidate.endpoint != endpoint {
+			if candidate.ready && candidate.hasEpoch && candidate.rxEpoch == epoch && candidate.key() != key {
 				migrated = candidate
 				break
 			}
@@ -273,9 +293,9 @@ func (r *Receiver) Receive(frame []byte, endpoint netip.AddrPort, now time.Time)
 			r.stats.HandshakeRejected++
 			return out, nil
 		}
-		delete(r.paths, migrated.endpoint)
-		migrated.endpoint = endpoint
-		r.paths[endpoint] = migrated
+		delete(r.paths, migrated.key())
+		migrated.local, migrated.endpoint = local, endpoint
+		r.paths[key] = migrated
 		p = migrated
 		p.wireRX += uint64(len(frame) + 28)
 		r.stats.PathMigrations++
@@ -294,7 +314,7 @@ func (r *Receiver) Receive(frame []byte, endpoint netip.AddrPort, now time.Time)
 	}
 	switch h.Kind {
 	case Probe:
-		err = r.write(Pong, payload, endpoint, &out)
+		err = r.write(Pong, payload, local, endpoint, &out)
 	case Pong:
 		var token [24]byte
 		copy(token[:], payload)
@@ -341,7 +361,7 @@ func (r *Receiver) Receive(frame []byte, endpoint netip.AddrPort, now time.Time)
 		binary.BigEndian.PutUint64(ack[8:], p.txEpoch)
 		binary.BigEndian.PutUint64(ack[16:], p.wireTX+Overhead+32+28)
 		binary.BigEndian.PutUint64(ack[24:], p.wireRX)
-		err = r.write(LinkPolicyAck, ack, endpoint, &out)
+		err = r.write(LinkPolicyAck, ack, local, endpoint, &out)
 	case Repair:
 		out.Repairs = append(out.Repairs, MissingPacket{binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:])})
 	case Striped:
@@ -397,7 +417,7 @@ func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 			hold = 1000000
 		}
 		binary.BigEndian.PutUint32(payload[24:], uint32(hold))
-		if err := r.write(Feedback, payload, p.endpoint, &out); err != nil {
+		if err := r.write(Feedback, payload, p.local, p.endpoint, &out); err != nil {
 			return out, err
 		}
 		p.feedbackDue = false
@@ -424,7 +444,7 @@ func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 				break
 			}
 			r.probes[token] = pendingProbe{now, p}
-			if err := r.write(Probe, token[:], p.endpoint, &out); err != nil {
+			if err := r.write(Probe, token[:], p.local, p.endpoint, &out); err != nil {
 				return out, err
 			}
 		}

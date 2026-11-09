@@ -97,7 +97,7 @@ func TestAdaptiveRedundancyRequiresFreshQualityAndHasRecoveryHold(t *testing.T) 
 		t.Fatal("healthy call duplicated without risk")
 	}
 	for _, endpoint := range a {
-		p := f.r.paths[endpoint]
+		p := f.r.paths[pk(endpoint)]
 		p.budget.lossRatio = .2
 		p.budget.deliveryCounter += 1000
 	}
@@ -106,7 +106,7 @@ func TestAdaptiveRedundancyRequiresFreshQualityAndHasRecoveryHold(t *testing.T) 
 		t.Fatal("fresh measured loss did not activate redundancy")
 	}
 	for _, endpoint := range a {
-		f.r.paths[endpoint].last = f.now.Add(4 * time.Second)
+		f.r.paths[pk(endpoint)].last = f.now.Add(4 * time.Second)
 	}
 	q.Observe(s, f.now.Add(time.Second))
 	if !q.Replicate(18, 200, false, f.now.Add(time.Second)) {
@@ -121,7 +121,7 @@ func TestDuplicateBudgetIsBoundedAndDisabledQoSPreservesExplicitPolicy(t *testin
 	f, s, a := senderFixture(t, 2)
 	q, _ := NewAdaptiveQoS(DefaultQoSSettings())
 	for _, endpoint := range a {
-		p := f.r.paths[endpoint]
+		p := f.r.paths[pk(endpoint)]
 		p.jitter = .02
 	}
 	q.Observe(s, f.now)

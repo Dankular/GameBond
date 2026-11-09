@@ -22,8 +22,8 @@ func senderFixture(t *testing.T, paths int) (receiverFixture, *Sender, []netip.A
 		a := netip.AddrPortFrom(f.endpoint.Addr(), uint16(1234+i))
 		f.connect(t, a)
 		addresses = append(addresses, a)
-		f.r.paths[a].hasRTT = true
-		f.r.paths[a].rtt = .02
+		f.r.paths[pk(a)].hasRTT = true
+		f.r.paths[pk(a)].rtt = .02
 	}
 	return f, sender, addresses
 }
@@ -40,8 +40,8 @@ func policyPayload(revision uint64, role byte, blocked bool, upload, download fl
 }
 func TestSenderWeightedSingleFlowAndAuthenticatedFeedback(t *testing.T) {
 	f, s, addresses := senderFixture(t, 2)
-	f.r.paths[addresses[0]].budget, _ = NewBudget(10, 10)
-	f.r.paths[addresses[1]].budget, _ = NewBudget(20, 20)
+	f.r.paths[pk(addresses[0])].budget, _ = NewBudget(10, 10)
+	f.r.paths[pk(addresses[1])].budget, _ = NewBudget(20, 20)
 	var packets []Datagram
 	counts := map[netip.AddrPort]int{}
 	delivered := map[netip.AddrPort]uint64{}
@@ -63,7 +63,7 @@ func TestSenderWeightedSingleFlowAndAuthenticatedFeedback(t *testing.T) {
 		}
 		counts[d.Endpoint]++
 		delivered[d.Endpoint] += uint64(len(d.Frame))
-		p := f.r.paths[d.Endpoint]
+		p := f.r.paths[pk(d.Endpoint)]
 		feedback := make([]byte, 28)
 		binary.BigEndian.PutUint64(feedback, p.txEpoch)
 		binary.BigEndian.PutUint64(feedback[8:], packet.Header.Sequence)
@@ -133,11 +133,11 @@ func TestLinkRolesFailClosedForUnconfirmedAndFailOverToBackup(t *testing.T) {
 	}
 	// Same revision cannot silently alter the effective policy.
 	f.receive(t, LinkPolicy, policyPayload(2, Primary, false, 0, 0), a[0])
-	if f.r.paths[a[0]].policy.Role != Never {
+	if f.r.paths[pk(a[0])].policy.Role != Never {
 		t.Fatal("same revision overwrote policy")
 	}
 	f.receive(t, LinkPolicy, policyPayload(1, Primary, false, 0, 0), a[0])
-	if f.r.paths[a[0]].policy.Role != Never {
+	if f.r.paths[pk(a[0])].policy.Role != Never {
 		t.Fatal("old revision overwrote policy")
 	}
 }
@@ -157,13 +157,13 @@ func TestConfiguredWireCapChargesControlUrgentAndEveryCopy(t *testing.T) {
 			t.Fatal(err)
 		}
 		frame, _ := f.r.codec.Encode(Pong, probe(1))
-		s.Controls(ReceiveResult{Send: []Datagram{{a[0], frame}, {a[1], frame}}}, now, writer)
+		s.Controls(ReceiveResult{Send: []Datagram{{Endpoint: a[0], Frame: frame}, {Endpoint: a[1], Frame: frame}}}, now, writer)
 	}
 	for _, endpoint := range a {
 		if tx[endpoint] > 127800 || tx[endpoint] < 120000 {
 			t.Fatal("wire cap not enforced per copy", tx)
 		}
-		if f.r.paths[endpoint].wireTX != uint64(tx[endpoint]) {
+		if f.r.paths[pk(endpoint)].wireTX != uint64(tx[endpoint]) {
 			t.Fatal("all-wire meter disagrees with successful writes")
 		}
 	}
@@ -173,7 +173,7 @@ func TestConfiguredWireCapChargesControlUrgentAndEveryCopy(t *testing.T) {
 }
 func TestUrgentTCPAcknowledgementBypassesBulkWindow(t *testing.T) {
 	f, s, a := senderFixture(t, 1)
-	p := f.r.paths[a[0]]
+	p := f.r.paths[pk(a[0])]
 	for i := 0; i < maxPending; i++ {
 		p.budget.Sent(uint64(i), 1400, 0)
 	}

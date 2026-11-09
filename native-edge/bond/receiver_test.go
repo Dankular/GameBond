@@ -126,7 +126,7 @@ func TestReceiverNATMigrationRequiresKnownEpochAndNewSequence(t *testing.T) {
 		t.Fatal("old sequence moved path")
 	}
 	f.receive(t, Probe, probe(1), changed)
-	if f.r.Stats().PathMigrations != 1 || f.r.paths[f.endpoint] != nil || f.r.paths[changed] == nil {
+	if f.r.Stats().PathMigrations != 1 || f.r.paths[pk(f.endpoint)] != nil || f.r.paths[pk(changed)] == nil {
 		t.Fatal("fresh authenticated NAT migration failed")
 	}
 }

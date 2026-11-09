@@ -99,7 +99,7 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 			if err != nil {
 				return err
 			}
-			if s.written(Datagram{best.endpoint, frame}, best, now, writer) {
+			if s.written(Datagram{Endpoint: best.endpoint, Frame: frame, Local: best.local}, best, now, writer) {
 				if asked == nil {
 					asked = &askedRepair{key: key}
 					asked.order = s.askedOrder.PushBack(asked)
@@ -156,7 +156,7 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		if err != nil {
 			return err
 		}
-		if s.written(Datagram{target.endpoint, frame}, target, now, writer) {
+		if s.written(Datagram{Endpoint: target.endpoint, Frame: frame, Local: target.local}, target, now, writer) {
 			target.budget.Sent(binary.BigEndian.Uint64(frame[37:]), len(frame), timestamp)
 			cached.attempts++
 			delete(s.repairRequests, key)
