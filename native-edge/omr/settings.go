@@ -269,3 +269,6 @@ func LoadServerMode(config map[string]any) (string, *Settings, error) {
 	}
 	return modeS, s, nil
 }
+
+// IPv4 is ipaddress.IPv4Address(x) for decoded JSON values.
+func IPv4(v any) (netip.Addr, error) { return ipv4(v) }

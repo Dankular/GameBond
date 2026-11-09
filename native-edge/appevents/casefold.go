@@ -14,3 +14,6 @@ func casefold(s string) string {
 	}
 	return b.String()
 }
+
+// Casefold is Python's str.casefold, for packages that must match it.
+func Casefold(s string) string { return casefold(s) }
