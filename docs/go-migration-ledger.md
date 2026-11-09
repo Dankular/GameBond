@@ -79,6 +79,27 @@ retired deliberately. Order of work: wire kinds + `loss_tracking` /
 `path_mtu_discovery` -> LINK_POLICY sender -> `failover_replay` -> client I/O
 plane (`cmd/client`) -> cutover benchmark -> services -> GUI.
 
+## Proposed drop decisions (NOT decided: need the user's written sign-off)
+
+Cutover criterion 1 lets a row be dropped only with an explicit written decision.
+These are proposals from reading the Python code, not decisions:
+
+- **TUN-mode host networking** (`tun.py`, `capture.py`, the TUN path of `app.py`,
+  `windows_network.py` routes/QoS, `windows_dns.py` NRPT). `app.py` is the only
+  caller of `WindowsDnsScope`/`WindowsNetwork`/`open_tun`; the userspace path
+  (`userspace.py`, which the Go client replaces) uses a netstack and a SOCKS/stdio
+  bridge and changes no host routes or DNS. Dropping it means the Go client has
+  no whole-machine capture, only the app-proxy and LAN-gateway modes. The ported
+  `nrpt` and `procjob` packages would stay as libraries nothing in the Go daemon
+  calls.
+- **Admin web portal** (`admin/server.py`, `cert.py`, `system.py`): documented
+  unsupported on the Go edge; `adminauth` (the password/session library) is ported.
+  Dropping it loses the browser UI for config edit/restart/hardware tabs.
+- **Tray / GUI** (`tray.py`, the GUI section): needs a UI decision.
+- **Elevated launcher** (`windows_launcher.py`, `windows_packet_filter.py`): needed
+  only for TUN mode and Windows LAN frame I/O; without it Go LAN gateways stay
+  Linux-only.
+
 ## Cutover criteria (Python may be deleted only when all hold)
 
 1. Every row above is DONE or has an explicit written decision to drop it.
