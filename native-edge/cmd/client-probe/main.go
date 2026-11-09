@@ -25,6 +25,7 @@ type config struct {
 	Paths        int
 	Send         int  // payloads to send once every uplink is ready
 	MTU          bool // enable per-path MTU discovery
+	Rate         float64 // sender initial and maximum Mbit/s per uplink (default 10/20)
 	Policy       bool // send a primary link policy on every uplink (50 Mbit/s each way)
 }
 
@@ -76,12 +77,12 @@ func run() error {
 	if err = receiver.SetPathMTUDiscovery(c.MTU); err != nil {
 		return err
 	}
-	sender, err := bond.NewSender(receiver, 10, 20)
+	sender, err := bond.NewSender(receiver, max(10, c.Rate/4), max(20, c.Rate))
 	_ = sender
 	if err != nil {
 		return err
 	}
-	outbound, err := bond.NewTransmitQueue(sender, 1024, 4*1024*1024)
+	outbound, err := bond.NewTransmitQueue(sender, 40000, 64*1024*1024)
 	if err != nil {
 		return err
 	}

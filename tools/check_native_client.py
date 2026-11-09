@@ -47,20 +47,21 @@ def main():
     parser.add_argument('--mtu', action='store_true', help='enable path MTU discovery on both sides')
     parser.add_argument('--send', type=int, default=200, help='Go -> Python payload count (max 1000)')
     parser.add_argument('--policy', action='store_true', help='Go client sends a primary link policy per uplink')
+    parser.add_argument('--rate', type=float, default=10, help='Mbit/s ceiling per uplink, both sides')
     parser.add_argument('--no-evidence', action='store_true')
     args = parser.parse_args()
     exe = ROOT / 'build' / ('gamebond-native-client-probe.exe' if sys.platform == 'win32' else 'gamebond-native-client-probe')
     SEND = args.send
     key, session = secrets.token_bytes(32), secrets.token_bytes(16)
     server = Node(key, 'server', session, [('127.0.0.1', 0)], bonding_mode=True, probe_interval=.025,
-                  path_timeout=.3, initial_rate_mbps=10, max_rate_mbps=10, path_mtu_discovery=args.mtu).start()
+                  path_timeout=.3, initial_rate_mbps=max(10, args.rate / 4), max_rate_mbps=args.rate, path_mtu_discovery=args.mtu).start()
     process = None
     try:
         host, port = server.addresses[0]
         process = subprocess.Popen([str(exe)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         process.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), server=f'{host}:{port}',
-                                            paths=args.paths, send=SEND, mtu=args.mtu, policy=args.policy)) + '\n')
+                                            paths=args.paths, send=SEND, mtu=args.mtu, policy=args.policy, rate=args.rate)) + '\n')
         process.stdin.flush()
         assert json.loads(process.stdout.readline())['status'] == 'started'
 
