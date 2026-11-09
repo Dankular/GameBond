@@ -20,12 +20,12 @@ const BaseRTTWindow = 10.0
 // Budget preserves the Python PathBudget's units and authenticated-feedback
 // growth gates. All times are caller-supplied monotonic seconds; it never waits.
 type Budget struct {
-	initial, maximum, rate, minimum, next, inflight                                     float64
-	srtt, rawSRTT, minRTT, rtoBackoff                                                   float64
+	initial, maximum, rate, minimum, next, inflight float64
+	srtt, rawSRTT, minRTT, rtoBackoff               float64
 	// Jitter-aware delay baseline (see BaseRTTWindow): rttVar is a mean deviation,
 	// baseCur/basePrev are the minima of the current and previous window.
-	rttVar, baseCur, basePrev, baseStarted float64
-	hasBaseCur, hasBasePrev, hasBaseStarted bool
+	rttVar, baseCur, basePrev, baseStarted                                              float64
+	hasBaseCur, hasBasePrev, hasBaseStarted                                             bool
 	hasMin, hasSent, hasAck                                                             bool
 	lastSent, lastAck                                                                   uint64
 	lastSentAt                                                                          float64

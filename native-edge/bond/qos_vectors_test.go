@@ -11,15 +11,15 @@ import (
 )
 
 type vecPath struct {
-	Slot       int      `json:"slot"`
-	Local      string   `json:"local"`
-	Remote     string   `json:"remote"`
-	Healthy    bool     `json:"healthy"`
-	Available  *bool    `json:"available"`
-	Enabled    *bool    `json:"enabled"`
-	RTT        *float64 `json:"rtt_ms"`
-	Jitter     *float64 `json:"rtt_jitter_ms"`
-	Bonding    struct {
+	Slot      int      `json:"slot"`
+	Local     string   `json:"local"`
+	Remote    string   `json:"remote"`
+	Healthy   bool     `json:"healthy"`
+	Available *bool    `json:"available"`
+	Enabled   *bool    `json:"enabled"`
+	RTT       *float64 `json:"rtt_ms"`
+	Jitter    *float64 `json:"rtt_jitter_ms"`
+	Bonding   struct {
 		Expired, Acked, Delivered uint64
 		Loss, Queue               float64
 	}

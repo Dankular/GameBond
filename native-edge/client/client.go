@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gamebond.local/nativeedge/bond"
+	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/uplink"
 )
 
@@ -37,12 +38,17 @@ type Config struct {
 	// Deliver receives each payload the server sends; it runs on the loop
 	// goroutine and must not block.
 	Deliver func(payload []byte)
+	// Outer, when set, wraps every usable uplink in a carrier.Socket: after
+	// FallbackAfter seconds without authenticated UDP the path moves to a
+	// stream carrier and tries UDP again every RecoveryInterval.
+	Outer *carrier.Settings
 }
 
 type inbound struct {
 	local    int
 	frame    []byte
 	endpoint netip.AddrPort
+	rx       *carrier.Received // set when the datagram came through a carrier socket
 }
 
 type Client struct {
@@ -51,6 +57,8 @@ type Client struct {
 	sender   *bond.Sender
 	queue    *bond.TransmitQueue
 	conns    []*net.UDPConn
+	socks    []*carrier.Socket // nil entry: plain UDP
+	lastRec  []time.Time
 	incoming chan inbound
 	submit   chan bond.QueuedPacket
 	policies chan []bond.PathPolicy
@@ -68,6 +76,8 @@ type Snapshot struct {
 	Queue    bond.TransmitQueueStats
 	Paths    []bond.PathSnapshot
 	Rejected uint64
+	// Carrier has one entry per uplink; Mode is empty for a plain UDP uplink.
+	Carrier []carrier.Stats
 }
 
 var ErrConfig = errors.New("client: invalid configuration")
@@ -125,6 +135,16 @@ func New(cfg Config) (*Client, error) {
 			return nil, fmt.Errorf("uplink %d: %w", i, err)
 		}
 		c.conns = append(c.conns, conn)
+		var sock *carrier.Socket
+		if cfg.Outer != nil && spec.Addr.IsValid() && !spec.Addr.IsUnspecified() {
+			sock, err = carrier.NewSocket(conn, net.UDPAddrFromAddrPort(cfg.Server), cfg.Key, cfg.Session, *cfg.Outer, uplink.Control(spec))
+			if err != nil {
+				c.closeConns()
+				return nil, fmt.Errorf("uplink %d carrier: %w", i, err)
+			}
+		}
+		c.socks = append(c.socks, sock)
+		c.lastRec = append(c.lastRec, time.Time{})
 		if err = r.AddClientPath(i, cfg.Server, now); err != nil {
 			c.closeConns()
 			return nil, err
@@ -140,6 +160,11 @@ func New(cfg Config) (*Client, error) {
 }
 
 func (c *Client) closeConns() {
+	for _, s := range c.socks {
+		if s != nil {
+			s.Close()
+		}
+	}
 	for _, conn := range c.conns {
 		conn.Close()
 	}
@@ -175,6 +200,18 @@ func (c *Client) write(d bond.Datagram) error {
 	if d.Local < 0 || d.Local >= len(c.conns) {
 		return fmt.Errorf("client: datagram for unknown uplink %d", d.Local)
 	}
+	if s := c.socks[d.Local]; s != nil {
+		var err error
+		if d.DirectUDP {
+			err = s.SendUDPProbe(d.Frame)
+		} else {
+			err = s.Send(d.Frame)
+		}
+		if errors.Is(err, carrier.ErrWouldBlock) {
+			return nil // reconnecting or queue full: dropped and counted by the carrier
+		}
+		return err
+	}
 	_, err := c.conns[d.Local].WriteToUDPAddrPort(d.Frame, d.Endpoint)
 	return err
 }
@@ -183,6 +220,26 @@ func (c *Client) write(d bond.Datagram) error {
 func (c *Client) Run(ctx context.Context) error {
 	defer c.closeConns()
 	for i := range c.conns {
+		if c.socks[i] != nil {
+			go func(i int) {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case r, ok := <-c.socks[i].Recv():
+						if !ok {
+							return
+						}
+						select {
+						case c.incoming <- inbound{i, r.Packet, c.cfg.Server, &r}:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
+			}(i)
+			continue
+		}
 		go func(i int) {
 			buf := make([]byte, 65536)
 			for {
@@ -191,7 +248,7 @@ func (c *Client) Run(ctx context.Context) error {
 					return
 				}
 				select {
-				case c.incoming <- inbound{i, append([]byte(nil), buf[:n]...), from}:
+				case c.incoming <- inbound{i, append([]byte(nil), buf[:n]...), from, nil}:
 				case <-ctx.Done():
 					return
 				}
@@ -223,9 +280,17 @@ func (c *Client) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case d := <-c.incoming:
-			res, err := c.recv.ReceiveOn(d.local, d.frame, d.endpoint, hrclock.Now())
+			res, err := c.recv.ReceiveVia(d.local, d.frame, d.endpoint, hrclock.Now(), d.rx == nil || d.rx.Transport == "udp")
 			if err != nil {
 				return err
+			}
+			if d.rx != nil {
+				if res.Authenticated {
+					c.socks[d.local].NoteAuthenticated(*d.rx)
+				}
+				if res.ReturnToUDP {
+					c.socks[d.local].ReturnToUDP()
+				}
 			}
 			handle(res, hrclock.Now())
 		case p := <-c.submit:
@@ -237,6 +302,9 @@ func (c *Client) Run(ctx context.Context) error {
 		case <-idle:
 		}
 		now := hrclock.Now()
+		if err := c.carrierTick(now); err != nil {
+			return err
+		}
 		res, err := c.recv.Tick(now)
 		if err != nil {
 			return err
@@ -256,9 +324,42 @@ func (c *Client) Run(ctx context.Context) error {
 			c.snapshot.Ready, c.snapshot.Uplinks = c.recv.ReadyPaths(now), len(c.conns)
 			c.snapshot.Receiver, c.snapshot.Sender = c.recv.Stats(), c.sender.Stats()
 			c.snapshot.Queue, c.snapshot.Paths = c.queue.Stats(), c.sender.Paths(now)
+			if c.cfg.Outer != nil {
+				c.snapshot.Carrier = make([]carrier.Stats, len(c.socks))
+				for i, s := range c.socks {
+					if s != nil {
+						c.snapshot.Carrier[i] = s.Stats()
+					}
+				}
+			}
 			c.mu.Unlock()
 		}
 	}
+}
+
+// carrierTick asks each carrier socket to consider falling back and, while one
+// is on a stream, probes UDP with a recovery HELLO every RecoveryInterval.
+func (c *Client) carrierTick(now time.Time) error {
+	if c.cfg.Outer == nil {
+		return nil
+	}
+	interval := time.Duration(c.cfg.Outer.RecoveryInterval * float64(time.Second))
+	for i, s := range c.socks {
+		if s == nil {
+			continue
+		}
+		s.Tick(now)
+		if now.Sub(c.lastRec[i]) < interval || s.Stats().Mode == "udp" {
+			continue
+		}
+		c.lastRec[i] = now
+		d, err := c.recv.StartRecovery(i, now)
+		if err != nil {
+			continue // path not configured or no entropy: try again next interval
+		}
+		_ = c.write(d) // a failed probe is simply retried next interval
+	}
+	return nil
 }
 
 // SetPolicies installs a new per-uplink policy set (one entry per uplink, by

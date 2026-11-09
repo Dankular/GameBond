@@ -84,3 +84,11 @@ func (h *ClientHandshake) Handle(packet Packet, now time.Time) (reply *ClientRep
 	*h = ClientHandshake{}
 	return nil, true, peer, true
 }
+
+// Restart begins a handshake attempt with a caller-chosen HELLO nonce (UDP
+// recovery: path.hello_nonce=recovery nonce, hello_started=now, server cleared).
+func (h *ClientHandshake) Restart(nonce [16]byte, now time.Time) {
+	h.hello, h.hasHello, h.started = nonce, true, now
+	h.hasServer = false
+	h.challengePrefix = [16]byte{}
+}

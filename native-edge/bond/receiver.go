@@ -2,6 +2,7 @@ package bond
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/binary"
 	"math"
 	"net/netip"
@@ -21,6 +22,9 @@ type Datagram struct {
 	Frame    []byte
 	// Local is the index of the socket to send from (0 for a server).
 	Local int
+	// DirectUDP asks the caller to send over UDP even if the path has fallen
+	// back to a stream carrier (recovery probes).
+	DirectUDP bool
 }
 type ReceiveResult struct {
 	Send    []Datagram
@@ -28,6 +32,12 @@ type ReceiveResult struct {
 	Repairs []MissingPacket
 	// Unavailable lists repairs the peer answered with REPAIR_NA.
 	Unavailable []MissingPacket
+	// Authenticated is true when the datagram proved a live peer on a ready path
+	// (the point where Python calls sock.note_authenticated()).
+	Authenticated bool
+	// ReturnToUDP is true when a UDP CHALLENGE answered a recovery HELLO: the
+	// stream carrier should be dropped and UDP used again.
+	ReturnToUDP bool
 }
 type ReceiverStats struct {
 	Authenticated, AuthenticationErrors, Malformed, Duplicates, FloorDrops, HandshakeRejected uint64
@@ -83,6 +93,7 @@ type Receiver struct {
 	replay               ReplayWindow
 	floor                uint64
 	paths                map[PathKey]*receivePath
+	recovery             map[int]recoveryState
 	reorder              *Reorder
 	mtu                  int
 	stats                ReceiverStats
@@ -188,6 +199,13 @@ func (r *Receiver) Receive(frame []byte, endpoint netip.AddrPort, now time.Time)
 
 // ReceiveOn processes a datagram that arrived on local socket index local.
 func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, now time.Time) (ReceiveResult, error) {
+	return r.ReceiveVia(local, frame, endpoint, now, true)
+}
+
+// ReceiveVia is ReceiveOn that also says whether the datagram arrived over
+// UDP (true) or a stream carrier (false); only a UDP CHALLENGE can complete a
+// UDP recovery.
+func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, now time.Time, viaUDP bool) (ReceiveResult, error) {
 	var out ReceiveResult
 	key := PathKey{local, endpoint}
 	timestamp := r.seconds(now)
@@ -218,7 +236,19 @@ func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, n
 	}
 	if h.Kind >= Hello && h.Kind <= Ready {
 		if r.role == "client" {
-			return r.clientHandshake(p, packet, now)
+			returned := false
+			if h.Kind == Challenge && viaUDP && len(payload) == 32 {
+				if rec, ok := r.recovery[local]; ok && now.Sub(rec.at) < handshakeLifetime &&
+					subtle.ConstantTimeCompare(payload[16:], rec.nonce[:]) == 1 {
+					p.hello.Restart(rec.nonce, now)
+					delete(r.recovery, local)
+					returned = true
+				}
+			}
+			res, err := r.clientHandshake(p, packet, now)
+			res.ReturnToUDP = returned
+			res.Authenticated = p.ready
+			return res, err
 		}
 		if h.Kind == Reset && h.Sequence == math.MaxUint64 {
 			r.stats.HandshakeRejected++
@@ -341,6 +371,7 @@ func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, n
 		return out, nil
 	}
 	p.last = now
+	out.Authenticated = true
 	if h.Sequence > p.lastSequence {
 		p.lastSequence = h.Sequence
 	}
@@ -563,4 +594,42 @@ func (r *Receiver) updateReorderBudget() {
 		timeout = math.Min(.2, math.Max(timeout, math.Max((maximum-minimum)/2, maximum/2)+4*jitter+timeout))
 	}
 	r.reorder.config.Timeout = time.Duration(timeout * float64(time.Second))
+}
+
+type recoveryState struct {
+	nonce [16]byte
+	at    time.Time
+}
+
+// StartRecovery builds a HELLO with a fresh nonce for the client path on local
+// socket local; the caller sends it over UDP (DirectUDP). A UDP CHALLENGE that
+// echoes the nonce within the handshake lifetime sets ReturnToUDP and restarts
+// the path handshake with that nonce (Node._udp_recovery).
+func (r *Receiver) StartRecovery(local int, now time.Time) (Datagram, error) {
+	if r.role != "client" {
+		return Datagram{}, errNotClient
+	}
+	var path *receivePath
+	for _, p := range r.paths {
+		if p.local == local {
+			path = p
+			break
+		}
+	}
+	if path == nil {
+		return Datagram{}, ErrFrame
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return Datagram{}, err
+	}
+	if r.recovery == nil {
+		r.recovery = map[int]recoveryState{}
+	}
+	r.recovery[local] = recoveryState{nonce, now}
+	frame, err := r.codec.Encode(Hello, nonce[:])
+	if err != nil {
+		return Datagram{}, err
+	}
+	return Datagram{Endpoint: path.endpoint, Frame: frame, Local: local, DirectUDP: true}, nil
 }

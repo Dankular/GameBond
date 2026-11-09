@@ -66,3 +66,25 @@ func Open(s Spec) (*net.UDPConn, error) {
 	}
 	return pc.(*net.UDPConn), nil
 }
+
+// Control returns a socket Control function that pins a (TCP) socket to the
+// uplink's adapter, for the stream-carrier fallback. It returns nil when the
+// spec names no adapter.
+func Control(s Spec) func(network, address string, c syscall.RawConn) error {
+	index := s.InterfaceIndex
+	if s.Interface != "" && index == 0 {
+		if ifc, err := net.InterfaceByName(s.Interface); err == nil {
+			index = ifc.Index
+		}
+	}
+	if index == 0 {
+		return nil
+	}
+	return func(network, address string, c syscall.RawConn) error {
+		var inner error
+		if err := c.Control(func(fd uintptr) { inner = pin(fd, index, s.Interface) }); err != nil {
+			return err
+		}
+		return inner
+	}
+}

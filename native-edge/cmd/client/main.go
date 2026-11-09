@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"gamebond.local/nativeedge/bond"
+	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/client"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/omr"
@@ -40,6 +42,7 @@ type fileConfig struct {
 	GameUDPPorts   []uint16                     `json:"game_udp_ports"`
 	PathMTU        bool                         `json:"path_mtu_discovery"`
 	InterfaceIndex []int                        `json:"interface_indices"` // pin uplink i to this adapter index
+	OuterTransport json.RawMessage              `json:"outer_transport"`   // stream-carrier fallback; null/absent = UDP only
 }
 
 func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
@@ -83,6 +86,24 @@ func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
 		specs = append(specs, spec)
 	}
 	return c, specs, netip.AddrPortFrom(addr, uint16(port)), nil
+}
+
+// outerSettings parses outer_transport like OuterSettings(**dict): defaults for
+// omitted timers, unknown keys rejected, the same validation.
+func outerSettings(raw json.RawMessage) (*carrier.Settings, error) {
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "null" {
+		return nil, nil
+	}
+	set := carrier.DefaultSettings()
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&set); err != nil {
+		return nil, fmt.Errorf("outer_transport: %w", err)
+	}
+	if err := set.Validate(); err != nil {
+		return nil, fmt.Errorf("outer_transport: %w", err)
+	}
+	return &set, nil
 }
 
 func run() error {
@@ -158,10 +179,14 @@ func run() error {
 	if mtu == 0 {
 		mtu = 1280
 	}
+	outer, err := outerSettings(cfg.OuterTransport)
+	if err != nil {
+		return err
+	}
 	routed := &routedUplink{deliver: bridge.Deliver}
 	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs,
 		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay,
-		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver})
+		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer})
 	if err != nil {
 		return err
 	}

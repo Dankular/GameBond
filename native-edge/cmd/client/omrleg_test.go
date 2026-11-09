@@ -99,3 +99,22 @@ func TestOMRLegBlocksAfterRefusedLoginOnly(t *testing.T) {
 }
 
 func newTestNat() (*nat.Nat, error) { return nat.New(netip.MustParseAddr("10.255.254.7"), 0, 0, 0) }
+
+func TestOuterSettings(t *testing.T) {
+	if s, err := outerSettings(nil); s != nil || err != nil {
+		t.Fatal("absent must disable the carrier")
+	}
+	if s, err := outerSettings([]byte("null")); s != nil || err != nil {
+		t.Fatal("null must disable the carrier")
+	}
+	s, err := outerSettings([]byte(`{"endpoints":[{"mode":"tcp","port":443}]}`))
+	if err != nil || s.FallbackAfter != 1.5 || s.RecoveryInterval != 5 || s.QueuePackets != 32 {
+		t.Fatalf("%+v %v", s, err)
+	}
+	for _, bad := range []string{`{}`, `{"endpoints":[{"mode":"tcp","port":443}],"bogus":1}`, `{"endpoints":[{"mode":"tls","port":443}]}`,
+		`{"endpoints":[{"mode":"tcp","port":443}],"fallback_after":0}`, `[]`} {
+		if _, err := outerSettings([]byte(bad)); err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+}
