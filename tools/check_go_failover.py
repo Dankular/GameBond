@@ -80,13 +80,14 @@ def main():
     p.add_argument('--cut', type=float, default=4)
     p.add_argument('--restore', type=float, default=10, help='0 = never restore')
     p.add_argument('--failover', action='store_true', help='enable suspect-path replay on the client')
+    p.add_argument('--echo', action='store_true', help='server echoes payloads back: exercises server -> client under the cut')
     p.add_argument('--min-ratio', type=float, default=.9)
     args = p.parse_args()
     key, session = secrets.token_bytes(32), secrets.token_bytes(16)
     server = client = relay = None
     try:
         server = spawn('receiver-probe')
-        server.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), bonded=True, sink=True, rate=args.rate)) + '\n')
+        server.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), bonded=True, sink=not args.echo, rate=args.rate, failover=args.failover)) + '\n')
         server.stdin.flush()
         host, port = json.loads(server.stdout.readline())['address'].rsplit(':', 1)
         relay = Relay((host, int(port)))
@@ -114,8 +115,11 @@ def main():
                       client_ready_paths=creport['ready_paths'], server_auth_errors=sreport['receiver']['AuthenticationErrors'], server_duplicates=sreport['receiver'].get('Duplicates'),
                       client_failover={k: v for k, v in creport['sender'].items() if k.startswith('Failover')},
                       client_queue_expired=creport['transmit_queue']['Expired'])
+        if args.echo:
+            result['client_received_echoes'] = creport['receiver']['PayloadPackets']
         print(json.dumps(result))
-        ok = (relay.dropped > 0 and got / args.send >= args.min_ratio and result['server_auth_errors'] == 0
+        back = creport['receiver']['PayloadPackets'] / args.send if args.echo else 1
+        ok = (relay.dropped > 0 and got / args.send >= args.min_ratio and back >= args.min_ratio and result['server_auth_errors'] == 0
               and (not args.restore or creport['ready_paths'] == 2))
         print('PASS' if ok else 'FAIL')
         return 0 if ok else 1

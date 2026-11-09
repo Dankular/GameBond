@@ -21,6 +21,7 @@ type config struct {
 	Bonded       bool
 	Sink         bool    // count payloads, do not echo them
 	Rate         float64 // bonded sender ceiling Mbit/s per uplink (default 10/20)
+	Failover     bool    // enable suspect-path replay on the sender
 }
 
 func run() error {
@@ -56,6 +57,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		sender.EnableFailover(c.Failover)
 		outbound, err = bond.NewTransmitQueue(sender, 1024, 1024*1024)
 		if err != nil {
 			return err
