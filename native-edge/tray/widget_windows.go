@@ -73,6 +73,8 @@ func (w *Widget) start() {
 		case "drag":
 			user32.NewProc("ReleaseCapture").Call()
 			procPostMessage.Call(w.hwnd, 0xa1, 2, 0) // WM_NCLBUTTONDOWN, HTCAPTION
+		case "reload":
+			w.browser.Dispatch(func() { w.browser.Navigate(w.URL) })
 		default:
 			return errors.New("unknown window action")
 		}

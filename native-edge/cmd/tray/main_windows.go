@@ -86,6 +86,7 @@ func main() {
 	var busy atomic.Bool
 	var latest atomic.Value
 	var refreshMu sync.Mutex
+	var appActivity dashboard.AppActivitySampler
 	latest.Store(map[string]any{"state": "starting"})
 	refresh := func() {
 		refreshMu.Lock()
@@ -94,6 +95,7 @@ func main() {
 			return ttyrelay.Control(abs(*relayPath), "status", 2*time.Second, io.Discard)
 		})
 		doc["adapter_activity"] = latest.Load().(map[string]any)["adapter_activity"]
+		doc["protect_activity"] = appActivity.Sample(doc, time.Now())
 		journal.Observe(doc)
 		latest.Store(doc)
 	}

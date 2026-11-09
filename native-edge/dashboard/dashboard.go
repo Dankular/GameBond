@@ -392,6 +392,9 @@ func (s *Server) appPolicy(w http.ResponseWriter, r *http.Request) {
 				out[k] = v
 			}
 		}
+		if p, err := apppolicy.New(cfg); err == nil {
+			out["policy_digest"] = p.Digest()
+		}
 		return out
 	}, func(raw []byte) (map[string]any, error) {
 		var cfg map[string]any

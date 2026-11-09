@@ -24,6 +24,9 @@ var widgetScanner []byte
 //go:embed widget_journal.js
 var widgetJournal []byte
 
+//go:embed widget_protect.js
+var widgetProtect []byte
+
 func (s *Server) widgetPage(w http.ResponseWriter, r *http.Request) {
 	if !s.authorised(r) {
 		http.NotFound(w, r)
@@ -35,6 +38,7 @@ func (s *Server) widgetPage(w http.ResponseWriter, r *http.Request) {
 	page := bytes.ReplaceAll(widgetHTML, []byte("__SETTINGS_SCRIPT__"), widgetSettings)
 	page = bytes.ReplaceAll(page, []byte("__SCANNER_SCRIPT__"), widgetScanner)
 	page = bytes.ReplaceAll(page, []byte("__JOURNAL_SCRIPT__"), widgetJournal)
+	page = bytes.ReplaceAll(page, []byte("__PROTECT_SCRIPT__"), widgetProtect)
 	w.Write(bytes.ReplaceAll(page, []byte("__TOKEN__"), []byte(s.token)))
 }
 
