@@ -20,6 +20,9 @@ import (
 type Spec struct {
 	Addr      netip.Addr
 	Interface string
+	// InterfaceIndex selects the egress adapter by OS index instead of name
+	// (what the Python config calls interface_indices). Zero means unset.
+	InterfaceIndex int
 	// Buffer is the socket send and receive buffer in bytes (0 keeps the default).
 	Buffer int
 }
@@ -31,8 +34,8 @@ func Open(s Spec) (*net.UDPConn, error) {
 	if s.Addr.IsValid() && !s.Addr.Is4() {
 		return nil, fmt.Errorf("uplink: only IPv4 addresses are supported")
 	}
-	var index int
-	if s.Interface != "" {
+	index := s.InterfaceIndex
+	if s.Interface != "" && index == 0 {
 		ifc, err := net.InterfaceByName(s.Interface)
 		if err != nil {
 			return nil, fmt.Errorf("uplink: interface %q: %w", s.Interface, err)
