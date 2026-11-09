@@ -18,6 +18,17 @@ class DNSPanelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):cls.app=QApplication.instance() or QApplication([])
 
+    def test_panel_distinguishes_connected_device_coverage_from_this_pc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'client.json';path.write_text(json.dumps(config()));panel=DNSPanel(config_path=path)
+            try:
+                panel.update_runtime(dict(state='running',dns=dict(scope='connected_devices',overrides=7)))
+                self.assertIn('connected devices',panel.status.text());self.assertIn('Apps on this PC are not covered',panel.notice.text())
+                self.assertEqual(panel.metrics.text(),'Answered locally: 7')
+                panel.update_runtime(dict(state='running'))
+                self.assertIn('Not active',panel.status.text());self.assertIn('Connected devices',panel.notice.text())
+            finally:panel.shutdown();panel.deleteLater();self.app.processEvents()
+
     def test_save_addresses_ttl_and_upstream_preserves_unrelated_settings_without_activation(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'client.json';before=config();path.write_text(json.dumps(before));panel=DNSPanel(config_path=path)

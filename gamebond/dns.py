@@ -224,6 +224,24 @@ def _response(query, question=None, *, rcode=0, authoritative=False, answers=(),
     return result
 
 
+def override_response(config, packet):
+    """Authoritative answer for a configured name, or None to let the query pass through unchanged.
+
+    Same answer semantics as DNSResponder (an override never falls through, including absent
+    AAAA/other types), but stateless and with no upstream, so a gateway can apply it in-line.
+    """
+    try:
+        question = parse_question(packet)
+    except DNSFormatError:
+        return None
+    records = config.records.get(question.name) if question.cls == 1 else None
+    if records is None:
+        return None
+    family = "A" if question.kind == 1 else "AAAA" if question.kind == 28 else None
+    answers = [(question.kind, value) for value in records.get(family, ())]
+    return _response(packet, question, authoritative=True, answers=answers, ttl=config.ttl)
+
+
 class DNSResponder:
     def __init__(self, config):
         if not isinstance(config, DNSConfig):

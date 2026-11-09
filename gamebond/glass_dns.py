@@ -75,7 +75,7 @@ class DNSPanel(QWidget):
         self.listener=QLabel();fields.addRow('Local resolver',self.listener);self.ttl=QSpinBox();self.ttl.setRange(0,300);self.ttl.setSuffix(' seconds');self.ttl.setSpecialValueText('No caching');fields.addRow('Record TTL',self.ttl)
         upstream=QHBoxLayout();self.forward=QCheckBox('Forward other names');self.upstream=QLineEdit();self.upstream.setPlaceholderText('Public IPv4 resolver');self.port=QSpinBox();self.port.setRange(1,65535);self.port.setValue(53)
         upstream.addWidget(self.forward);upstream.addWidget(self.upstream,1);upstream.addWidget(self.port);fields.addRow('Upstream resolver',upstream);advanced.addLayout(fields)
-        self.metrics=QLabel();advanced.addWidget(self.metrics);details=QLabel('This is a saved DNS override profile. The current userspace tunnel does not activate the managed DNS responder. Saving does not change Windows DNS, hosts files, or the running tunnel.');details.setWordWrap(True);advanced.addWidget(details)
+        self.metrics=QLabel();advanced.addWidget(self.metrics);details=QLabel('These records are answered in-line for devices added under Connected devices, whichever resolver they use (plain UDP DNS only; encrypted DNS is not covered). Apps on this PC keep using Windows DNS. Changes apply on reconnect. Saving does not change Windows DNS, hosts files, or the running tunnel.');details.setWordWrap(True);advanced.addWidget(details)
         layout.addWidget(self.advanced);self.advanced.hide()
         row=QHBoxLayout();self.feedback=QLabel();self.feedback.setWordWrap(True);row.addWidget(self.feedback,1);self.reload_button=QPushButton('Reload saved');self.save_button=QPushButton('Save changes');row.addWidget(self.reload_button);row.addWidget(self.save_button);layout.addLayout(row)
         self.enabled.toggled.connect(self._toggle);self.forward.toggled.connect(self._forward_changed);self.ttl.valueChanged.connect(self._changed);self.port.valueChanged.connect(self._changed);self.upstream.textChanged.connect(self._changed)
@@ -175,12 +175,16 @@ class DNSPanel(QWidget):
 
     def update_runtime(self,runtime):
         self.runtime=runtime;stats=(runtime or {}).get('dns')
-        if isinstance(stats,dict):
+        if isinstance(stats,dict) and stats.get('scope')=='connected_devices':
+            self.status.setText('Active for connected devices');self.notice.setText('Custom DNS is answering for your connected devices. Apps on this PC are not covered.')
+            self.metrics.setText(f"Answered locally: {stats.get('overrides',0)}")
+            if not self.enabled.isChecked():self.notice.setText('The saved setting is off. DNS is still applied on the current connection until it is restarted.')
+        elif isinstance(stats,dict):
             self.status.setText('Active on this connection');self.notice.setText('Your custom DNS responder is running.');self.metrics.setText(' · '.join(f'{title}: {stats.get(key,0)}' for key,title in [('queries','Queries'),('overrides','Overrides'),('forwarded','Forwarded'),('upstream_errors','Errors')]))
             if not self.enabled.isChecked():self.notice.setText('The saved setting is off. DNS is still running on the current connection until it is restarted.')
         else:
             self.status.setText('Not active on this connection' if runtime else 'Not active')
-            self.notice.setText('Custom DNS is not supported by this connection yet. You can still manage your saved records here.');self.metrics.setText('No live DNS counters')
+            self.notice.setText('Custom DNS is not supported for apps on this PC yet; it applies to devices added under Connected devices. You can still manage your saved records here.');self.metrics.setText('No live DNS counters')
 
     def shutdown(self):
         for dialog in list(self.dialogs):dialog.reject()
