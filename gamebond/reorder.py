@@ -236,17 +236,30 @@ class ReorderBuffer:
         self._expire(now)
         return self._due(now)
 
-    def missing(self, delay=.01, limit=16, now=None, predicate=None):
-        """Bounded requests for holes that have persisted beyond path skew."""
+    def is_late(self, flow_id, sequence):
+        """True when this flow already released past ``sequence``."""
+        flow = self._flows.get(flow_id)
+        return flow is not None and sequence < flow.expected
+
+    def missing(self, delay=.01, limit=16, now=None, predicate=None, with_age=False):
+        """Bounded requests for holes that have persisted beyond path skew.
+
+        With ``with_age`` each item is ``(flow, number, age_seconds)``, the age
+        being how long the flow's oldest buffered packet has waited behind the
+        hole.
+        """
         now = self._now(now)
         result = []
         for key, flow in self._flows.items():
-            if not flow.pending or now - min(v[1] for v in flow.pending.values()) < delay:
+            if not flow.pending:
+                continue
+            age = now - min(v[1] for v in flow.pending.values())
+            if age < delay:
                 continue
             if predicate is not None and not predicate(flow.pending[flow.heap[0]][0]):
                 continue
             for number in range(flow.expected, min(flow.heap[0], flow.expected + limit - len(result))):
-                result.append((key, number))
+                result.append((key, number, age) if with_age else (key, number))
             if len(result) >= limit:
                 break
         return result
