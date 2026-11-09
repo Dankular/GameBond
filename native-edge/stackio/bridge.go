@@ -86,6 +86,21 @@ func (b *Bridge) Pump(stackOut io.Reader) error {
 	}
 }
 
+// Send marks, classifies and queues a packet that did not come from the stack
+// (an attached LAN device); it reports whether the uplink accepted it.
+func (b *Bridge) Send(packet []byte) bool {
+	ttl := b.TTL
+	if ttl == 0 {
+		ttl = 10 * time.Second
+	}
+	if b.Uplink.Submit(b.outbound(packet, ttl)) {
+		b.Outbound.Add(1)
+		return true
+	}
+	b.Dropped.Add(1)
+	return false
+}
+
 // outbound turns a packet from the stack into a queue entry. Packets that do
 // not parse as IPv4 are still sent as bulk, as the Python runtime does when
 // classification raises.

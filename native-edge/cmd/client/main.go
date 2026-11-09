@@ -22,6 +22,7 @@ import (
 	"gamebond.local/nativeedge/bond"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/client"
+	"gamebond.local/nativeedge/dns"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/omr"
 	"gamebond.local/nativeedge/stackio"
@@ -42,7 +43,10 @@ type fileConfig struct {
 	GameUDPPorts   []uint16                     `json:"game_udp_ports"`
 	PathMTU        bool                         `json:"path_mtu_discovery"`
 	InterfaceIndex []int                        `json:"interface_indices"` // pin uplink i to this adapter index
-	OuterTransport json.RawMessage              `json:"outer_transport"`   // stream-carrier fallback; null/absent = UDP only
+	ClientTunnelIP string                       `json:"client_tunnel_ip"`
+	LANDevices     json.RawMessage              `json:"lan_devices"`
+	DNS            json.RawMessage              `json:"dns"`
+	OuterTransport json.RawMessage              `json:"outer_transport"` // stream-carrier fallback; null/absent = UDP only
 }
 
 func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
@@ -183,7 +187,31 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	routed := &routedUplink{deliver: bridge.Deliver}
+	var lanMgr *lanManager
+	if len(cfg.LANDevices) > 0 && string(cfg.LANDevices) != "null" && string(cfg.LANDevices) != "[]" {
+		clientIP, perr := netip.ParseAddr(cfg.ClientTunnelIP)
+		if perr != nil {
+			return fmt.Errorf("lan_devices needs a valid client_tunnel_ip: %w", perr)
+		}
+		if lanMgr, err = newLanManager(cfg.LANDevices, clientIP, cfg.InterfaceIndex, cfg.MTU); err != nil {
+			return err
+		}
+		dnsCfg, derr := dns.Load(cfg.DNS)
+		if derr != nil {
+			return derr
+		}
+		if dnsCfg != nil && dnsCfg.Enabled {
+			lanMgr.dnsFn = dnsCfg.Override
+		}
+		lanMgr.outbound = bridge.Send
+		lanMgr.out = func(m map[string]any) { b, _ := json.Marshal(m); fmt.Println(string(b)) }
+		defer lanMgr.close()
+	}
+	routed := &routedUplink{deliver: func(p []byte) {
+		if !lanMgr.dispatch(p) {
+			bridge.Deliver(p)
+		}
+	}}
 	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs,
 		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay,
 		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer})
@@ -224,6 +252,14 @@ func run() error {
 	created := time.Now()
 	errs := make(chan error, 2)
 	go func() { errs <- c.Run(ctx) }()
+	if lanMgr != nil {
+		go func() {
+			for ctx.Err() == nil {
+				lanMgr.maintain(ctx)
+				time.Sleep(time.Second)
+			}
+		}()
+	}
 	if serverMode == "both" {
 		locals := make([]string, len(specs))
 		for i, sp := range specs {
@@ -255,7 +291,7 @@ func run() error {
 				}
 			}
 			if *statusPath != "" {
-				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus)); err != nil {
+				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr)); err != nil {
 					fmt.Fprintln(os.Stderr, "status write failed:", err)
 				}
 			}
@@ -277,7 +313,7 @@ func main() {
 
 // statusDocument is the Python-compatible subset of userspace-status.json the
 // control tooling reads: identity, state, peer, per-path transport and counters.
-func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState) map[string]any {
+func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState, l *lanManager) map[string]any {
 	state := "connecting"
 	if s.Ready > 0 {
 		state = "running"
@@ -292,5 +328,5 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
 		"transport": map[string]any{"paths": paths},
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"qos":       map[string]any{}, "link_usage": map[string]any{}, "omr": o.status()}
+		"qos":       map[string]any{}, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "dns": l.dnsStatus()}
 }

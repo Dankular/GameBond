@@ -128,6 +128,13 @@ func NewGateway(cfg Config, io IO) (*Gateway, error) {
 	return g, nil
 }
 
+// IsLeased reports whether the device has been given its address.
+func (g *Gateway) IsLeased() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.Leased
+}
+
 func (g *Gateway) Stats() Counters {
 	g.mu.Lock()
 	defer g.mu.Unlock()
