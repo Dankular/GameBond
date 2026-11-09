@@ -5,5 +5,9 @@
 !pyproject.toml
 !gamebond/
 !gamebond/*.py
+!gamebond/admin/
+!gamebond/admin/*.py
+!gamebond/admin/static/
+!gamebond/admin/static/*
 !tools/
 !tools/container-entrypoint.sh

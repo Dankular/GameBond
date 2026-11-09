@@ -19,3 +19,6 @@ gamebond-widget = "gamebond.glass_dashboard:main"
 
 [tool.setuptools.packages.find]
 include = ["gamebond*"]
+
+[tool.setuptools.package-data]
+"gamebond.admin" = ["static/*"]
