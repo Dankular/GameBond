@@ -17,7 +17,7 @@ func start(t *testing.T) (*Server, string, string, *[]string) {
 	os.WriteFile(status, []byte(`{"state":"running","peer":["1.2.3.4",4433],"transport":{"paths":[{"slot":0,"healthy":true}]}}`), 0o600)
 	os.WriteFile(config, []byte(`{"role":"client","bind":[["10.0.0.2",0]],"link_policies":{"22":{"role":"primary"}}}`), 0o600)
 	var calls []string
-	s, url, err := Start(Options{StatusPath: status, ConfigPath: config, Control: func(c string) (map[string]any, error) {
+	s, url, err := Start(Options{StatusPath: status, ConfigPath: config, Adapters: func() ([]Adapter, error) { return []Adapter{}, nil }, Control: func(c string) (map[string]any, error) {
 		calls = append(calls, c)
 		return map[string]any{"state": "ok"}, nil
 	}})
@@ -45,7 +45,7 @@ func do(t *testing.T, method, url, token, body string) (int, string) {
 func TestTokenRequiredEverywhere(t *testing.T) {
 	s, url, _, _ := start(t)
 	base := url[:strings.Index(url, "/?t=")]
-	for _, p := range []string{"/", "/api/status", "/api/links"} {
+	for _, p := range []string{"/", "/api/status", "/api/links", "/api/app-policy"} {
 		if code, _ := do(t, "GET", base+p, "", ""); code == 200 {
 			t.Fatalf("%s served without a token", p)
 		}
@@ -58,6 +58,59 @@ func TestTokenRequiredEverywhere(t *testing.T) {
 	}
 	if code, _ := do(t, "GET", base+"/api/status", s.token, ""); code != 200 {
 		t.Fatal("status refused with the token")
+	}
+}
+
+func TestApplicationPolicyEdit(t *testing.T) {
+	s, url, config, _ := start(t)
+	endpoint := url[:strings.Index(url, "/?t=")] + "/api/app-policy"
+	if c, b := do(t, "GET", endpoint, s.token, ""); c != 200 || !strings.Contains(b, `"protection_enabled":true`) || !strings.Contains(b, `"default_app_profile":"automatic"`) || !strings.Contains(b, `"app_rules":{}`) {
+		t.Fatalf("defaults: %d %s", c, b)
+	}
+	before, _ := os.ReadFile(config)
+	good := `{"protection_enabled":false,"default_app_profile":"call","app_rules":{"C:/Games/../Games/A.EXE":{"outbound":"block","profile":"gaming"}}}`
+	if c, b := do(t, "PUT", endpoint, s.token, good); c != 200 {
+		t.Fatalf("save: %d %s", c, b)
+	}
+	previous, _ := os.ReadFile(config + ".previous")
+	if string(previous) != string(before) {
+		t.Fatal("previous config not preserved")
+	}
+	saved, _ := os.ReadFile(config)
+	var cfg map[string]any
+	if err := json.Unmarshal(saved, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg["role"] != "client" || cfg["bind"] == nil || cfg["link_policies"] == nil {
+		t.Fatal("unrelated config lost", cfg)
+	}
+	if cfg["protection_enabled"] != false || cfg["default_app_profile"] != "call" {
+		t.Fatal(cfg)
+	}
+	rules := cfg["app_rules"].(map[string]any)
+	rule, ok := rules[`c:\games\a.exe`].(map[string]any)
+	if !ok || len(rules) != 1 || rule["outbound"] != "block" || rule["profile"] != "gaming" {
+		t.Fatal(rules)
+	}
+	if c, b := do(t, "GET", endpoint, s.token, ""); c != 200 || !strings.Contains(b, `"protection_enabled":false`) {
+		t.Fatal(c, b)
+	}
+	for _, bad := range []string{
+		`null`, `[]`, `{`, `{} {}`, `{"role":"server"}`, `{"protection_enabled":1}`, `{"default_app_profile":"game"}`,
+		`{"app_rules":null}`, `{"app_rules":{"relative.exe":{}}}`, `{"app_rules":{"C:/a.exe":{"outbound":"deny"}}}`,
+		`{"app_rules":{"C:/a.exe":{"profile":"fast"}}}`, `{"app_rules":{"C:/a.exe":{"unknown":true}}}`,
+		`{"app_rules":{"C:/a.exe":{"outbound":"allow"},"c:/A.EXE":{"outbound":"block"}}}`,
+	} {
+		if c, b := do(t, "PUT", endpoint, s.token, bad); c != 422 {
+			t.Fatalf("accepted %s: %d %s", bad, c, b)
+		}
+		after, _ := os.ReadFile(config)
+		if string(after) != string(saved) {
+			t.Fatal("rejected edit changed config")
+		}
+	}
+	if c, _ := do(t, "POST", endpoint, s.token, good); c != 405 {
+		t.Fatal("POST accepted", c)
 	}
 }
 

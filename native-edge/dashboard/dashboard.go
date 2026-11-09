@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"gamebond.local/nativeedge/apppolicy"
 	"gamebond.local/nativeedge/atomicio"
 	"gamebond.local/nativeedge/capture"
 	"gamebond.local/nativeedge/dns"
@@ -41,6 +42,8 @@ type Options struct {
 	Hardware func() map[string]any
 	// Log returns the most recent daemon log lines; nil hides the panel.
 	Log func() []string
+	// Adapters overrides read-only OS discovery (for tests).
+	Adapters func() ([]Adapter, error)
 }
 
 // Server is a running dashboard.
@@ -69,6 +72,7 @@ func Start(o Options) (*Server, string, error) {
 	mux.HandleFunc("/api/control", s.guard(s.control))
 	mux.HandleFunc("/api/links", s.guard(s.links))
 	mux.HandleFunc("/api/apps", s.guard(s.apps))
+	mux.HandleFunc("/api/app-policy", s.guard(s.appPolicy))
 	mux.HandleFunc("/api/dns", s.guard(s.dnsConfig))
 	mux.HandleFunc("/api/networks", s.guard(s.networks))
 	mux.HandleFunc("/api/hardware", s.guard(s.hardware))
@@ -189,8 +193,6 @@ func (s *Server) links(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var knownFields = map[string]bool{"role": true, "upload_mbps": true, "download_mbps": true, "daily_bytes": true, "monthly_bytes": true, "reset_day": true, "overlimit": true, "overlimit_mbps": true}
-
 // ValidatePolicies applies the daemon's own rules: an object keyed by interface
 // index, every value a valid linkpolicy.Policy with no unknown fields.
 func ValidatePolicies(raw []byte) error {
@@ -201,15 +203,6 @@ func ValidatePolicies(raw []byte) error {
 	for key, value := range byKey {
 		if key == "" || strings.TrimSpace(key) != key {
 			return errors.New("invalid link key")
-		}
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(value, &fields); err != nil || fields == nil {
-			return errors.New("link " + key + ": policy must be an object")
-		}
-		for name := range fields {
-			if !knownFields[name] { // Python's LinkPolicy(**raw) rejects unknown keys; Policy.UnmarshalJSON ignores them
-				return errors.New("link " + key + ": unknown field " + name)
-			}
 		}
 		var p linkpolicy.Policy
 		if err := json.Unmarshal(value, &p); err != nil {
@@ -224,7 +217,7 @@ func ValidatePolicies(raw []byte) error {
 
 func readConfig(path string) (map[string]any, error) {
 	var cfg map[string]any
-	if err := atomicio.ReadJSONShared(path, 1<<20, &cfg); err != nil {
+	if err := atomicio.ReadJSONShared(path, apppolicy.MaxConfigBytes, &cfg); err != nil {
 		return nil, err
 	}
 	if cfg == nil {
@@ -239,6 +232,9 @@ func writeConfig(path string, cfg map[string]any) error {
 	if err != nil {
 		return err
 	}
+	if len(out) > apppolicy.MaxConfigBytes {
+		return errors.New("configuration exceeds its size limit")
+	}
 	if old, err := os.ReadFile(path); err == nil {
 		if err := os.WriteFile(path+".previous", old, 0o600); err != nil {
 			return err
@@ -250,6 +246,22 @@ func writeConfig(path string, cfg map[string]any) error {
 // section reads or replaces one top-level key of the client config. validate
 // gets the request body and returns the value to store.
 func (s *Server) section(w http.ResponseWriter, r *http.Request, key string, validate func(raw []byte) (any, error), extra func(cfg map[string]any) map[string]any) {
+	s.configSection(w, r, func(cfg map[string]any) map[string]any {
+		out := map[string]any{key: cfg[key]}
+		if extra != nil {
+			for k, v := range extra(cfg) {
+				out[k] = v
+			}
+		}
+		return out
+	}, func(raw []byte) (map[string]any, error) {
+		v, err := validate(raw)
+		return map[string]any{key: v}, err
+	})
+}
+
+// configSection atomically updates related top-level settings together.
+func (s *Server) configSection(w http.ResponseWriter, r *http.Request, view func(map[string]any) map[string]any, validate func([]byte) (map[string]any, error)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cfg, err := readConfig(s.o.ConfigPath)
@@ -259,16 +271,10 @@ func (s *Server) section(w http.ResponseWriter, r *http.Request, key string, val
 	}
 	switch r.Method {
 	case http.MethodGet:
-		out := map[string]any{key: cfg[key]}
-		if extra != nil {
-			for k, v := range extra(cfg) {
-				out[k] = v
-			}
-		}
-		reply(w, 200, out)
+		reply(w, 200, view(cfg))
 	case http.MethodPut:
-		raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
-		if err != nil {
+		raw, err := io.ReadAll(io.LimitReader(r.Body, apppolicy.MaxConfigBytes+1))
+		if err != nil || len(raw) > apppolicy.MaxConfigBytes {
 			reply(w, 400, map[string]any{"error": "invalid request body"})
 			return
 		}
@@ -277,7 +283,9 @@ func (s *Server) section(w http.ResponseWriter, r *http.Request, key string, val
 			reply(w, 422, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		cfg[key] = value
+		for key, v := range value {
+			cfg[key] = v
+		}
 		if err := writeConfig(s.o.ConfigPath, cfg); err != nil {
 			reply(w, 500, map[string]any{"error": err.Error()})
 			return
@@ -286,6 +294,38 @@ func (s *Server) section(w http.ResponseWriter, r *http.Request, key string, val
 	default:
 		reply(w, 405, map[string]any{"error": "GET or PUT only"})
 	}
+}
+
+func policyConfig(p *apppolicy.Policy) map[string]any {
+	return map[string]any{"protection_enabled": p.Enabled, "default_app_profile": p.DefaultProfile, "app_rules": p.Snapshot()["rules"]}
+}
+
+func (s *Server) appPolicy(w http.ResponseWriter, r *http.Request) {
+	s.configSection(w, r, func(cfg map[string]any) map[string]any {
+		// Defaults match the daemon; retain invalid stored values for correction.
+		out := map[string]any{"protection_enabled": true, "default_app_profile": "automatic", "app_rules": map[string]any{}}
+		for k := range out {
+			if v, ok := cfg[k]; ok {
+				out[k] = v
+			}
+		}
+		return out
+	}, func(raw []byte) (map[string]any, error) {
+		var cfg map[string]any
+		if err := json.Unmarshal(raw, &cfg); err != nil || cfg == nil {
+			return nil, errors.New("application policy must be an object")
+		}
+		for k := range cfg {
+			if k != "protection_enabled" && k != "default_app_profile" && k != "app_rules" {
+				return nil, errors.New("unknown application policy field: " + k)
+			}
+		}
+		p, err := apppolicy.New(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return policyConfig(p), nil
+	})
 }
 
 // apps edits the captured application list (cod_executables).
@@ -321,30 +361,24 @@ func (s *Server) dnsConfig(w http.ResponseWriter, r *http.Request) {
 	}, nil)
 }
 
-// networks lists the machine's usable IPv4 adapters beside the configured
-// selection. Changing the selection needs gateway discovery, which was not
-// ported, so it is read-only here.
+// networks discovers adapters and saves their selection without changing the OS.
 func (s *Server) networks(w http.ResponseWriter, r *http.Request) {
-	cfg, err := readConfig(s.o.ConfigPath)
-	if err != nil {
-		reply(w, 500, map[string]any{"error": err.Error()})
+	if r.Method != http.MethodGet && r.Method != http.MethodPut {
+		reply(w, 405, map[string]any{"error": "GET or PUT only"})
 		return
 	}
-	adapters := []map[string]any{}
-	if ifs, err := net.Interfaces(); err == nil {
-		for _, i := range ifs {
-			if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 {
-				continue
-			}
-			addrs, _ := i.Addrs()
-			for _, a := range addrs {
-				if ip, _, err := net.ParseCIDR(a.String()); err == nil && ip.To4() != nil {
-					adapters = append(adapters, map[string]any{"index": i.Index, "name": i.Name, "address": ip.String()})
-				}
-			}
-		}
+	discover := s.o.Adapters
+	if discover == nil {
+		discover = discoverAdapters
 	}
-	reply(w, 200, map[string]any{"adapters": adapters, "bind": cfg["bind"], "interface_indices": cfg["interface_indices"], "interface_names": cfg["interface_names"], "gateways": cfg["gateways"]})
+	adapters, err := discover()
+	if err != nil {
+		reply(w, 503, map[string]any{"error": err.Error()})
+		return
+	}
+	s.configSection(w, r, func(cfg map[string]any) map[string]any {
+		return map[string]any{"adapters": adapters, "bind": cfg["bind"], "interface_indices": cfg["interface_indices"], "interface_ids": cfg["interface_ids"], "interface_names": cfg["interface_names"], "gateways": cfg["gateways"]}
+	}, func(raw []byte) (map[string]any, error) { return selectAdapters(raw, adapters) })
 }
 
 func (s *Server) hardware(w http.ResponseWriter, r *http.Request) {

@@ -4,7 +4,7 @@ Goal (still active): feature parity of the Python codebase in Go, then retire Py
 **Status: NOT met. Do not delete any Python code or the Python rollback release until every cutover criterion holds.**
 
 Source of truth is `docs/go-migration-ledger.md`. Update the ledger in the same commit as any row change.
-All work so far is committed locally; nothing is pushed (do not push without being asked). Latest commit when this was written: `3f936dd`.
+Work is committed locally; do not push without being asked. See the local Git log for the latest implementation commit.
 
 ## Working rules and constraints (from the user)
 
@@ -21,12 +21,15 @@ All work so far is committed locally; nothing is pushed (do not push without bei
 
 Decision (user): PORT, as a Windows tray agent plus a local web dashboard served by Go. Built and running: `native-edge/tray`, `cmd/tray`, `native-edge/dashboard` (panels: status, links, per-app traffic, link roles and limits, captured-app list, DNS, adapters read-only, hardware and GPU, log tail, wire-rate graph), tray balloon toasts, a "Start with Windows" item.
 
-Not ported:
-- **Per-app policy editor.** Was starting this when interrupted. The Python config keys are `protection_enabled`, `default_app_profile` and `app_rules` (path to `{outbound: allow|block, profile}`), validated by `apppolicy.New` / `NormalizeRules` in `native-edge/apppolicy/policy.go`. Add `/api/app-policy` to `dashboard/dashboard.go` using the existing `(*Server).section` helper, a panel in `dashboard/index.html`, and tests in `dashboard/dashboard_test.go`.
-- **Adapter selection from the dashboard.** Currently read-only. Needs gateway discovery (the Python `windows_network` logic) to write `bind`, `interface_indices`, `gateways`.
+Added and verified on 2026-11-09:
+- **Per-app policy editor:** `/api/app-policy` and a form with protection toggle, default profile, and add/remove executable rules. Uses `apppolicy.New`; saves related keys together, preserves other config and the previous file. Endpoint tests and headless Edge checks cover normalization, save and invalid-path rejection.
+- **Adapter selection:** read-only Windows `GetAdaptersAddresses` discovery includes gateways and stable identities. The dashboard saves 2-8 selections to `bind`, `interface_indices`, `interface_ids`, `interface_names`, `gateways`; offline links use `0.0.0.0`. Tested with injected adapters and real read-only Windows discovery (Ethernet 22, 192.168.1.93 via 192.168.1.1; hotspot absent). Saving/restarting a physical selection remains unverified; a saved adapter entirely absent from OS discovery cannot currently be selected.
+- **Dashboard browser check:** headless Edge rendered the page, exercised policy changes using an isolated config, and reported no script errors. Screenshots inspected at `.runtime/dashboard-preview/policy.png` and `adapters.png`. Fixed literal newlines in JavaScript strings that previously prevented the script parsing.
+- **Link policy validation:** the daemon now rejects unknown and mis-cased fields, including null/non-object policies; dashboard validation delegates to it.
+
+Still open:
 - **Qt look and widget** (`glass_*.py`, `widget.py`, `widget_data.py`, about 4,100 lines): no Go equivalent. Decide how far to go (styled dashboard versus a native widget window).
-- Not seen by eye: the dashboard page in a browser, the tray icon and menu, the toasts, the autostart item. There was no screenshot tool.
-- Minor parity gap: the daemon's `linkpolicy` ignores unknown policy fields, unlike Python. The dashboard compensates with a `knownFields` check.
+- Not seen by eye: the tray icon and menu, the toasts, the autostart item. Interactive browser/desktop tools failed to start due to sandbox launcher errors; headless browser verification succeeded.
 
 Running tray: `build/gamebond-tray.exe -root . -config <client config> -print-url`. The dashboard URL contains the access token and is printed to stdout (the last one is in `scratchpad/tray5.out`). Single instance per root.
 

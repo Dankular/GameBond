@@ -237,6 +237,20 @@ func (l *Ledger) Save() error {
 // UnmarshalJSON starts from the Python dataclass defaults so omitted fields
 // (role, reset_day, overlimit, ...) behave exactly as they do there.
 func (p *Policy) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return fmt.Errorf("%w: link policy must be an object", ErrInvalid)
+	}
+	for key := range fields {
+		switch key {
+		case "role", "upload_mbps", "download_mbps", "daily_bytes", "monthly_bytes", "reset_day", "overlimit", "overlimit_mbps":
+		default:
+			return fmt.Errorf("%w: unknown link policy field %s", ErrInvalid, key)
+		}
+	}
 	type plain Policy
 	d := plain(Default())
 	if err := json.Unmarshal(raw, &d); err != nil {

@@ -57,9 +57,16 @@
     <p style="margin-top:0;color:var(--mute)">Full paths of the programs whose traffic goes through the tunnel, one per line.</p>
     <textarea id="appslist" spellcheck="false" style="min-height:90px"></textarea>
     <div class="row"><button id="saveapps">Save</button><span id="appsmsg"></span></div></section>
+  <section><h2>Application policy</h2>
+    <p>Choose which applications may open outbound tunnel connections and how their traffic is prioritized. Rules apply to full executable paths. Add programs to Captured applications above to send their traffic through the tunnel.</p>
+    <div class="row"><label><input id="protection" type="checkbox"> Enable application protection</label>
+    <label>Default traffic profile <select id="defaultprofile"><option>automatic</option><option>gaming</option><option>streaming</option><option>call</option><option>bulk</option></select></label></div>
+    <table><thead><tr><th>Executable path</th><th>Outbound</th><th>Traffic profile</th><th></th></tr></thead><tbody id="apprules"></tbody></table>
+    <div class="row"><button id="addrule" class="secondary">Add rule</button><button id="saveapppolicy" disabled>Save policy</button><span id="apppolicymsg" role="status"></span></div></section>
   <section><h2>Network adapters</h2>
-    <table><thead><tr><th>Index</th><th>Name</th><th>Address</th><th>In use</th></tr></thead><tbody id="nets"></tbody></table>
-    <p style="color:var(--mute);margin-bottom:0">Choosing adapters needs gateway discovery, which this build does not do; edit <code>bind</code>, <code>interface_indices</code> and <code>gateways</code> in the client config.</p></section>
+    <table><thead><tr><th>Use</th><th>Index</th><th>Name</th><th>Addresses</th><th>Gateway</th></tr></thead><tbody id="nets"></tbody></table>
+    <p>Choose 2 to 8 adapters. Offline adapters can stay selected using their stable Windows identities. Saving updates the client configuration; restart the tunnel to apply.</p>
+    <div class="row"><button id="savenets" disabled>Save adapters</button><button id="refreshnets" class="secondary">Refresh</button><span id="netsmsg" role="status"></span></div></section>
   <section><h2>DNS overrides</h2>
     <p style="margin-top:0;color:var(--mute)">The <code>dns</code> block (records, bind, ttl, upstream). Checked with the daemon's own loader.</p>
     <textarea id="dnsjson" spellcheck="false" style="min-height:120px"></textarea>
@@ -170,29 +177,79 @@ async function hardware() {
     if (d.available === false) { $("hw").style.display = "none"; return; }
     const kv = $("hwkv"); kv.replaceChildren();
     const rows = [];
-    if (d.cpu) rows.push(["CPU", (d.cpu.percent ?? "–") + " %"]);
+    if (d.cpu) rows.push(["CPU", (d.cpu.percent ?? "â€“") + " %"]);
     if (d.memory) rows.push(["Memory", fmtBytes(d.memory.used_bytes) + " / " + fmtBytes(d.memory.total_bytes) + " (" + d.memory.percent + " %)"]);
-    if (d.gpu) rows.push(["GPU (busiest engine)", d.gpu.available && d.gpu.percent != null ? Number(d.gpu.percent).toFixed(0) + " %" + (d.gpu.dedicated_used_bytes != null ? " · " + fmtBytes(d.gpu.dedicated_used_bytes) + " VRAM" : "") : d.gpu.status]);
+    if (d.gpu) rows.push(["GPU (busiest engine)", d.gpu.available && d.gpu.percent != null ? Number(d.gpu.percent).toFixed(0) + " %" + (d.gpu.dedicated_used_bytes != null ? " â€“ " + fmtBytes(d.gpu.dedicated_used_bytes) + " VRAM" : "") : d.gpu.status]);
     if (!rows.length) rows.push(["Sample", JSON.stringify(d).slice(0, 200)]);
     for (const [k, v] of rows) { const a = document.createElement("span"); a.textContent = k; const b = document.createElement("span"); b.textContent = v; kv.append(a, b); }
   } catch (e) {}
 }
 async function loadApps() {
   const d = await (await fetch("/api/apps", { headers: H })).json();
-  $("appslist").value = (d.cod_executables || []).join("
-");
+  $("appslist").value = (d.cod_executables || []).join("\n");
 }
 $("saveapps").onclick = async () => {
-  const list = $("appslist").value.split("
-").map(x => x.trim()).filter(Boolean);
+  const list = $("appslist").value.split("\n").map(x => x.trim()).filter(Boolean);
   const r = await fetch("/api/apps", { method: "PUT", headers: H, body: JSON.stringify(list) }); const d = await r.json();
   text($("appsmsg"), r.ok ? "Saved. Restart the tunnel to apply." : "Rejected: " + d.error);
 };
 async function loadNets() {
-  const d = await (await fetch("/api/networks", { headers: H })).json();
-  const used = new Set((d.interface_indices || []).map(String)); const tb = $("nets"); tb.replaceChildren();
-  for (const a of d.adapters || []) { const tr = document.createElement("tr"); cell(tr, a.index); cell(tr, a.name); cell(tr, a.address); cell(tr, used.has(String(a.index)) ? "yes" : ""); tb.appendChild(tr); }
+  $("savenets").disabled = true;
+  try {
+    const r = await fetch("/api/networks", { headers: H }); const d = await r.json(); if (!r.ok) throw new Error(d.error || r.status);
+    const used = new Set((d.interface_indices || []).map(String)); const tb = $("nets"); tb.replaceChildren();
+    for (const a of d.adapters || []) {
+      const tr = document.createElement("tr"), td = document.createElement("td"), check = document.createElement("input");
+      check.type = "checkbox"; check.value = a.index; check.checked = used.has(String(a.index)); check.setAttribute("aria-label", "Use " + a.name); td.append(check); tr.append(td);
+      cell(tr, a.index); cell(tr, a.name + (a.up ? "" : " (offline)")); cell(tr, (a.addresses || []).join(", ")); cell(tr, a.gateway || "â€“"); tb.appendChild(tr);
+    }
+    $("savenets").disabled = false;
+  } catch (e) { text($("netsmsg"), "Could not discover adapters: " + e.message); }
 }
+$("refreshnets").onclick = loadNets;
+$("savenets").onclick = async () => {
+  try {
+    const indices = Array.from($("nets").querySelectorAll("input:checked"), el => Number(el.value));
+    const r = await fetch("/api/networks", { method: "PUT", headers: H, body: JSON.stringify(indices) }); const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+    text($("netsmsg"), "Saved. Restart the tunnel to apply."); await loadNets();
+  } catch (e) { text($("netsmsg"), "Rejected: " + e.message); }
+};
+async function loadAppPolicy() {
+  try {
+    const r = await fetch("/api/app-policy", { headers: H }); const d = await r.json(); if (!r.ok) throw new Error(d.error || r.status);
+    $("protection").checked = d.protection_enabled; $("defaultprofile").value = d.default_app_profile;
+    $("apprules").replaceChildren(); for (const [path, rule] of Object.entries(d.app_rules)) addAppRule(path, rule);
+    $("saveapppolicy").disabled = false;
+  } catch (e) { text($("apppolicymsg"), "Could not load policy: " + e.message); }
+}
+function addAppRule(path = "", rule = {}) {
+  const tr = document.createElement("tr");
+  const input = document.createElement("input"); input.value = path; input.placeholder = "Full .exe path"; input.setAttribute("aria-label", "Executable path"); input.style.width = "100%";
+  const outbound = document.createElement("select"), profile = document.createElement("select");
+  for (const [el, values, value, label] of [[outbound, ["allow", "block"], rule.outbound || "allow", "Outbound"], [profile, ["automatic", "gaming", "streaming", "call", "bulk"], rule.profile || "automatic", "Traffic profile"]]) {
+    for (const v of values) { const o = document.createElement("option"); o.value = v; o.textContent = v; el.append(o); } el.value = value; el.setAttribute("aria-label", label);
+  }
+  const remove = document.createElement("button"); remove.textContent = "Remove"; remove.className = "secondary"; remove.onclick = () => tr.remove();
+  for (const el of [input, outbound, profile, remove]) { const td = document.createElement("td"); td.append(el); tr.append(td); }
+  $("apprules").append(tr);
+}
+$("addrule").onclick = () => addAppRule();
+$("saveapppolicy").onclick = async () => {
+  try {
+    const rules = Object.create(null);
+    for (const tr of $("apprules").children) {
+      const path = tr.querySelector("input").value, selects = tr.querySelectorAll("select");
+      if (Object.hasOwn(rules, path)) throw new Error("Duplicate executable path");
+      rules[path] = { outbound: selects[0].value, profile: selects[1].value };
+    }
+    const body = { protection_enabled: $("protection").checked, default_app_profile: $("defaultprofile").value, app_rules: rules };
+    const r = await fetch("/api/app-policy", { method: "PUT", headers: H, body: JSON.stringify(body) }); const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+    text($("apppolicymsg"), "Saved. Restart the tunnel to apply."); await loadAppPolicy();
+  } catch (e) { text($("apppolicymsg"), "Rejected: " + e.message); }
+};
+loadAppPolicy();
 async function loadDns() {
   const d = await (await fetch("/api/dns", { headers: H })).json();
   $("dnsjson").value = JSON.stringify(d.dns ?? {}, null, 2);
@@ -203,8 +260,7 @@ $("savedns").onclick = async () => {
   text($("dnsmsg"), r.ok ? "Saved. Restart the tunnel to apply." : "Rejected: " + d.error);
 };
 async function logs() {
-  try { const d = await (await fetch("/api/log", { headers: H })).json(); const el = $("log"); const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 8; text(el, (d.lines || []).join("
-")); if (atEnd) el.scrollTop = el.scrollHeight; } catch (e) {}
+  try { const d = await (await fetch("/api/log", { headers: H })).json(); const el = $("log"); const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 8; text(el, (d.lines || []).join("\n")); if (atEnd) el.scrollTop = el.scrollHeight; } catch (e) {}
 }
 loadApps(); loadNets(); loadDns(); hardware(); logs(); setInterval(hardware, 3000); setInterval(logs, 2000);
 
