@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"gamebond.local/nativeedge/atomicio"
 	"math"
 	"os"
 	"path/filepath"
@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 // Observation is the first/last time GameBond saw a device (not device uptime).
@@ -177,12 +176,7 @@ func (h *History) Observe(devices []Device, observedAt float64) ([]Device, error
 		}
 		buf.WriteString("}}")
 		raw := buf.Bytes()
-		tmp := fmt.Sprintf("%s.%d.tmp", h.path, time.Now().UnixNano())
-		if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-			return rows, err
-		}
-		if err := os.Rename(tmp, h.path); err != nil {
-			os.Remove(tmp)
+		if err := atomicio.WriteFileAtomic(h.path, raw, 0o644); err != nil {
 			return rows, err
 		}
 	}
