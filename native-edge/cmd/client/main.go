@@ -27,6 +27,7 @@ import (
 	"gamebond.local/nativeedge/dns"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/omr"
+	"gamebond.local/nativeedge/procjob"
 	"gamebond.local/nativeedge/stackio"
 	"gamebond.local/nativeedge/status"
 	"gamebond.local/nativeedge/ttyrelay"
@@ -286,6 +287,15 @@ func run() error {
 	}
 	if err = stack.Start(); err != nil {
 		return err
+	}
+	// Windows: tie the netstack child to a kill-on-close job so it cannot
+	// outlive a crashed daemon (process_job.py). Elsewhere the call fails and
+	// CommandContext cleanup is all there is.
+	if job, jerr := procjob.New(); jerr == nil {
+		defer job.Close()
+		if aerr := job.Add(stack.Process.Pid); aerr != nil {
+			fmt.Fprintln(logOut, "netstack job assignment failed:", aerr)
+		}
 	}
 	created := time.Now()
 	errs := make(chan error, 2)
