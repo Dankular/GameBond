@@ -231,17 +231,22 @@ func (p *Portal) SetPassword(current, fresh string) string {
 	if err != nil {
 		return "OSError: " + err.Error()
 	}
-	var cfg map[string]any
-	if json.Unmarshal([]byte(text), &cfg) != nil || cfg == nil {
+	doc, err := parseOrdered(text)
+	if err != nil || doc.kind != 'o' {
 		return "ValueError: configuration is not a JSON object"
 	}
-	admin, _ := cfg["admin"].(map[string]any)
+	admin := doc.get("admin")
 	if admin == nil {
-		admin = map[string]any{}
+		admin = &node{kind: 'o'}
+		doc.set("admin", admin)
 	}
-	admin["password_hash"] = hashed
-	cfg["admin"] = admin
-	out, _ := json.MarshalIndent(cfg, "", "  ")
+	if admin.kind != 'o' {
+		return "TypeError: admin is not an object"
+	}
+	admin.set("password_hash", &node{kind: 's', raw: pyString(hashed)})
+	var buf bytes.Buffer
+	doc.encode(&buf, 0)
+	out := buf.Bytes()
 	if err := writeInPlace(p.o.ConfigPath, out); err != nil {
 		return "OSError: " + err.Error()
 	}
