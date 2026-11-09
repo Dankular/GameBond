@@ -17,7 +17,7 @@ RUN python -m pip install --no-cache-dir "cryptography==46.0.7" \
     && python -m pip install --no-cache-dir --no-deps .
 
 COPY tools/container-entrypoint.sh /usr/local/bin/container-entrypoint
-RUN chmod 0755 /usr/local/bin/container-entrypoint
+RUN sed -i 's/\r$//' /usr/local/bin/container-entrypoint && chmod 0755 /usr/local/bin/container-entrypoint
 
 EXPOSE 4433/udp
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/container-entrypoint"]
