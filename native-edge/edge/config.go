@@ -32,6 +32,9 @@ type Config struct {
 	Queues         map[string]bond.QueuePolicy `json:"queues"`
 	QoS            bond.QoSSettings            `json:"adaptive_qos"`
 	Admin          json.RawMessage             `json:"admin"`
+	LossTracking   bool                        `json:"loss_tracking"`
+	PathMTU        bool                        `json:"path_mtu_discovery"`
+	Failover       bool                        `json:"failover_replay"`
 }
 
 func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []byte, error) {
@@ -79,6 +82,7 @@ func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []b
 	options.Redundant = c.Redundant
 	options.GamePorts = c.GamePorts
 	options.QoS = c.QoS
+	options.LossTracking, options.PathMTUDiscovery, options.FailoverReplay = c.LossTracking, c.PathMTU, c.Failover
 	if c.ReorderMS < 1 || c.ReorderMS > 200 {
 		return fail(fmt.Errorf("reorder timeout must be 1..200ms"))
 	}

@@ -14,6 +14,8 @@ type SessionOptions struct {
 	GamePorts                []uint16
 	QoS                      QoSSettings
 	Redundant                bool
+	// Optional behaviours, all off by default like the Python server.
+	LossTracking, PathMTUDiscovery, FailoverReplay bool
 }
 
 func DefaultSessionOptions() SessionOptions {
@@ -49,10 +51,15 @@ func NewSession(key, session []byte, options SessionOptions) (*Session, error) {
 	if err = r.SetReorderTimeout(options.ReorderTimeout); err != nil {
 		return nil, err
 	}
+	if err = r.SetPathMTUDiscovery(options.PathMTUDiscovery); err != nil {
+		return nil, err
+	}
 	sender, err := NewSender(r, options.InitialRate, options.MaximumRate)
 	if err != nil {
 		return nil, err
 	}
+	sender.EnableFailover(options.FailoverReplay)
+	sender.EnableLossTracking(options.LossTracking)
 	classifier, err := NewClassifier(options.Policies, options.GamePorts, options.QoS)
 	if err != nil {
 		return nil, err

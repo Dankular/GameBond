@@ -49,3 +49,23 @@ func TestAdminBlockIsValidatedAtLoad(t *testing.T) {
 		}
 	}
 }
+
+func TestOptionalTransportFlagsReachSessionOptions(t *testing.T) {
+	input := configFixture()
+	input["failover_replay"], input["loss_tracking"], input["path_mtu_discovery"] = true, true, true
+	data, _ := json.Marshal(input)
+	_, o, _, _, err := DecodeConfig(data)
+	if err != nil || !o.FailoverReplay || !o.LossTracking || !o.PathMTUDiscovery {
+		t.Fatal("flags not applied", err, o)
+	}
+	_, o, _, _, err = DecodeConfig(mustJSON(configFixture()))
+	if err != nil || o.FailoverReplay || o.LossTracking || o.PathMTUDiscovery {
+		t.Fatal("flags must default off", err)
+	}
+	input["failover_replay"] = "yes"
+	if _, _, _, _, err = DecodeConfig(mustJSON(input)); err == nil {
+		t.Fatal("non-boolean accepted")
+	}
+}
+
+func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }

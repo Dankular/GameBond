@@ -79,6 +79,7 @@ def main():
     p.add_argument('--rate', type=float, default=10)
     p.add_argument('--cut', type=float, default=4)
     p.add_argument('--restore', type=float, default=10, help='0 = never restore')
+    p.add_argument('--failover', action='store_true', help='enable suspect-path replay on the client')
     p.add_argument('--min-ratio', type=float, default=.9)
     args = p.parse_args()
     key, session = secrets.token_bytes(32), secrets.token_bytes(16)
@@ -90,7 +91,7 @@ def main():
         host, port = json.loads(server.stdout.readline())['address'].rsplit(':', 1)
         relay = Relay((host, int(port)))
         client = spawn('client-probe')
-        client.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), server='%s:%d' % relay.address, paths=2, policymbps=50,
+        client.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), server='%s:%d' % relay.address, paths=2, policymbps=50, failover=args.failover,
                                            send=args.send, rate=args.rate)) + '\n')
         client.stdin.flush()
         assert json.loads(client.stdout.readline())['status'] == 'started'
@@ -110,7 +111,7 @@ def main():
         sreport = json.loads(server.stdout.readline())
         got = sreport['receiver']['PayloadPackets']
         result = dict(sent=args.send, server_payloads=got, ratio=round(got / args.send, 4), relay_dropped=relay.dropped, events=events,
-                      client_ready_paths=creport['ready_paths'], server_auth_errors=sreport['receiver']['AuthenticationErrors'],
+                      client_ready_paths=creport['ready_paths'], server_auth_errors=sreport['receiver']['AuthenticationErrors'], server_duplicates=sreport['receiver'].get('Duplicates'),
                       client_failover={k: v for k, v in creport['sender'].items() if k.startswith('Failover')},
                       client_queue_expired=creport['transmit_queue']['Expired'])
         print(json.dumps(result))
