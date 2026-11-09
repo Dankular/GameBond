@@ -21,6 +21,7 @@ import (
 	"gamebond.local/nativeedge/bond"
 	"gamebond.local/nativeedge/client"
 	"gamebond.local/nativeedge/linkpolicy"
+	"gamebond.local/nativeedge/omr"
 	"gamebond.local/nativeedge/stackio"
 	"gamebond.local/nativeedge/status"
 	"gamebond.local/nativeedge/uplink"
@@ -98,6 +99,18 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	rawCfg, err := os.ReadFile(*configPath)
+	if err != nil {
+		return err
+	}
+	cfgMap, err := omr.ParseConfig(rawCfg)
+	if err != nil {
+		return err
+	}
+	serverMode, omrSettings, err := omr.LoadServerMode(cfgMap)
+	if err != nil {
+		return err
+	}
 	key, err := os.ReadFile(*keyPath)
 	if err != nil {
 		return err
@@ -145,13 +158,17 @@ func run() error {
 	if mtu == 0 {
 		mtu = 1280
 	}
+	routed := &routedUplink{deliver: bridge.Deliver}
 	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs,
 		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay,
-		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: bridge.Deliver})
+		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver})
 	if err != nil {
 		return err
 	}
-	bridge.Uplink = c
+	routed.gb = c
+	routed.ready = func() bool { return c.Snapshot().Ready > 0 }
+	bridge.Uplink = routed
+	omrStatus := &omrState{mode: serverMode}
 	var meter *linkpolicy.Meter
 	if len(cfg.LinkPolicies) > 0 {
 		keys := make([]string, len(specs))
@@ -182,6 +199,16 @@ func run() error {
 	created := time.Now()
 	errs := make(chan error, 2)
 	go func() { errs <- c.Run(ctx) }()
+	if serverMode == "both" {
+		locals := make([]string, len(specs))
+		for i, sp := range specs {
+			locals[i] = sp.Addr.String()
+		}
+		root, _ := os.Getwd()
+		leg := &omrLeg{settings: omrSettings, root: root, locals: locals, indices: cfg.InterfaceIndex, up: routed, state: omrStatus,
+			out: func(m map[string]any) { b, _ := json.Marshal(m); fmt.Println(string(b)) }}
+		go leg.run(ctx.Done())
+	}
 	go func() { errs <- bridge.Pump(stdout) }()
 	go func() {
 		for ctx.Err() == nil {
@@ -203,7 +230,7 @@ func run() error {
 				}
 			}
 			if *statusPath != "" {
-				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge)); err != nil {
+				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus)); err != nil {
 					fmt.Fprintln(os.Stderr, "status write failed:", err)
 				}
 			}
@@ -225,7 +252,7 @@ func main() {
 
 // statusDocument is the Python-compatible subset of userspace-status.json the
 // control tooling reads: identity, state, peer, per-path transport and counters.
-func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge) map[string]any {
+func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState) map[string]any {
 	state := "connecting"
 	if s.Ready > 0 {
 		state = "running"
@@ -240,5 +267,5 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
 		"transport": map[string]any{"paths": paths},
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"qos":       map[string]any{}, "link_usage": map[string]any{}}
+		"qos":       map[string]any{}, "link_usage": map[string]any{}, "omr": o.status()}
 }
