@@ -138,6 +138,20 @@ func learn(cache map[string]*learnedPolicy, order *list.List, key string, tag by
 		order.Remove(old.order)
 	}
 }
+func (c *Classifier) policyFor(tag byte) QueuePolicy {
+	policy := c.policy(tag)
+	if c.qos.Enabled {
+		switch tag {
+		case 18:
+			policy = QueuePolicy{true, false, c.qos.StreamDeadlineMS, 256, 0}
+		case 26:
+			policy = QueuePolicy{true, false, c.qos.CallDeadlineMS, 128, 0}
+		case 46:
+			policy = QueuePolicy{true, true, c.qos.GameDeadlineMS, 128, 0}
+		}
+	}
+	return policy
+}
 func (c *Classifier) Classify(info IPv4Info, now time.Time) Classification {
 	tag, reason := info.DSCP, "dscp"
 	if info.FragmentKey != "" && info.FragmentOffset == 0 {
@@ -174,17 +188,7 @@ func (c *Classifier) Classify(info IPv4Info, now time.Time) Classification {
 			reason = "fragment_orphan" // never guess the policy of an unassociated fragment
 		}
 	}
-	policy := c.policy(tag)
-	if c.qos.Enabled {
-		switch tag {
-		case 18:
-			policy = QueuePolicy{true, false, c.qos.StreamDeadlineMS, 256, 0}
-		case 26:
-			policy = QueuePolicy{true, false, c.qos.CallDeadlineMS, 128, 0}
-		case 46:
-			policy = QueuePolicy{true, true, c.qos.GameDeadlineMS, 128, 0}
-		}
-	}
+	policy := c.policyFor(tag)
 	return Classification{info, tag, policy, reason}
 }
 

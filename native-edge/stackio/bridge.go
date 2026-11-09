@@ -27,6 +27,10 @@ type Bridge struct {
 	// its priority, replication, tag and the policy's maximum age.
 	Classifier *bond.Classifier
 	GamePorts  map[uint16]bool
+	// Profiles (with ClientIP, the client_tunnel_ip) holds the per-flow
+	// profiles applications chose; app_flow_profile records feed it.
+	Profiles *bond.FlowProfiles
+	ClientIP string
 
 	Outbound, Injected, Dropped, Malformed atomic.Uint64
 }
@@ -81,6 +85,10 @@ func (b *Bridge) Pump(stackOut io.Reader) error {
 				b.Malformed.Add(1)
 				continue
 			}
+			if record["type"] == "app_flow_profile" && b.Profiles != nil {
+				b.Profiles.Observe(record, b.ClientIP, time.Now())
+				continue
+			}
 			if b.OnEvent != nil {
 				b.OnEvent(record)
 			}
@@ -120,7 +128,17 @@ func (b *Bridge) outbound(packet []byte, ttl time.Duration) bond.QueuedPacket {
 	if err != nil {
 		return q
 	}
-	c := b.Classifier.Classify(info, time.Now())
+	now := time.Now()
+	c := b.Classifier.Classify(info, now)
+	if b.Profiles != nil && info.Flow != "" {
+		profile := b.Profiles.Lookup(info.Flow, now)
+		c = b.Classifier.ForProfile(c, profile)
+		if profile != "" && b.Classifier.QoSEnabled() {
+			if marked, err := bond.MarkDSCP(q.Payload, c.Tag); err == nil {
+				q.Payload = marked
+			}
+		}
+	}
 	q.Priority, q.Replicate, q.Tag = c.Policy.Priority, c.Policy.Replicate, c.Tag
 	q.ClassCapacity = c.Policy.Capacity
 	if c.Policy.MaxAgeMS > 0 {

@@ -220,7 +220,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	bridge := &stackio.Bridge{Classifier: classifier, GamePorts: gamePorts, Out: stackio.NewWriter(stdin)}
+	bridge := &stackio.Bridge{Classifier: classifier, GamePorts: gamePorts, Profiles: &bond.FlowProfiles{}, ClientIP: cfg.ClientTunnelIP, Out: stackio.NewWriter(stdin)}
 	capture, err := newAppCapture(*appCaptureFlag, *configPath, *historyPath, rawCfg, func(m map[string]any) error { return bridge.Respond(m) })
 	if err != nil {
 		return err

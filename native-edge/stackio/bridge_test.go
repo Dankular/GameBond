@@ -115,3 +115,31 @@ func TestEventNumbersKeepPythonIntFloatDistinction(t *testing.T) {
 		t.Fatalf("trailing garbage must count as malformed, got %d", b.Malformed.Load())
 	}
 }
+
+func TestAppFlowProfileRecordsReclassifyThatFlow(t *testing.T) {
+	classifier, _ := bond.NewClassifier(nil, nil, bond.DefaultQoSSettings())
+	up := &fakeUplink{}
+	var unhandled int
+	b := &Bridge{Out: NewWriter(io.Discard), Uplink: up, Classifier: classifier, GamePorts: map[uint16]bool{}, Profiles: &bond.FlowProfiles{}, ClientIP: "10.0.0.1",
+		OnEvent: func(map[string]any) { unhandled++ }}
+	var in bytes.Buffer
+	w := NewWriter(&in)
+	w.Write(KindPacket, udpPacket(50000, 443)) // before the record: bulk
+	w.Write(KindStackEvent, []byte(`{"type":"app_flow_profile","profile":"call","protocol":"udp","source":"10.0.0.1:50000","destination":"10.0.0.2:443"}`))
+	w.Write(KindPacket, udpPacket(50000, 443))
+	w.Write(KindPacket, udpPacket(50001, 443)) // another flow: untouched
+	w.Write(KindStackEvent, []byte(`{"type":"other"}`))
+	b.Pump(&in)
+	if len(up.queued) != 3 || unhandled != 1 {
+		t.Fatalf("queued %d, unhandled %d", len(up.queued), unhandled)
+	}
+	if q := up.queued[0]; q.Tag != 0 || q.Priority {
+		t.Fatalf("%+v", q)
+	}
+	if q := up.queued[1]; q.Tag != 26 || !q.Priority || q.Payload[1]>>2 != 26 {
+		t.Fatalf("profiled flow not reclassified and marked: %+v", q)
+	}
+	if q := up.queued[2]; q.Tag != 0 {
+		t.Fatalf("other flow affected: %+v", q)
+	}
+}
