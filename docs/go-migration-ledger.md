@@ -34,7 +34,7 @@ a product decision before work starts.
 | `adaptive_qos.py`, `policy.py` | 644 | `bond/qos.go`, `bond/packet.go` (`MarkGameUDP`) | PART | `Classifier` base rules and `mark_game_udp` now match Python on 604 generated vectors (`tools/generate_native_classifier_vectors.py`); the vectors found a missing `fragment_orphan` reason, fixed. Still `AdaptiveQoS` observe/replicate now match Python on 4800 generated steps (`tools/generate_native_qos_vectors.py`, includes `copy_loss`); still missing: scheduler vectors, Go's 4096 flow cache vs Python's 8192, nothing yet feeds `CopySeen/CopyMissed` from the live receiver (copy_loss is always 0 in the daemon), and Python's `classify`/profile override (`app_profile_*`) |
 | `link_policy.py`, `link_limits.py` | 172 | `bond/link_policy.go` | GO? | usage ledger / billing cycle not ported |
 | `pacing.py` | 25 | in `budget.go` | GO? | |
-| `frame_io.py`, `transport_router.py` | 305 | none | TODO | stdio frame protocol with `netstack`; router chooses transport |
+| `frame_io.py`, `transport_router.py` | 305 | `native-edge/lan` (frame I/O), `native-edge/router` | PART | `frame_io`: memory + Linux AF_PACKET backends (see LAN row). `router`: transport choice, flow stickiness/TTL, fallback, readiness cache, NAT on the OMR leg, inbound merge and counters match Python on 25 scripted scenarios (`tools/generate_native_router_vectors.py`; dyadic clock values to avoid float-vs-integer-ns noise). Not done: the 16384-entry flow-cache eviction is untested, no OMR transport exists in Go (`omr.py`), no link-state/path-update delegation, not wired into the daemon |
 | `outer_transport.py`, `stream_carrier.py` | 428 | none | TODO | TCP/QUIC-style fallback carrier |
 | `telemetry.py` | 54 | `Session.Stats` | GO? | |
 
