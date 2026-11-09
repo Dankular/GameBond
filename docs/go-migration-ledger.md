@@ -59,7 +59,7 @@ a product decision before work starts.
 | `admin/` (HTTPS portal, auth, cert, system) | 440 | none | TODO (documented unsupported on the Go edge) |
 | `omr_glorytun.py`, `omr_admin.py`, `omr_settings.py` | 999 | none | TODO |
 | `tty_server.py` | 439 | none | TODO |
-| `atomic_io.py` | 51 | none | TODO (trivial) |
+| `atomic_io.py` | 51 | `native-edge/atomicio` | PART | `ReadBytesShared`/`ReadJSONShared` (4 MiB bound, BOM-tolerant, FILE_SHARE_DELETE open with sharing-violation retry), `ReplaceFile` (`ReplaceFileW` with Python's 1.5 s backoff on Windows, rename elsewhere) and `WriteFileAtomic`. Tested on Windows with 4 readers polling during 300 replacements (no partial reads, no leftover temp files); Linux build vetted only. Not yet used by `status`, `linkpolicy` or `scanner`, which still do their own temp+rename |
 
 ## 4. GUI (DECIDE)
 
