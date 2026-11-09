@@ -14,11 +14,18 @@ type budgetPending struct {
 	at       float64
 }
 
+// BaseRTTWindow is the seconds per bucket of the decaying delay baseline.
+const BaseRTTWindow = 10.0
+
 // Budget preserves the Python PathBudget's units and authenticated-feedback
 // growth gates. All times are caller-supplied monotonic seconds; it never waits.
 type Budget struct {
 	initial, maximum, rate, minimum, next, inflight                                     float64
 	srtt, rawSRTT, minRTT, rtoBackoff                                                   float64
+	// Jitter-aware delay baseline (see BaseRTTWindow): rttVar is a mean deviation,
+	// baseCur/basePrev are the minima of the current and previous window.
+	rttVar, baseCur, basePrev, baseStarted float64
+	hasBaseCur, hasBasePrev, hasBaseStarted bool
 	hasMin, hasSent, hasAck                                                             bool
 	lastSent, lastAck                                                                   uint64
 	lastSentAt                                                                          float64
@@ -180,15 +187,24 @@ func (b *Budget) Acknowledge(sequence, delivered uint64, now float64, delayUS ui
 	rawSample := math.Max(.000001, now-p.at)
 	sample := math.Max(.000001, rawSample-math.Min(rawSample, float64(delayUS)/1e6))
 	if b.rttSamples == 0 {
+		b.rttVar = 0
 		b.rawSRTT = rawSample
 		b.srtt = sample
 	} else {
+		b.rttVar = b.rttVar*.75 + math.Abs(sample-b.srtt)*.25
 		b.rawSRTT = b.rawSRTT*.875 + rawSample*.125
 		b.srtt = b.srtt*.875 + sample*.125
 	}
 	if !b.hasMin || sample < b.minRTT {
 		b.minRTT = sample
 		b.hasMin = true
+	}
+	if !b.hasBaseStarted || now-b.baseStarted >= BaseRTTWindow {
+		b.basePrev, b.hasBasePrev = b.baseCur, b.hasBaseCur
+		b.hasBaseCur, b.baseStarted, b.hasBaseStarted = false, now, true
+	}
+	if !b.hasBaseCur || sample < b.baseCur {
+		b.baseCur, b.hasBaseCur = sample, true
 	}
 	b.rttSamples++
 	b.rtoBackoff = math.Max(1, b.rtoBackoff/2)
@@ -220,7 +236,11 @@ func (b *Budget) Acknowledge(sequence, delivered uint64, now float64, delayUS ui
 		utilization = b.epochSent / (b.rate * elapsed)
 	}
 	b.appLimited = utilization < .8
-	if !b.appLimited && math.Max(0, b.srtt-b.minRTT) > math.Max(.025, b.minRTT*.5) {
+	base := b.baseCur
+	if b.hasBasePrev && (!b.hasBaseCur || b.basePrev < base) {
+		base = b.basePrev
+	}
+	if !b.appLimited && math.Max(0, b.srtt-base) > math.Max(.025, math.Max(base*.5, 4*b.rttVar)) {
 		if b.delaySamples < 3 {
 			b.delaySamples++
 		}
@@ -366,7 +386,7 @@ func (b *Budget) Stats() map[string]any {
 	return map[string]any{"rate_mbps": b.RateMbps(), "delivery_rate_mbps": b.deliveryRate / 125000, "initial_rate_mbps": b.initial, "max_rate_mbps": b.maximum,
 		"next_send": b.next, "inflight_bytes": b.inflight, "wire_overhead": 28, "priority_wire_bytes": b.priorityBytes, "priority_wire_packets": b.priorityPackets, "control_wire_bytes": b.controlBytes, "control_wire_packets": b.controlPackets,
 		"priority_debt_saturations": b.debtSaturations, "pacing_debt_ms": math.Max(0, b.next-b.observed) * 1000, "pacing_observed_at": b.observed, "window_bytes": b.Window(), "pending_packets": len(b.pending),
-		"srtt_ms": b.srtt * 1000, "min_rtt_ms": minimum, "raw_srtt_ms": b.rawSRTT * 1000, "queue_delay_ms": delay, "timeout_seconds": b.Timeout(), "sent_packets": b.sentPackets, "rto_backoff": b.rtoBackoff,
+		"srtt_ms": b.srtt * 1000, "min_rtt_ms": minimum, "raw_srtt_ms": b.rawSRTT * 1000, "rtt_var_ms": b.rttVar * 1000, "queue_delay_ms": delay, "timeout_seconds": b.Timeout(), "sent_packets": b.sentPackets, "rto_backoff": b.rtoBackoff,
 		"sent_bytes": b.sentBytes, "acked_packets": b.ackedPackets, "delivered_bytes": b.deliveryCounter, "expired_packets": b.expiredPackets, "expired_bytes": b.expiredBytes, "invalid_acks": b.invalidACKs, "untracked_packets": b.untracked,
 		"backoffs": b.backoffs, "rate_increases": b.increases, "app_limited": b.appLimited, "startup": b.startup, "startup_increases": b.startupIncreases, "startup_exit_reason": exit, "growth_app_limited": b.growthAppLimited,
 		"growth_bulk_utilization": b.growthUtilization, "growth_bulk_allowance_bytes": b.growthAllowance, "pacing_wait_ratio": b.pacingWaitRatio, "delay_samples": b.delaySamples, "delay_backoffs": 0, "timeout_backoffs": b.timeoutBackoffs, "window_pressure_ratio": b.pressureRatio, "settled_loss_ratio": b.lossRatio, "congestion_epochs": b.congestionEpochs}

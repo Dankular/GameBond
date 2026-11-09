@@ -17,6 +17,32 @@ class PathBudgetTests(unittest.TestCase):
         self.assertGreater(budget.rate_mbps,1)
         self.assertGreater(budget.stats()['pacing_wait_ratio'],.1)
 
+    def _backlogged(self, rtt_for, packets=600):
+        """Backlogged flow at the pacing rate; rtt_for(i) gives each ACK's RTT."""
+        import random
+        random.seed(7)
+        budget=PathBudget(1,100)
+        now=0.0
+        for sequence in range(packets):
+            now=max(now+1200/budget.rate_bytes_per_second,budget.next_send)
+            budget.sent(sequence,1200,now)
+            budget.record_pacing_wait(now-.008,now)
+            self.assertTrue(budget.acknowledge(sequence,(sequence+1)*1200,now+rtt_for(sequence)))
+        return budget
+
+    def test_rtt_jitter_alone_does_not_pin_a_backlogged_path_at_its_start_rate(self):
+        # Best case 23 ms, typical 60-90 ms. A lifetime-minimum baseline read
+        # that spread as queueing and froze growth at the initial budget.
+        import random
+        rng=random.Random(3)
+        budget=self._backlogged(lambda i:.023 if i==0 else .023+rng.uniform(.02,.12))
+        self.assertGreater(budget.rate_mbps,5)
+
+    def test_genuine_queue_growth_still_stops_growth(self):
+        # RTT climbs steadily with no jitter: a standing queue, not noise.
+        budget=self._backlogged(lambda i:.03+i*.0008,packets=400)
+        self.assertLess(budget.rate_mbps,4)
+
     def test_path_score_does_not_hide_bulk_queueing_behind_fast_probes(self):
         queued=PathBudget(4,20);clear=PathBudget(4,20)
         queued.sent(0,1200,0);clear.sent(0,1200,0)

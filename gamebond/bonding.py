@@ -35,6 +35,9 @@ def _size(size):
         raise ValueError("packet size must be 1..65535 bytes")
 
 
+BASE_RTT_WINDOW = 10.0   # seconds per bucket; the baseline spans one to two buckets
+
+
 class PathBudget:
     """Pace bulk on one path; urgent traffic can be tracked without waiting.
 
@@ -67,6 +70,11 @@ class PathBudget:
         self.srtt = .25
         self.raw_srtt = .25
         self.min_rtt = None
+        # Jitter-aware delay baseline: a lifetime minimum is a rare best case on
+        # a variable link, so smoothed RTT sits far above it even with no queue.
+        self._rtt_var = 0.0
+        self._base_cur = self._base_prev = None
+        self._base_started = None
         self._rto_backoff = 1.0
         self._pending = OrderedDict()
         self._last_sent_sequence = -1
@@ -271,9 +279,13 @@ class PathBudget:
             return False
         raw_sample = max(.000001, now - pending.sent_at)
         sample = max(.000001, raw_sample - min(raw_sample, ack_delay_us / 1_000_000))
+        self._rtt_var = 0.0 if not self._rtt_samples else self._rtt_var * .75 + abs(sample - self.srtt) * .25
         self.raw_srtt = raw_sample if not self._rtt_samples else self.raw_srtt * .875 + raw_sample * .125
         self.srtt = sample if not self._rtt_samples else self.srtt * .875 + sample * .125
         self.min_rtt = sample if self.min_rtt is None else min(self.min_rtt, sample)
+        if self._base_started is None or now - self._base_started >= BASE_RTT_WINDOW:
+            self._base_prev, self._base_cur, self._base_started = self._base_cur, None, now
+        self._base_cur = sample if self._base_cur is None else min(self._base_cur, sample)
         self._rtt_samples += 1
         self._rto_backoff = max(1.0, self._rto_backoff / 2)
         while self._pending:
@@ -289,13 +301,14 @@ class PathBudget:
         self._delivery_counter = delivered_bytes
         self._last_ack_sequence = sequence
         self._epoch_delivered += delta
-        queue_delay = max(0.0, self.srtt - self.min_rtt)
+        base_rtt = min(r for r in (self._base_cur, self._base_prev) if r is not None)
+        queue_delay = max(0.0, self.srtt - base_rtt)
         elapsed = 0 if self._epoch_started is None else now - self._epoch_started
         utilization = self._epoch_sent / (self._rate * elapsed) if elapsed > 0 else 0
         self._app_limited = utilization < .8
         # Feedback is deliberately batched for up to 20ms. Ordinary ACK holding
         # and radio jitter under light application load are not congestion.
-        if not self._app_limited and queue_delay > max(.025, self.min_rtt * .5):
+        if not self._app_limited and queue_delay > max(.025, base_rtt * .5, 4 * self._rtt_var):
             self._delay_samples = min(3, self._delay_samples + 1)
         else:
             self._delay_samples = 0
@@ -431,6 +444,7 @@ class PathBudget:
             "window_bytes": self.window_bytes, "pending_packets": len(self._pending),
             "srtt_ms": self.srtt * 1000, "min_rtt_ms": None if self.min_rtt is None else self.min_rtt * 1000,
             "raw_srtt_ms": self.raw_srtt * 1000,
+            "rtt_var_ms": self._rtt_var * 1000,
             "queue_delay_ms": 0 if self.min_rtt is None else max(0, self.srtt - self.min_rtt) * 1000,
             "timeout_seconds": self.timeout, "sent_packets": self._sent_packets,
             "rto_backoff": self._rto_backoff,
