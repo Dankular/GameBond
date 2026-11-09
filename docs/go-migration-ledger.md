@@ -96,7 +96,23 @@ Same 1000-byte payload stream, `tools/check_native_client.py` / `check_go_to_go.
 | Go client -> Python server, 2 uplinks | about 125 Mbit/s plateau (Python receiver is the likely limit) |
 | Go client -> Go server, 1 / 2 / 3 uplinks | about 365 / 465 / 452 Mbit/s |
 | MTU discovery on vs off | no measurable difference (Python peer: 125.7 vs 125.6; Go peer: 458 vs 466) |
-| Go -> Go with a 50 Mbit/s per-uplink policy, 2 uplinks | about 60 Mbit/s payload. **Open:** expected up to about 90 (50 Mbit/s wire per uplink less framing); the pacer path undershoots and has not been explained |
+| Go -> Go with a 50 Mbit/s per-uplink policy, 2 uplinks | about 60 Mbit/s payload on real sockets, but 89.8 on the virtual-clock harness (the theoretical figure). The bond logic is correct; the loss is in the probe's I/O loop. Eliminated: policy rate (60 for any policy >= 50), OS timer granularity (busy-spin gives 60-62), budget state (no backoffs, WireLimited 0). Still open: what in the real loop caps paced sending near 7,500 packets/s |
 
 Harness lesson: a 2 ms loop tick capped Go at about 300 Mbit/s and made the policy case drop
 packets. The real client needs timer-driven pumping, not a coarse poll.
+
+## Per-leg probing (find hidden slowdowns)
+
+`python tools/probe_legs.py --label X [--baseline Y]` measures each leg separately and flags any
+metric more than 15% worse than a saved baseline (`evidence/legs-<label>.json`):
+
+1. raw UDP socket (`cmd/leg-probe loopback`), 2. codec CPU (Go benchmarks),
+3. protocol logic on a virtual clock with an ideal wire (`bond/virtual_throughput_test.go`),
+4. Go client -> Go server, 5. Go client -> Python server, 6. `--remote HOST:PORT` raw UDP to a far
+host running `leg-probe serve` (RTT, jitter, loss, throughput), 7. `--tunnel` the live tunnel.
+
+Reading it: each ratio compares a leg with the one beneath it. First run on this machine:
+bonded Go gets 0.65 of the raw socket, paced real runs reach 0.67 of the virtual logic, and the
+Python server gets 0.25 of the Go server's rate. Legs 6 and 7 have not been run: they need the VPS.
+Before deploying, run leg 6 against the VPS (start `leg-probe serve` there) to separate the network
+from the software.

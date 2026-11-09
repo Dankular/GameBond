@@ -23,10 +23,12 @@ type config struct {
 	Key, Session string
 	Server       string
 	Paths        int
-	Send         int  // payloads to send once every uplink is ready
-	MTU          bool // enable per-path MTU discovery
+	Send         int     // payloads to send once every uplink is ready
+	MTU          bool    // enable per-path MTU discovery
 	Rate         float64 // sender initial and maximum Mbit/s per uplink (default 10/20)
-	Policy       bool // send a primary link policy on every uplink (50 Mbit/s each way)
+	PolicyMbps   float64 // upload/download policy per uplink when Policy is set (default 50)
+	Spin         bool    // busy-poll instead of sleeping on a ticker (timer-granularity experiment)
+	Policy       bool    // send a primary link policy on every uplink (50 Mbit/s each way)
 }
 
 type datagram struct {
@@ -122,7 +124,7 @@ func run() error {
 	if c.Policy {
 		policies := make([]bond.PathPolicy, c.Paths)
 		for i := range policies {
-			policies[i] = bond.PathPolicy{Role: bond.Primary, UploadMbps: 50, DownloadMbps: 50}
+			policies[i] = bond.PathPolicy{Role: bond.Primary, UploadMbps: max(1, c.PolicyMbps), DownloadMbps: max(1, c.PolicyMbps)}
 		}
 		if err = receiver.SetClientLinkPolicies(policies, time.Now()); err != nil {
 			return err
@@ -153,6 +155,12 @@ func run() error {
 	end := time.Now().Add(30 * time.Second)
 	tick := time.NewTicker(100 * time.Microsecond)
 	defer tick.Stop()
+	tickC := tick.C
+	if c.Spin { // a closed channel is always ready: the loop never sleeps
+		ready := make(chan time.Time)
+		close(ready)
+		tickC = ready
+	}
 	nextBulk := time.Now()
 loop:
 	for time.Now().Before(end) {
@@ -165,7 +173,7 @@ loop:
 				return err
 			}
 			handle(result)
-		case <-tick.C:
+		case <-tickC:
 		}
 		now := time.Now()
 		result, err := receiver.Tick(now)

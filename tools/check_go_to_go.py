@@ -37,6 +37,8 @@ def main():
     parser.add_argument('--rate', type=float, default=10)
     parser.add_argument('--mtu', action='store_true')
     parser.add_argument('--policy', action='store_true')
+    parser.add_argument('--spin', action='store_true')
+    parser.add_argument('--policy-mbps', type=float, default=50)
     args = parser.parse_args()
     key, session = secrets.token_bytes(32), secrets.token_bytes(16)
     server = client = None
@@ -46,7 +48,7 @@ def main():
         server.stdin.flush()
         address = json.loads(server.stdout.readline())['address']
         client = spawn('client-probe')
-        client.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), server=address, paths=args.paths,
+        client.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), server=address, paths=args.paths, policymbps=args.policy_mbps, spin=args.spin,
                                            send=args.send, rate=args.rate, mtu=args.mtu, policy=args.policy)) + '\n')
         client.stdin.flush()
         assert json.loads(client.stdout.readline())['status'] == 'started'
@@ -72,6 +74,7 @@ def main():
                       server_malformed=sreport['receiver']['Malformed'], server_auth_errors=sreport['receiver']['AuthenticationErrors'])
         assert creport['ready_paths'] == args.paths, creport['ready_paths']
         assert sreport['receiver']['AuthenticationErrors'] == 0
+        result['client_sender'] = creport['sender']; result['client_paths'] = [{k: v for k, v in p.items() if k in ('RTTMilliseconds','JitterMilliseconds','Budget','PolicyConfirmed')} for p in creport['paths']]
         print(json.dumps(result))
     finally:
         for process in (client, server):
