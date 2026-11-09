@@ -110,6 +110,15 @@ def load_config(path,*,allow_unavailable_links=False):
     if (type(reorder_timeout) not in (int, float) or not math.isfinite(reorder_timeout)
             or not 1 <= reorder_timeout <= 200):
         raise ValueError("reorder_timeout_ms must be finite and between 1 and 200")
+    for name in ("loss_tracking", "path_mtu_discovery"):
+        if type(config.get(name, False)) is not bool:
+            raise ValueError(f"{name} must be a boolean")
+        if config.get(name, False) and not config.get("bonding_mode", False):
+            raise ValueError(f"{name} requires bonding_mode")
+    repair_deadline = config.get("repair_deadline_ms", 250)
+    if (type(repair_deadline) not in (int, float) or not math.isfinite(repair_deadline)
+            or not 10 <= repair_deadline <= 2000):
+        raise ValueError("repair_deadline_ms must be finite and between 10 and 2000")
     if type(config.get("direct_priority", True)) is not bool:
         raise ValueError("direct_priority must be a boolean")
     bulk_rate = config.get("bulk_rate_mbps", 0)
@@ -191,7 +200,10 @@ def run(config, key_path, configure=False, *, stop_event=None, on_ready=None):
                 initial_rate_mbps=config.get("bonding_initial_rate_mbps", 1),
                 max_rate_mbps=config.get("bonding_max_rate_mbps", 100),
                 reorder_timeout=config.get("reorder_timeout_ms", 30) / 1000,
-                outer_transport=config.get('outer_transport'))
+                outer_transport=config.get('outer_transport'),
+                loss_tracking=config.get("loss_tracking", False),
+                path_mtu_discovery=config.get("path_mtu_discovery", False),
+                repair_deadline=config.get("repair_deadline_ms", 250) / 1000)
     tun = None
     network = None
     dns = None

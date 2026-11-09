@@ -52,6 +52,8 @@ def mark_dscp(packet,tag):
     return bytes(data)
 
 class AdaptiveQoS:
+    MIN_COPY_SAMPLES=8
+
     def __init__(self,settings=None,*,clock=time.monotonic):
         self.settings=settings or QoSSettings();self.clock=clock;self.lock=threading.RLock()
         self.policies=profile_policies(self.settings);self.policies[0]=QueuePolicy()
@@ -77,18 +79,25 @@ class AdaptiveQoS:
                 key=(path.get('slot',ordinal),str(path.get('local')),str(path.get('remote')))
                 budget=path.get('bonding') or {}
                 probes=path.get('probe_quality') or {}
-                totals=(budget.get('expired_packets',0),budget.get('acked_packets',0),probes.get('lost',0),probes.get('acked',0),budget.get('delivered_bytes',0))
+                copies=path.get('peer_copy_quality') or {}
+                totals=(budget.get('expired_packets',0),budget.get('acked_packets',0),probes.get('lost',0),probes.get('acked',0),budget.get('delivered_bytes',0),
+                        copies.get('seen',0),copies.get('missed',0))
                 old=self.previous.get(key,totals);previous[key]=totals
                 expired=max(0,totals[0]-old[0]);acked=max(0,totals[1]-old[1])
                 lost_probes=max(0,totals[2]-old[2]);ack_probes=max(0,totals[3]-old[3])
                 timeout_ratio=expired/max(1,expired+acked)
                 probe_loss=lost_probes/max(1,lost_probes+ack_probes)
                 tx_loss=max(0,min(1,budget.get('settled_loss_ratio',0))) if totals[4]>old[4] else 0
-                loss=max(tx_loss,probe_loss)
+                # Replicated copies of my own packets, as the peer saw them: the
+                # only loss evidence taken from the data path itself. Too few
+                # comparisons in one observation are noise, not a rate.
+                copy_seen=max(0,totals[5]-old[5]);copy_missed=max(0,totals[6]-old[6])
+                copy_loss=copy_missed/(copy_seen+copy_missed) if copy_seen+copy_missed>=self.MIN_COPY_SAMPLES else 0
+                loss=max(tx_loss,probe_loss,copy_loss)
                 rtt=path.get('rtt_ms');jitter=path.get('rtt_jitter_ms',0) or 0
                 healthy=bool(path.get('available',True) and path.get('enabled',True) and path.get('healthy'))
                 if healthy:
-                    quality.append(dict(slot=path.get('slot',ordinal),loss=loss,tx_ack_loss=tx_loss,feedback_timeout_ratio=timeout_ratio,round_trip_probe_loss=probe_loss,jitter_ms=jitter,
+                    quality.append(dict(slot=path.get('slot',ordinal),loss=loss,tx_ack_loss=tx_loss,feedback_timeout_ratio=timeout_ratio,round_trip_probe_loss=probe_loss,copy_loss=copy_loss,copy_samples=copy_seen+copy_missed,jitter_ms=jitter,
                         predicted_ms=(rtt/2 if rtt is not None else 1000)+2*jitter+max(0,budget.get('queue_delay_ms',0))))
             self.previous=previous;self.quality=quality;self.healthy=len(quality);self.samples+=1
             for profile,deadline in (('call',self.settings.call_deadline_ms),('stream',self.settings.stream_deadline_ms)):
@@ -96,6 +105,7 @@ class AdaptiveQoS:
                 if len(quality)>1:
                     best=min(quality,key=lambda q:q['predicted_ms'])
                     if best['loss']>=self.settings.loss_threshold:reasons.append('measured_loss')
+                    if best['copy_loss']>=self.settings.loss_threshold:reasons.append('copy_loss')
                     if best['feedback_timeout_ratio']>=self.settings.loss_threshold:reasons.append('feedback_timeout')
                     if best['jitter_ms']>=self.settings.jitter_threshold_ms:reasons.append('jitter')
                     if best['predicted_ms']>=deadline*.75:reasons.append('deadline_risk')

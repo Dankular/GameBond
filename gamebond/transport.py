@@ -24,6 +24,7 @@ import math
 from .link_limits import MAX_LINKS
 from .bonding import PathBudget
 from .reorder import ReorderBuffer
+from .path_quality import CopyLedger, MtuProber
 from .policy import parse_packet,is_tcp_control
 from .link_policy import (WirePacer, validate_state, encode_state, decode_state,
                           POLICY_HEADER, POLICY_ACK_HEADER)
@@ -41,6 +42,13 @@ STRIPED, FEEDBACK = 4, 5
 HELLO, CHALLENGE, RESET, READY = 6, 7, 8, 9
 REPAIR = 10
 LINK_POLICY, LINK_POLICY_ACK = 11, 12
+# Receivers always accept these in bonded mode; senders emit them only when the
+# matching option is on (or, for REPAIR_NA, in answer to a REPAIR request).
+DATA_COPY, MTU_PROBE, MTU_ACK, REPAIR_NA, COPY_REPORT = 13, 14, 15, 16, 17
+DATA_KINDS = (DATA, DATA_COPY)
+MTU_PROBE_HEADER = struct.Struct('!QI')  # nonce, claimed datagram size
+COPY_REPORT_HEADER = struct.Struct('!QQQ')  # cumulative seen, missed, late
+COPY_REPORT_INTERVAL = .5
 REPAIR_HEADER = struct.Struct('!QQ')
 HANDSHAKE_TIMEOUT = 2.0
 HANDSHAKE_CAPACITY = 8
@@ -60,6 +68,25 @@ OVERHEAD = HEADER.size + 16
 REPLAY_WINDOW = 8192
 FLOW_CACHE_CAPACITY = 8192
 FLOW_IDLE_TIMEOUT = 120.0
+
+
+def _enable_df(sock) -> bool:
+    """Set don't-fragment so an oversize datagram fails instead of fragmenting.
+
+    Returns False when the platform call is unavailable; MTU probe answers then
+    prove delivery but not absence of IP fragmentation.
+    """
+    try:
+        if sys.platform == "win32":
+            sock.setsockopt(socket.IPPROTO_IP, getattr(socket, "IP_DONTFRAGMENT", 14), 1)
+        elif sys.platform.startswith("linux"):
+            sock.setsockopt(socket.IPPROTO_IP, getattr(socket, "IP_MTU_DISCOVER", 10),
+                            getattr(socket, "IP_PMTUDISC_DO", 2))
+        else:
+            return False
+        return True
+    except OSError:
+        return False
 
 
 class _PriorityInbox:
@@ -192,6 +219,18 @@ class _Path:
     probe_sent: int = field(default=0,init=False)
     probe_acked: int = field(default=0,init=False)
     probe_lost: int = field(default=0,init=False)
+    probe_lost_early: int = field(default=0,init=False)
+    probe_late: int = field(default=0,init=False)
+    probe_acked_sent_at: float = field(default=-1.0,init=False)
+    copy_seen: int = field(default=0,init=False)
+    copy_missed: int = field(default=0,init=False)
+    copy_late: int = field(default=0,init=False)
+    copy_lag_ms: float | None = field(default=None,init=False)
+    copy_reported: tuple = field(default=(0,0,0),init=False)
+    last_copy_report: float = field(default=0.0,init=False)
+    peer_copy: tuple | None = field(default=None,init=False)
+    mtu_prober: MtuProber | None = field(default=None,init=False)
+    mtu_skips: int = field(default=0,init=False)
     socket_index: int
     endpoint: tuple[str, int]
     last_rx: float = 0.0
@@ -265,7 +304,9 @@ class Node:
                  bonding_mode: bool = False, initial_rate_mbps: float = 1,
                  max_rate_mbps: float = 100, reorder_timeout: float = .03,
                  link_states: list[dict] | None = None, path_availability: list[bool] | None = None,
-                 outer_transport: dict | None = None):
+                 outer_transport: dict | None = None,
+                 loss_tracking: bool = False, path_mtu_discovery: bool = False,
+                 repair_deadline: float = .25):
         if len(key) != 32 or len(session) != 16:
             raise ValueError("key must be 32 bytes and session must be 16 bytes")
         if role not in ("client", "server"):
@@ -280,6 +321,13 @@ class Node:
             raise ValueError("receive_capacity must be a positive integer")
         if type(bonding_mode) is not bool:
             raise ValueError("bonding_mode must be a boolean")
+        if type(loss_tracking) is not bool or type(path_mtu_discovery) is not bool:
+            raise ValueError("loss_tracking and path_mtu_discovery must be booleans")
+        if (type(repair_deadline) not in (int, float) or not math.isfinite(repair_deadline)
+                or not .01 <= repair_deadline <= 2):
+            raise ValueError("repair_deadline must be between 0.01 and 2 seconds")
+        if (loss_tracking or path_mtu_discovery) and not bonding_mode:
+            raise ValueError("loss_tracking and path_mtu_discovery require bonding_mode")
         if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0
                for v in (initial_rate_mbps, max_rate_mbps, reorder_timeout)) or initial_rate_mbps > max_rate_mbps:
             raise ValueError("invalid bonding rates or reorder timeout")
@@ -321,6 +369,11 @@ class Node:
         self._repair_requests = OrderedDict()
         self._repair_asked = OrderedDict()
         self._repair_next_request = 0.0
+        self._repair_deadline = float(repair_deadline)
+        self._loss_tracking = loss_tracking
+        self._mtu_enabled = path_mtu_discovery
+        self._df_enforced = {}
+        self._copy_ledger = CopyLedger()
         self.probe_interval, self.path_timeout = probe_interval, path_timeout
         self._key = bytes(key)
         self._prefix = secrets.token_bytes(16)
@@ -337,6 +390,10 @@ class Node:
         self._sockets: list[socket.socket] = []
         self._paths: dict[tuple[int, tuple[str, int]], _Path] = {}
         self._pending: dict[bytes, tuple[float, tuple[int, tuple[str, int]]]] = {}
+        # Probes declared lost before path_timeout because a later probe on the
+        # same path was answered. A reply that still arrives is a late sample,
+        # not a loss, and must keep feeding the RTT/jitter estimate.
+        self._lost_probes: dict[bytes, tuple[float, tuple[int, tuple[str, int]]]] = {}
         self._flow_paths: OrderedDict[object, tuple[tuple[int, tuple[str, int]], float]] = OrderedDict()
         self._challenges: OrderedDict[tuple[int, tuple[str, int], bytes], tuple[bytes, bytes, float]] = OrderedDict()
         self._counts = dict(tx_packets=0, tx_copies=0, rx_packets=0,
@@ -397,6 +454,8 @@ class Node:
                             ) from exc
                     sock.bind((host, port))
                     sock.setblocking(False)
+                    if path_mtu_discovery:
+                        self._df_enforced[index] = _enable_df(sock)
                 except Exception:
                     sock.close()
                     if path_availability is None:raise
@@ -427,6 +486,8 @@ class Node:
             initial_rate_mbps=self._initial_rate_mbps, max_rate_mbps=self._max_rate_mbps),
             tx_epoch=secrets.randbits(64), ready=not self.bonding_mode)
         path.available=self._path_availability[index]
+        if self._mtu_enabled:
+            path.mtu_prober = MtuProber(self.mtu, min(548, self.mtu))
         if self._link_states is not None:
             path.link_state=dict(self._link_states[index]);path.policy_revision=self._policy_revision
             path.policy_confirmed=False
@@ -473,6 +534,7 @@ class Node:
                     fresh.remote_wire_offset=path.remote_wire_offset+path.remote_wire_tx
                     self._paths[identity]=fresh
                 self._pending={token:value for token,value in self._pending.items() if value[1][0]!=index}
+                self._lost_probes={token:value for token,value in self._lost_probes.items() if value[1][0]!=index}
                 previous.close()
                 self._counts['path_rebinds']=self._counts.get('path_rebinds',0)+1
             self._interface_indices=list(interface_indices) if interface_indices is not None else None
@@ -509,12 +571,14 @@ class Node:
         self._remote_prefix, self._rx = prefix, cipher
         self._replay = ReplayWindow()
         self._pending.clear()
+        self._lost_probes.clear()
         self._flow_paths.clear()
         self._stripe_flows.clear()
         self._repair_cache.clear()
         self._repair_requests.clear()
         self._repair_asked.clear()
         self._repair_next_request = 0.0
+        self._copy_ledger = CopyLedger()
         self._bulk_clock = 0.0
         self._reorder = ReorderBuffer(timeout=self._reorder_timeout,allow_late=True)
         self._counts["restart_discarded"] += self._received.clear()
@@ -653,7 +717,7 @@ class Node:
         kind=packet[HEADER.size-9]
         now=time.perf_counter()
         if path.link_state is not None:
-            if kind in (DATA,STRIPED) and (not path.policy_confirmed or path.link_state['blocked'] or path.link_state['role']=='never'):
+            if kind in (DATA,DATA_COPY,STRIPED) and (not path.policy_confirmed or path.link_state['blocked'] or path.link_state['role']=='never'):
                 return False
             if path.wire_pacer.ready_at(len(packet)+28,now)>now+.000001:return False
         try:
@@ -664,7 +728,7 @@ class Node:
             path.transmitted += 1
             path.tx_bytes += len(packet)
             self._counts["tx_bytes"] += len(packet)
-            if packet[HEADER.size - 9] not in (DATA, STRIPED):
+            if packet[HEADER.size - 9] not in (DATA, DATA_COPY, STRIPED):
                 # Feedback and probes consume the same physical link too.
                 # They stay immediate; only subsequent bulk waits for service.
                 path.budget.control_sent(len(packet), time.perf_counter())
@@ -691,7 +755,7 @@ class Node:
         with self._lock:
             if self._closed:
                 raise RuntimeError("node is closed")
-            packet = self._encode(DATA, payload)
+            packet = self._encode(DATA_COPY if (replicate and self._loss_tracking) else DATA, payload)
             now = time.perf_counter()
             paths = list(self._paths.values())
             if self.bonding_mode:
@@ -699,6 +763,7 @@ class Node:
             if self.role == "server":
                 paths = [p for p in paths if now - p.last_rx < self.path_timeout]
             paths=self._eligible_paths(paths,boost=replicate or urgent)
+            paths=self._fit_paths(paths,len(packet))
             if not replicate and paths:
                 paths.sort(key=lambda p: (
                     p.last_rx <= 0 or now - p.last_rx >= self.path_timeout,
@@ -758,6 +823,7 @@ class Node:
                 paths=self._eligible_paths(paths,boost=True)
                 if not paths:
                     return 0
+                paths=self._fit_paths(paths,size)
                 readiness={id(p):p.budget.ready_at(size,now) for p in paths}
                 if self._policy_enabled:
                     readiness={id(p):max(readiness[id(p)],p.wire_pacer.ready_at(size+28,now)) for p in paths}
@@ -867,7 +933,10 @@ class Node:
                  "link_policy":p.link_state,"policy_confirmed":p.policy_confirmed,
                  "wire_tx_bytes":p.tx_bytes+28*p.transmitted,
                  "wire_rx_bytes":p.rx_bytes+28*p.rx_wire_packets,
-                 "probe_quality":dict(sent=p.probe_sent,acked=p.probe_acked,lost=p.probe_lost,scope='round_trip_probe'),
+                 "copy_quality":dict(seen=p.copy_seen,missed=p.copy_missed,late=p.copy_late,lag_ms=p.copy_lag_ms,scope='replicated_copies_received_here'),
+                 "peer_copy_quality":(dict(seen=p.peer_copy[0],missed=p.peer_copy[1],late=p.peer_copy[2],scope='my_replicated_copies_at_peer') if p.peer_copy else None),
+                 "mtu":(dict(p.mtu_prober.stats(),skips=p.mtu_skips,df_enforced=self._df_enforced.get(p.socket_index,False)) if p.mtu_prober else None),
+                 "probe_quality":dict(sent=p.probe_sent,acked=p.probe_acked,lost=p.probe_lost,lost_early=p.probe_lost_early,late=p.probe_late,scope='round_trip_probe'),
                  "metered_download_bytes":max(p.rx_bytes+28*p.rx_wire_packets,p.remote_wire_offset+p.remote_wire_tx),
                  "rtt_ms": p.rtt_ms, "rtt_jitter_ms":p.rtt_jitter_ms,"bulk_filtered":p.bulk_filtered,"rx": p.received, "tx": p.transmitted,
                  "rx_bytes": p.rx_bytes, "tx_bytes": p.tx_bytes,
@@ -888,7 +957,8 @@ class Node:
             return
         header = packet[:HEADER.size]
         magic, session, prefix, kind, sequence = HEADER.unpack(header)
-        allowed = (DATA, PROBE, PONG, STRIPED, FEEDBACK, HELLO, CHALLENGE, RESET, READY, REPAIR, LINK_POLICY, LINK_POLICY_ACK) if self.bonding_mode else (DATA, PROBE, PONG)
+        allowed = (DATA, PROBE, PONG, STRIPED, FEEDBACK, HELLO, CHALLENGE, RESET, READY, REPAIR, LINK_POLICY, LINK_POLICY_ACK,
+                   DATA_COPY, MTU_PROBE, MTU_ACK, REPAIR_NA, COPY_REPORT) if self.bonding_mode else (DATA, PROBE, PONG)
         if magic != self._magic or not hmac.compare_digest(session, self.session) or kind not in allowed:
             self._counts["malformed"] += 1
             return
@@ -949,16 +1019,18 @@ class Node:
                 self._counts["replay_floor_drops"] += 1
             elif too_old:
                 self._counts["replay_too_old_drops"] += 1
-                if kind == DATA:
+                if kind in DATA_KINDS:
                     self._counts["priority_rx_too_old_packets"] += 1
                     if path is not None:
                         path.priority_rx_too_old_packets += 1
             else:
                 self._counts["duplicate_copies"] += 1
-                if kind == DATA:
+                if kind in DATA_KINDS:
                     self._counts["priority_rx_duplicate_packets"] += 1
                     if path is not None:
                         path.priority_rx_duplicate_packets += 1
+                if kind == DATA_COPY and path is not None:
+                    self._note_copy(path, identity, sequence, received_at)
             return
         if kind in (PROBE, PONG) and len(payload) != (24 if self.bonding_mode else 16):
             self._counts["malformed"] += 1
@@ -967,7 +1039,11 @@ class Node:
                 (kind == REPAIR and len(payload) != REPAIR_HEADER.size) or
                 (kind == LINK_POLICY and len(payload) != POLICY_HEADER.size) or
                 (kind == LINK_POLICY_ACK and len(payload) != POLICY_ACK_HEADER.size) or
-                (kind == FEEDBACK and len(payload) != FEEDBACK_HEADER.size)):
+                (kind == FEEDBACK and len(payload) != FEEDBACK_HEADER.size) or
+                (kind == MTU_PROBE and len(payload) < MTU_PROBE_HEADER.size) or
+                (kind == MTU_ACK and len(payload) != MTU_PROBE_HEADER.size) or
+                (kind == REPAIR_NA and len(payload) != REPAIR_HEADER.size) or
+                (kind == COPY_REPORT and len(payload) != COPY_REPORT_HEADER.size)):
             self._counts["malformed"] += 1
             return
         if kind == FEEDBACK and FEEDBACK_HEADER.unpack(payload)[3] > MAX_ACK_DELAY_US:
@@ -1000,15 +1076,29 @@ class Node:
         if self.role=='client' and hasattr(sock,'note_authenticated'):sock.note_authenticated()
         path.last_sequence = max(path.last_sequence, sequence)
         path.received += 1
-        if kind == DATA:
+        if kind in DATA_KINDS:
             path.priority_rx_first_packets += 1
             self._counts["priority_rx_first_packets"] += 1
+        if kind == DATA_COPY:
+            expected = [(p.socket_index, p.endpoint) for p in self._eligible_paths(
+                [p for p in self._paths.values() if p.ready and p.available and
+                 received_at - p.last_rx < self.path_timeout], boost=True)]
+            self._copy_ledger.first(sequence, identity, expected, received_at)
         if kind == PROBE:
             self._write(self._encode(PONG, payload), path)
         elif kind == PONG:
             pending = self._pending.pop(payload, None)
+            if pending is None:
+                late = self._lost_probes.pop(payload, None)
+                if late is not None and late[1] == identity:
+                    # Reclassify: the reply arrived, merely later than a newer
+                    # probe's. The delay is real jitter evidence, not loss.
+                    path.probe_lost = max(0, path.probe_lost - 1)
+                    path.probe_late += 1
+                    pending = late
             if pending is not None and pending[1] == identity:
                 path.probe_acked+=1
+                path.probe_acked_sent_at = max(path.probe_acked_sent_at, pending[0])
                 sample = (time.perf_counter() - pending[0]) * 1000
                 path.rtt_jitter_ms = (sample/2 if path.rtt_ms is None else
                                       .75*path.rtt_jitter_ms+.25*abs(sample-path.rtt_ms))
@@ -1057,6 +1147,28 @@ class Node:
                 self._repair_requests[key] = None
                 while len(self._repair_requests) > 64:
                     self._repair_requests.popitem(last=False)
+            elif key not in self._repair_requests:
+                # Tell the receiver to stop waiting; one answer per request,
+                # and the requester itself caps attempts per key.
+                if self._write(self._encode(REPAIR_NA, REPAIR_HEADER.pack(*key)), path):
+                    self._counts["repair_unavailable_sent"] = self._counts.get("repair_unavailable_sent", 0) + 1
+        elif kind == REPAIR_NA:
+            key = REPAIR_HEADER.unpack(payload)
+            if key in self._repair_asked:
+                self._repair_asked[key] = (time.perf_counter(), 99)
+                self._counts["repair_unavailable"] = self._counts.get("repair_unavailable", 0) + 1
+        elif kind == MTU_PROBE:
+            nonce, claimed = MTU_PROBE_HEADER.unpack_from(payload)
+            # Answer with the size actually received; the prober only accepts
+            # an answer that matches the size it sent.
+            self._write(self._encode(MTU_ACK, MTU_PROBE_HEADER.pack(nonce, len(packet))), path)
+        elif kind == MTU_ACK:
+            nonce, size = MTU_PROBE_HEADER.unpack(payload)
+            if path.mtu_prober is not None and path.mtu_prober.acknowledge(nonce, size):
+                self._counts["mtu_acks"] = self._counts.get("mtu_acks", 0) + 1
+        elif kind == COPY_REPORT:
+            report = COPY_REPORT_HEADER.unpack(payload)
+            path.peer_copy = report + (time.perf_counter(),)
         elif kind == STRIPED:
             flow, number, epoch = STRIPE_HEADER.unpack_from(payload)
             if path.rx_epoch is None or (path.rx_epoch != epoch and sequence > path.stripe_rx_highest):
@@ -1074,12 +1186,35 @@ class Node:
                 path.feedback_due = True
             self._counts["rx_packets"] += 1
             self._counts["rx_payload_bytes"] += len(payload) - BOND_OVERHEAD
+            asked = self._repair_asked.get((flow, number))
+            if asked is not None:
+                name = "gap_filled_late" if self._reorder.is_late(flow, number) else "gap_filled_in_time"
+                self._counts[name] = self._counts.get(name, 0) + 1
             for delivered in self._reorder.push(flow, number, payload[BOND_OVERHEAD:]):
                 self._deliver(delivered)
         else:
             self._counts["rx_packets"] += 1
             self._counts["rx_payload_bytes"] += len(payload)
             self._deliver(payload, priority=True)
+
+    def _note_copy(self, path, identity, sequence, at):
+        result = self._copy_ledger.duplicate(sequence, identity, at)
+        if result is None:
+            return
+        state, lag = result
+        lag_ms = lag * 1000
+        path.copy_lag_ms = lag_ms if path.copy_lag_ms is None else .8 * path.copy_lag_ms + .2 * lag_ms
+        if state == "late":
+            path.copy_missed = max(0, path.copy_missed - 1)
+            path.copy_late += 1
+
+    def _copy_resolve_delay(self):
+        measured = [p for p in self._paths.values() if p.ready and p.rtt_ms is not None]
+        if len(measured) < 2:
+            return .05
+        spread = (max(p.rtt_ms for p in measured) - min(p.rtt_ms for p in measured)) / 2000
+        jitter = max(p.rtt_jitter_ms for p in measured) / 1000
+        return min(.25, max(.05, spread + 4 * jitter + .02))
 
     def _deliver(self, payload, *, priority=False):
         try:
@@ -1097,12 +1232,22 @@ class Node:
             skew = (max(p.rtt_ms or 0 for p in paths)-min(p.rtt_ms or 0 for p in paths))/2000
             path = min(paths, key=lambda p: p.rtt_ms or 1000)
             jitter=max(p.rtt_jitter_ms for p in paths)/1000
-            missing = (self._reorder.missing(delay=max(.015,skew+2*jitter), limit=4, now=now, predicate=_repairable)
+            missing = (self._reorder.missing(delay=max(.015,skew+2*jitter), limit=4, now=now,
+                                             predicate=_repairable, with_age=True)
                        if now >= self._repair_next_request else [])
             if missing:
                 self._repair_next_request = now + .01
-            for key in missing:
+            # Earliest useful repair: time already spent behind the hole plus
+            # one round trip (request out, retransmission back) on the best path.
+            # An unmeasured path cannot prove a repair is too late, so it is not gated.
+            round_trip = None if path.rtt_ms is None else path.rtt_ms / 1000
+            for flow_id, number, age in missing:
+                key = (flow_id, number)
                 last, attempts = self._repair_asked.get(key, (-1, 0))
+                if attempts == 0 and round_trip is not None and age + round_trip > self._repair_deadline:
+                    self._repair_asked[key] = (now, 99)
+                    self._counts["repair_skipped_deadline"] = self._counts.get("repair_skipped_deadline", 0) + 1
+                    continue
                 if attempts < 2 and now-last >= .04:
                     if self._write(self._encode(REPAIR, REPAIR_HEADER.pack(*key)), path):
                         self._repair_asked[key] = (now, attempts+1)
@@ -1116,7 +1261,7 @@ class Node:
                     continue
                 inner, sent_at, attempts = cached
                 size = len(inner)+BOND_OVERHEAD+OVERHEAD
-                ready = [p for p in paths if p.budget.ready_at(size,now)<=now+.000001]
+                ready = [p for p in self._fit_paths(paths,size) if p.budget.ready_at(size,now)<=now+.000001]
                 if not ready:
                     break
                 target = min(ready,key=lambda p:p.budget.score(size,now,p.rtt_ms))
@@ -1132,6 +1277,20 @@ class Node:
             self._repair_cache.popitem(last=False)
         for payload in self._reorder.poll(now=now):
             self._deliver(payload)
+        for identity, outcome in self._copy_ledger.resolve(now, self._copy_resolve_delay()):
+            target = self._paths.get(identity)
+            if target is not None:
+                if outcome == "seen":
+                    target.copy_seen += 1
+                else:
+                    target.copy_missed += 1
+        for path in self._paths.values():
+            counters = (path.copy_seen, path.copy_missed, path.copy_late)
+            if (counters != path.copy_reported and path.ready and now - path.last_rx < self.path_timeout
+                    and now - path.last_copy_report >= COPY_REPORT_INTERVAL):
+                if self._write(self._encode(COPY_REPORT, COPY_REPORT_HEADER.pack(*counters)), path):
+                    path.copy_reported = counters
+                    path.last_copy_report = now
         for path in self._paths.values():
             if path.link_state and (path.link_state['blocked'] or path.link_state['role']=='never'):continue
             # ACKs are cumulative and safe to repeat. A lost final feedback frame
@@ -1158,16 +1317,60 @@ class Node:
         self._reorder.timeout=min(.2,max(self._reorder_timeout,
             (max(spread,slowest/2)+4*jitter)/1000+self._reorder_timeout))
 
+    def _path_mtu(self, path) -> int:
+        return path.mtu_prober.path_mtu if path.mtu_prober is not None else self.mtu
+
+    def _fit_paths(self, paths, size):
+        """Prefer paths whose discovered MTU carries ``size`` bytes.
+
+        A packet no path is known to carry is still attempted: the discovery is
+        evidence, not proof, and a blackholed copy is no worse than no copy.
+        """
+        if not self._mtu_enabled or not paths:
+            return paths
+        fit = [p for p in paths if size <= self._path_mtu(p)]
+        for p in paths:
+            if p not in fit:
+                p.mtu_skips += 1
+        if fit:
+            self._counts["mtu_path_skips"] = self._counts.get("mtu_path_skips", 0) + len(paths) - len(fit)
+            return fit
+        self._counts["mtu_no_fit"] = self._counts.get("mtu_no_fit", 0) + 1
+        return paths
+
+    def _early_loss_delay(self, path) -> float:
+        """Minimum age before an overtaken probe counts as lost.
+
+        Two smoothed round trips plus four jitter units, never below 100 ms,
+        and bounded by half of path_timeout so the guard stays useful when a
+        caller configures long timeouts.
+        """
+        rtt = path.rtt_ms or 0.0
+        return min(self.path_timeout / 2, max(.1, (2 * rtt + 4 * path.rtt_jitter_ms) / 1000))
+
     def _probe(self) -> None:
         now = time.perf_counter()
         if self.bonding_mode and self.role == "server":
             self._challenges = OrderedDict((key, value) for key, value in self._challenges.items()
                                            if value[2] > now)
         for token,(sent,identity) in list(self._pending.items()):
-            if now-sent>=self.path_timeout:
-                path=self._paths.get(identity)
+            path=self._paths.get(identity)
+            age=now-sent
+            if age>=self.path_timeout:
                 if path:path.probe_lost+=1
                 self._pending.pop(token,None)
+            elif path is not None and sent<path.probe_acked_sent_at and age>=self._early_loss_delay(path):
+                # A probe sent after this one has already completed its round
+                # trip, so this one is lost or badly late. Waiting the full
+                # path_timeout would leave a lossy episode undefended for
+                # seconds; the late-reply branch above undoes a false positive.
+                path.probe_lost+=1
+                path.probe_lost_early+=1
+                self._pending.pop(token,None)
+                self._lost_probes[token]=(sent,identity)
+        while self._lost_probes and (len(self._lost_probes)>256 or
+                now-next(iter(self._lost_probes.values()))[0]>=self.path_timeout):
+            del self._lost_probes[next(iter(self._lost_probes))]
         # Client always probes configured sockets, including failed links. Server
         # probes learned paths until expiration and relies on new client probes
         # for recovery or NAT rebinding.
@@ -1209,6 +1412,11 @@ class Node:
             self._pending[token] = (now, (path.socket_index, path.endpoint))
             if self._write(self._encode(PROBE, token), path):path.probe_sent+=1
             else:self._pending.pop(token,None)
+            if path.mtu_prober is not None and path.ready:
+                for nonce, size in path.mtu_prober.due(now, lambda: secrets.randbits(64)):
+                    body = MTU_PROBE_HEADER.pack(nonce, size)
+                    body += b"\0" * (size - OVERHEAD - len(body))
+                    self._write(self._encode(MTU_PROBE, body), path)
 
     def _send_link_policy(self,path,now):
         if self._write(self._encode(LINK_POLICY,encode_state(path.policy_revision,path.link_state)),path):
