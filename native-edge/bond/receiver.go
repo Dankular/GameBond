@@ -26,6 +26,8 @@ type ReceiveResult struct {
 	Send    []Datagram
 	Deliver [][]byte
 	Repairs []MissingPacket
+	// Unavailable lists repairs the peer answered with REPAIR_NA.
+	Unavailable []MissingPacket
 }
 type ReceiverStats struct {
 	Authenticated, AuthenticationErrors, Malformed, Duplicates, FloorDrops, HandshakeRejected uint64
@@ -59,6 +61,9 @@ type receivePath struct {
 	probeSent, probeAcked, probeLost uint64
 	acceptedSequence, acceptedBytes  uint64
 	hasFeedback                      bool
+	mtu                              *MTUProber
+	mtuAcks, mtuSkips                uint64
+	peerCopy                         [3]uint64
 }
 type pendingProbe struct {
 	at   time.Time
@@ -85,6 +90,8 @@ type Receiver struct {
 	lastProbe            time.Time
 	probes               map[[24]byte]pendingProbe
 	reorderBase          time.Duration
+	mtuDiscovery         bool
+	repairUnavailable    uint64
 }
 
 func NewReceiver(codec *Codec, mtu int) (*Receiver, error) {
@@ -100,6 +107,16 @@ func (r *Receiver) SetReorderTimeout(timeout time.Duration) error {
 	}
 	r.reorderBase = timeout
 	r.reorder.config.Timeout = timeout
+	return nil
+}
+
+// SetPathMTUDiscovery enables per-path outbound MTU probing (kinds 14/15).
+// It must be set before any path exists.
+func (r *Receiver) SetPathMTUDiscovery(on bool) error {
+	if len(r.paths) > 0 {
+		return ErrFrame
+	}
+	r.mtuDiscovery = on
 	return nil
 }
 func (r *Receiver) seconds(now time.Time) float64 {
@@ -290,6 +307,14 @@ func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, n
 		valid = len(payload) == 26
 	case LinkPolicyAck:
 		valid = false
+	case MTUProbeKind:
+		valid = len(payload) >= 12
+	case MTUAck:
+		valid = len(payload) == 12
+	case RepairNA:
+		valid = len(payload) == 16
+	case CopyReport:
+		valid = len(payload) == 24
 	}
 	if !valid {
 		r.stats.Malformed++
@@ -389,7 +414,22 @@ func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, n
 		r.stats.PayloadPackets++
 		r.stats.PayloadBytes += uint64(len(payload) - 24)
 		out.Deliver = r.reorder.Push(binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:]), payload[24:], now)
-	case Data:
+	case MTUProbeKind:
+		// Answer with the size actually received, as the Python peer does.
+		reply := make([]byte, 12)
+		copy(reply, payload[:8])
+		binary.BigEndian.PutUint32(reply[8:], uint32(len(frame)))
+		err = r.write(MTUAck, reply, local, endpoint, &out)
+	case MTUAck:
+		if p.mtu != nil && p.mtu.Acknowledge(binary.BigEndian.Uint64(payload), int(binary.BigEndian.Uint32(payload[8:]))) {
+			p.mtuAcks++
+		}
+	case RepairNA:
+		r.repairUnavailable++
+		out.Unavailable = append(out.Unavailable, MissingPacket{binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:])})
+	case CopyReport:
+		p.peerCopy = [3]uint64{binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:]), binary.BigEndian.Uint64(payload[16:])}
+	case Data, DataCopy:
 		r.stats.PayloadPackets++
 		r.stats.PayloadBytes += uint64(len(payload))
 		out.Deliver = append(out.Deliver, payload)
@@ -460,9 +500,24 @@ func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 			if err := r.write(Probe, token[:], p.local, p.endpoint, &out); err != nil {
 				return out, err
 			}
+			if p.mtu != nil {
+				for _, probe := range p.mtu.Due(r.seconds(now), randomNonce) {
+					body := make([]byte, probe.Size-Overhead)
+					binary.BigEndian.PutUint64(body, probe.Nonce)
+					binary.BigEndian.PutUint32(body[8:], uint32(probe.Size))
+					if err := r.write(MTUProbeKind, body, p.local, p.endpoint, &out); err != nil {
+						return out, err
+					}
+				}
+			}
 		}
 	}
 	return out, nil
+}
+func randomNonce() uint64 {
+	var b [8]byte
+	rand.Read(b[:])
+	return binary.BigEndian.Uint64(b[:])
 }
 func (r *Receiver) updateReorderBudget() {
 	count := 0

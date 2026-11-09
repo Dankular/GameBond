@@ -19,7 +19,7 @@ type sendFlow struct {
 	last       time.Time
 	lru        *list.Element
 }
-type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests uint64 }
+type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, MTUNoFit uint64 }
 
 // Sender is the actor-owned transmit half. A caller retries a pending bulk
 // packet at the returned time, servicing Receive/Tick/urgent queues meanwhile.
@@ -109,6 +109,28 @@ func (s *Sender) eligible(now time.Time, boost bool) []*receivePath {
 	}
 	return backup
 }
+
+// fitPaths keeps the paths whose discovered outbound MTU can carry a datagram of
+// size bytes. When none fit it returns all of them: sending and risking loss
+// beats silence, matching the Python fallback.
+func (s *Sender) fitPaths(paths []*receivePath, size int) []*receivePath {
+	if !s.r.mtuDiscovery {
+		return paths
+	}
+	fit := make([]*receivePath, 0, len(paths))
+	for _, p := range paths {
+		if p.mtu == nil || p.mtu.PathMTU() >= size {
+			fit = append(fit, p)
+		} else {
+			p.mtuSkips++
+		}
+	}
+	if len(fit) == 0 {
+		s.stats.MTUNoFit++
+		return paths
+	}
+	return fit
+}
 func (s *Sender) written(d Datagram, p *receivePath, now time.Time, writer DatagramWriter) bool {
 	timestamp := s.r.seconds(now)
 	if p != nil && p.policy != nil && p.pacer.ReadyAt(len(d.Frame)+28, timestamp) > timestamp+.000001 {
@@ -181,6 +203,12 @@ func (s *Sender) Controls(result ReceiveResult, now time.Time, writer DatagramWr
 			s.requestOrder.Remove(oldest)
 		}
 	}
+	for _, key := range result.Unavailable {
+		// The peer will never repair this packet: stop asking.
+		if asked := s.asked[key]; asked != nil {
+			asked.at, asked.attempts = now, 99
+		}
+	}
 	for _, d := range result.Send {
 		s.written(d, s.r.paths[PathKey{d.Local, d.Endpoint}], now, writer)
 	}
@@ -190,7 +218,7 @@ func (s *Sender) Urgent(payload []byte, replicate bool, now time.Time, writer Da
 	if len(payload)+Overhead > s.r.mtu {
 		return 0, ErrFrame
 	}
-	paths := s.eligible(now, true)
+	paths := s.fitPaths(s.eligible(now, true), len(payload)+Overhead)
 	sort.Slice(paths, func(i, j int) bool {
 		a, b := paths[i], paths[j]
 		ca, cb := math.Inf(1), math.Inf(1)
@@ -279,6 +307,7 @@ func (s *Sender) Bulk(payload []byte, key string, now time.Time, writer Datagram
 	}
 	timestamp := s.r.seconds(now)
 	size := len(payload) + Overhead + 24
+	paths = s.fitPaths(paths, size)
 	ready := make(map[*receivePath]float64, len(paths))
 	transit := make(map[*receivePath]float64, len(paths))
 	primaryReady := false
@@ -416,6 +445,8 @@ type PathSnapshot struct {
 	WireTX, WireRX, ProbeSent, ProbeAcked, ProbeLost uint64
 	Policy                                           *PathPolicy
 	Budget                                           map[string]any
+	MTU                                              *MTUStats
+	MTUAcks, MTUSkips                                uint64
 }
 
 func (s *Sender) Paths(now time.Time) []PathSnapshot {
@@ -426,8 +457,16 @@ func (s *Sender) Paths(now time.Time) []PathSnapshot {
 			copy := *p.policy
 			policy = &copy
 		}
-		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats()})
+		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats(), mtuStats(p), p.mtuAcks, p.mtuSkips})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Endpoint.Compare(out[j].Endpoint) < 0 })
 	return out
+}
+
+func mtuStats(p *receivePath) *MTUStats {
+	if p.mtu == nil {
+		return nil
+	}
+	st := p.mtu.Stats()
+	return &st
 }

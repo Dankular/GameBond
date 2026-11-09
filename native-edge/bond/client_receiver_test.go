@@ -18,6 +18,7 @@ type clientServerPair struct {
 	srv    netip.AddrPort
 	src    [2]netip.AddrPort
 	drop   [2]bool // blackhole uplink i in both directions
+	limit  [2]int  // when non-zero, uplink i silently drops frames larger than this
 }
 
 func newClientServerPair(t *testing.T) *clientServerPair {
@@ -58,7 +59,7 @@ func (p *clientServerPair) deliver(fromClient bool, out ReceiveResult) {
 		var res ReceiveResult
 		var err error
 		if it.fromClient {
-			if p.drop[it.d.Local] {
+			if p.drop[it.d.Local] || (p.limit[it.d.Local] > 0 && len(it.d.Frame) > p.limit[it.d.Local]) {
 				continue
 			}
 			res, err = p.server.ReceiveOn(0, it.d.Frame, p.src[it.d.Local], p.now)
@@ -72,7 +73,7 @@ func (p *clientServerPair) deliver(fromClient bool, out ReceiveResult) {
 					local = i
 				}
 			}
-			if local < 0 || p.drop[local] {
+			if local < 0 || p.drop[local] || (p.limit[local] > 0 && len(it.d.Frame) > p.limit[local]) {
 				continue
 			}
 			res, err = p.client.ReceiveOn(local, it.d.Frame, p.srv, p.now)
@@ -176,5 +177,59 @@ func TestServerReceiverStillRejectsAddClientPath(t *testing.T) {
 	f := newReceiverFixture(t)
 	if err := f.r.AddClientPath(0, f.endpoint, f.now); err == nil {
 		t.Fatal("server receiver accepted a client path")
+	}
+}
+
+func TestMTUDiscoveryFindsPerUplinkLimitAndSenderFitsPaths(t *testing.T) {
+	p := newClientServerPair(t)
+	p.limit[1] = 1250 // second uplink: largest ladder size that fits is 1232
+	if err := p.client.SetPathMTUDiscovery(true); err == nil {
+		t.Fatal("discovery must be configured before paths exist")
+	}
+	p = newClientServerPair(t)
+	p.client.paths = map[PathKey]*receivePath{} // configure before paths, as production does
+	p.client.SetPathMTUDiscovery(true)
+	p.server.SetPathMTUDiscovery(true)
+	p.limit[1] = 1250
+	for i := range p.src {
+		if err := p.client.AddClientPath(i, p.srv, p.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 120; i++ {
+		p.step()
+	}
+	want := map[int]int{0: 1400, 1: 1232}
+	for local, mtu := range want {
+		path := p.client.paths[PathKey{local, p.srv}]
+		if path == nil || path.mtu == nil {
+			t.Fatalf("uplink %d has no prober", local)
+		}
+		if got := path.mtu.PathMTU(); got != mtu {
+			t.Fatalf("uplink %d path MTU = %d, want %d (stats %+v)", local, got, mtu, path.mtu.Stats())
+		}
+		if path.mtuAcks == 0 {
+			t.Fatalf("uplink %d never counted an MTU ack", local)
+		}
+	}
+	sender, err := NewSender(p.client, 1, 100)
+	_ = sender
+	if err == nil {
+		t.Fatal("sender must refuse a receiver that already has paths")
+	}
+	s := &Sender{r: p.client}
+	all := s.eligible(p.now, true)
+	if len(all) != 2 {
+		t.Fatalf("eligible = %d", len(all))
+	}
+	if fit := s.fitPaths(all, 1300); len(fit) != 1 || fit[0].local != 0 {
+		t.Fatalf("a 1300-byte datagram must use only the full-size uplink, got %d paths", len(fit))
+	}
+	if fit := s.fitPaths(all, 1200); len(fit) != 2 {
+		t.Fatalf("a 1200-byte datagram fits both uplinks, got %d", len(fit))
+	}
+	p.client.paths[PathKey{0, p.srv}].mtu = &MTUProber{ceiling: 1000, strikes: map[int]int{}, outstanding: map[mtuProbeKey]float64{}}
+	if fit := s.fitPaths(all, 1500); len(fit) != 2 || s.stats.MTUNoFit != 1 {
+		t.Fatalf("when nothing fits every path must stay usable, got %d (no_fit=%d)", len(fit), s.stats.MTUNoFit)
 	}
 }

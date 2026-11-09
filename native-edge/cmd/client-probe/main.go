@@ -23,7 +23,8 @@ type config struct {
 	Key, Session string
 	Server       string
 	Paths        int
-	Send         int // payloads to send once every uplink is ready
+	Send         int  // payloads to send once every uplink is ready
+	MTU          bool // enable per-path MTU discovery
 }
 
 type datagram struct {
@@ -69,6 +70,9 @@ func run() error {
 	}
 	receiver, err := bond.NewReceiver(codec, 1400)
 	if err != nil {
+		return err
+	}
+	if err = receiver.SetPathMTUDiscovery(c.MTU); err != nil {
 		return err
 	}
 	sender, err := bond.NewSender(receiver, 10, 20)
@@ -133,7 +137,7 @@ func run() error {
 			delivered[n]++
 		}
 	}
-	sent, firstReady := false, time.Time{}
+	sent, firstReady, firstSend := false, time.Time{}, time.Now()
 	end := time.Now().Add(30 * time.Second)
 	tick := time.NewTicker(2 * time.Millisecond)
 	defer tick.Stop()
@@ -172,6 +176,7 @@ loop:
 					}
 				}
 				sent = true
+				firstSend = now
 			}
 		}
 		if outbound.Stats().QueuedPackets > 0 && !time.Now().Before(nextBulk) {
@@ -180,6 +185,7 @@ loop:
 			}
 		}
 	}
+	drained := time.Since(firstSend)
 	unique := len(delivered)
 	duplicates := 0
 	for _, count := range delivered {
@@ -187,7 +193,7 @@ loop:
 	}
 	return encoder.Encode(map[string]any{"receiver": receiver.Stats(), "sender": sender.Stats(), "paths": sender.Paths(time.Now()),
 		"transmit_queue": outbound.Stats(), "ready_paths": receiver.ReadyPaths(time.Now()),
-		"delivered_unique": unique, "delivered_duplicates": duplicates, "corrupt": corrupt, "sent_enqueued": sent})
+		"delivered_unique": unique, "delivered_duplicates": duplicates, "corrupt": corrupt, "sent_enqueued": sent, "seconds_to_drain": drained.Seconds()})
 }
 
 func main() {

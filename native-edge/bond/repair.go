@@ -126,7 +126,7 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		size := len(cached.payload) + Overhead + 24
 		var target *receivePath
 		bestScore := math.Inf(1)
-		for _, p := range paths {
+		for _, p := range s.fitPaths(paths, size) {
 			ready, err := p.budget.ReadyAt(size, timestamp)
 			if err != nil {
 				return err

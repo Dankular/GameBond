@@ -31,6 +31,11 @@ const (
 	Repair        byte = 10
 	LinkPolicy    byte = 11
 	LinkPolicyAck byte = 12
+	DataCopy      byte = 13
+	MTUProbeKind  byte = 14
+	MTUAck        byte = 15
+	RepairNA      byte = 16
+	CopyReport    byte = 17
 )
 
 var (
@@ -97,7 +102,7 @@ func (c *Codec) derive(prefix [16]byte, role string) (cipher.AEAD, error) {
 }
 
 func (c *Codec) Encode(kind byte, payload []byte) ([]byte, error) {
-	if kind < Data || kind > LinkPolicyAck || len(payload)+Overhead > 65507 {
+	if kind < Data || kind > CopyReport || len(payload)+Overhead > 65507 {
 		return nil, ErrFrame
 	}
 	var sequence uint64
@@ -124,7 +129,7 @@ func (c *Codec) Encode(kind byte, payload []byte) ([]byte, error) {
 func (c *Codec) Decode(frame []byte) (Packet, error) {
 	var result Packet
 	if len(frame) < Overhead || len(frame) > 65507 || string(frame[:4]) != "GB03" ||
-		subtle.ConstantTimeCompare(frame[4:20], c.Session[:]) != 1 || frame[36] < Data || frame[36] > LinkPolicyAck {
+		subtle.ConstantTimeCompare(frame[4:20], c.Session[:]) != 1 || frame[36] < Data || frame[36] > CopyReport {
 		return result, ErrFrame
 	}
 	copy(result.Header.Session[:], frame[4:20])

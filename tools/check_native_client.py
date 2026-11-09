@@ -44,18 +44,22 @@ def wait(predicate, seconds=8, what='condition'):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--paths', type=int, choices=range(1, 9), default=2)
+    parser.add_argument('--mtu', action='store_true', help='enable path MTU discovery on both sides')
+    parser.add_argument('--send', type=int, default=200, help='Go -> Python payload count (max 1000)')
+    parser.add_argument('--no-evidence', action='store_true')
     args = parser.parse_args()
     exe = ROOT / 'build' / ('gamebond-native-client-probe.exe' if sys.platform == 'win32' else 'gamebond-native-client-probe')
+    SEND = args.send
     key, session = secrets.token_bytes(32), secrets.token_bytes(16)
     server = Node(key, 'server', session, [('127.0.0.1', 0)], bonding_mode=True, probe_interval=.025,
-                  path_timeout=.3, initial_rate_mbps=10, max_rate_mbps=10).start()
+                  path_timeout=.3, initial_rate_mbps=10, max_rate_mbps=10, path_mtu_discovery=args.mtu).start()
     process = None
     try:
         host, port = server.addresses[0]
         process = subprocess.Popen([str(exe)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         process.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), server=f'{host}:{port}',
-                                            paths=args.paths, send=SEND)) + '\n')
+                                            paths=args.paths, send=SEND, mtu=args.mtu)) + '\n')
         process.stdin.flush()
         assert json.loads(process.stdout.readline())['status'] == 'started'
 
@@ -71,6 +75,7 @@ def main():
                     errors.append('server receive timed out')
                     return
         thread = threading.Thread(target=drain, daemon=True)
+        started = time.monotonic()
         thread.start()
         # Python -> Go in small batches, below the Go client's bounded inbox.
         for batch in range(RETURN // 20):
@@ -78,6 +83,7 @@ def main():
                 assert server.send(payload(n), replicate=False, flow_id='native-client') == 1
             time.sleep(.05)
         thread.join(15)
+        elapsed = time.monotonic() - started
         assert not errors, errors
         assert len(received) == SEND == len(set(received)), (len(received), len(set(received)))
         assert set(received) == {payload(n) for n in range(SEND)}, 'payload corruption or loss Go -> Python'
@@ -94,14 +100,20 @@ def main():
         assert report['sent_enqueued'] and report['transmit_queue']['Expired'] == 0
         assert report['sender']['StripedPackets'] >= SEND
         assert all(p['Budget']['sent_packets'] > 0 for p in report['paths']), 'a Go uplink carried no bulk'
+        if args.mtu:
+            assert stats.get('mtu_acks', 0) >= 0
+            assert all(p['mtu'] and p['mtu']['acks'] > 0 for p in stats['paths']), 'Python never got an MTU ack from a Go uplink'
+            assert all(p['MTU'] and p['MTUAcks'] > 0 for p in report['paths']), 'Go never got an MTU ack from the Python server'
         evidence = dict(
             scope='Real UDP loopback; Go client role to the Python server; no TUN/VPS/physical aggregation claim',
             uplinks=args.paths, go_to_python_payloads=SEND, python_to_go_payloads=RETURN,
             python_server_paths=[dict(healthy=p['healthy'], sent=p['bonding']['sent_packets']) for p in stats['paths']],
             python_auth_failures=stats['auth_failures'], go=report)
+        print(json.dumps(dict(mtu=args.mtu, uplinks=args.paths, send=SEND, python_receive_seconds=round(elapsed, 3), mbit_per_s=round(SEND * 1000 * 8 / elapsed / 1e6, 2))))
+        if args.no_evidence:
+            return
         target = ROOT / 'evidence' / ('native-client-interop.json' if args.paths == 2 else f'native-client-interop-{args.paths}links.json')
         target.write_text(json.dumps(evidence, indent=2) + '\n')
-        print(json.dumps(evidence, indent=2))
     finally:
         server.close()
         if process is not None and process.poll() is None:
