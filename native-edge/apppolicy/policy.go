@@ -184,6 +184,12 @@ func hasExeSuffix(p string) bool {
 	return len(r) >= 4 && strings.ToLower(string(r[len(r)-4:])) == ".exe"
 }
 
+// IsAbs is ntpath.isabs.
+func IsAbs(s string) bool { return isAbs(s) }
+
+// PyJSONString is json.dumps(s) with ensure_ascii.
+func PyJSONString(s string) string { return pyJSONString(s) }
+
 // CanonicalPath is canonical_path. v must be a string.
 func CanonicalPath(v any) (string, error) {
 	path, ok := v.(string)
