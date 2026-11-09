@@ -172,7 +172,7 @@ async function hardware() {
     const rows = [];
     if (d.cpu) rows.push(["CPU", (d.cpu.percent ?? "–") + " %"]);
     if (d.memory) rows.push(["Memory", fmtBytes(d.memory.used_bytes) + " / " + fmtBytes(d.memory.total_bytes) + " (" + d.memory.percent + " %)"]);
-    if (d.gpu && d.gpu.name) rows.push(["GPU", d.gpu.name + (d.gpu.utilization != null ? " · " + d.gpu.utilization + " %" : "")]);
+    if (d.gpu) rows.push(["GPU (busiest engine)", d.gpu.available && d.gpu.percent != null ? Number(d.gpu.percent).toFixed(0) + " %" + (d.gpu.dedicated_used_bytes != null ? " · " + fmtBytes(d.gpu.dedicated_used_bytes) + " VRAM" : "") : d.gpu.status]);
     if (!rows.length) rows.push(["Sample", JSON.stringify(d).slice(0, 200)]);
     for (const [k, v] of rows) { const a = document.createElement("span"); a.textContent = k; const b = document.createElement("span"); b.textContent = v; kv.append(a, b); }
   } catch (e) {}

@@ -64,7 +64,7 @@ func main() {
 		return ttyrelay.Control(abs(*relayPath), command, 60*time.Second, io.Discard)
 	}
 	var hardware func() map[string]any
-	if sampler, err := hwmon.New(hwmon.WindowsBackend{}, hwmon.Options{}); err == nil {
+	if sampler, err := hwmon.New(hwmon.WindowsBackend{}, hwmon.Options{GPU: hwmon.NewGPUSampler(5, nil, nil, nil)}); err == nil {
 		hardware = sampler.Sample
 	}
 	logLines := func() []string {
@@ -83,6 +83,7 @@ func main() {
 		fmt.Println(url)
 	}
 
+	var lastColor string
 	model := tray.NewModel()
 	shell := &tray.Shell{}
 	sample := func() map[string]any {
@@ -136,6 +137,10 @@ func main() {
 		}
 		if model.Update(sample(), busy.Load(), "") {
 			shell.SetIcon(model.Color, model.Title)
+			if lastColor != "" && lastColor != model.Color {
+				shell.Balloon("GameBond", model.Title)
+			}
+			lastColor = model.Color
 		}
 	}
 	if err := shell.Run(model.Color, model.Title); err != nil {

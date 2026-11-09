@@ -229,6 +229,15 @@ func (s *Shell) notify(op uintptr) bool {
 	return r != 0
 }
 
+// Balloon shows a notification-area toast (UI thread only).
+func (s *Shell) Balloon(title, body string) {
+	d := notifyIconData{hwnd: s.hwnd, id: 1, flags: 16, infoFlags: 1} // NIF_INFO, NIIF_INFO
+	d.size = uint32(unsafe.Sizeof(d))
+	copy(d.infoTitle[:len(d.infoTitle)-1], syscall.StringToUTF16(title))
+	copy(d.info[:len(d.info)-1], syscall.StringToUTF16(body))
+	procShellNotifyIcon.Call(nimModify, uintptr(unsafe.Pointer(&d)))
+}
+
 // SetIcon changes the icon colour and tooltip (UI thread only).
 func (s *Shell) SetIcon(color, tip string) {
 	s.cur, s.tip = color, tip
