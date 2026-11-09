@@ -415,3 +415,6 @@ func (p *Policy) Digest() string {
 	sum := sha256.Sum256([]byte(canonicalJSON(p.Snapshot())))
 	return hex.EncodeToString(sum[:])
 }
+
+// NormPath is ntpath.normpath.
+func NormPath(path string) string { return normPath(path) }

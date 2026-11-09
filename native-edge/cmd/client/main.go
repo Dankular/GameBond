@@ -140,6 +140,8 @@ func run() error {
 	stackPath := flag.String("netstack", "", "path to the netstack executable (required)")
 	usagePath := flag.String("usage", ".runtime/link-usage.json", "link usage ledger shared with the Python runtime")
 	ttyPath := flag.String("tty", "", "start the read-only log relay with this metadata file and publish daemon logs to it (empty disables)")
+	appCaptureFlag := flag.Bool("app-capture", false, "the netstack runs with the owner-attribution capture extension: authorize and record per-application use (default: deny every request to the bulk profile)")
+	historyPath := flag.String("app-history", ".runtime/app-history.json", "first-use application history (empty disables)")
 	statusPath := flag.String("status", ".runtime/userspace-status.json", "status file for the control tooling (empty disables)")
 	flag.Parse()
 	if *stackPath == "" {
@@ -219,18 +221,16 @@ func run() error {
 		return err
 	}
 	bridge := &stackio.Bridge{Classifier: classifier, GamePorts: gamePorts, Out: stackio.NewWriter(stdin)}
+	capture, err := newAppCapture(*appCaptureFlag, *configPath, *historyPath, rawCfg, func(m map[string]any) error { return bridge.Respond(m) })
+	if err != nil {
+		return err
+	}
+	defer capture.close()
 	bridge.OnEvent = func(m map[string]any) {
 		if s, ok := m["socks"].(string); ok {
 			fmt.Printf("{\"status\":\"stack_ready\",\"socks\":%q}\n", s)
 		}
-		// Application capture is not ported: deny every request to the bulk
-		// profile, exactly what the Python runtime answers without the
-		// capture extension.
-		if m["type"] == "app_authorization_request" {
-			if id, ok := m["id"].(string); ok && len(id) == 24 {
-				_ = bridge.Respond(map[string]any{"type": "app_authorization_response", "id": id, "allow": false, "profile": "bulk"})
-			}
-		}
+		_ = capture.onEvent(m)
 	}
 	mtu := cfg.MTU
 	if mtu == 0 {
@@ -365,8 +365,11 @@ func run() error {
 					}
 				}
 			}
+			if err := capture.flush(); err != nil {
+				fmt.Fprintln(logOut, "application history write failed:", err)
+			}
 			if *statusPath != "" {
-				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr)); err != nil {
+				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture)); err != nil {
 					fmt.Fprintln(logOut, "status write failed:", err)
 				}
 			}
@@ -392,7 +395,7 @@ func main() {
 
 // statusDocument is the Python-compatible subset of userspace-status.json the
 // control tooling reads: identity, state, peer, per-path transport and counters.
-func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState, l *lanManager) map[string]any {
+func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState, l *lanManager, capture *appCapture) map[string]any {
 	state := "connecting"
 	if s.Ready > 0 {
 		state = "running"
@@ -403,9 +406,13 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 			"rtt_ms": p.RTTMilliseconds, "rtt_jitter_ms": p.JitterMilliseconds, "wire_tx_bytes": p.WireTX, "wire_rx_bytes": p.WireRX,
 			"policy_confirmed": p.PolicyConfirmed, "remote": p.Endpoint.String()})
 	}
-	return map[string]any{"pid": os.Getpid(), "created": float64(created.UnixNano()) / 1e9, "updated_at": float64(time.Now().UnixNano()) / 1e9,
+	doc := map[string]any{"pid": os.Getpid(), "created": float64(created.UnixNano()) / 1e9, "updated_at": float64(time.Now().UnixNano()) / 1e9,
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
 		"transport": map[string]any{"paths": paths},
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
 		"qos":       s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "dns": l.dnsStatus()}
+	if capture != nil {
+		capture.status(doc)
+	}
+	return doc
 }

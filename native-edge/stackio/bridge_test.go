@@ -3,6 +3,7 @@ package stackio
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"gamebond.local/nativeedge/bond"
 	"io"
 	"testing"
@@ -96,5 +97,21 @@ func TestBridgeMarksAndClassifiesGameUDP(t *testing.T) {
 	}
 	if junk.Priority || string(junk.Payload) != "garbage" {
 		t.Fatalf("unparseable packet must pass through as bulk: %+v", junk)
+	}
+}
+
+func TestEventNumbersKeepPythonIntFloatDistinction(t *testing.T) {
+	var got map[string]any
+	b := &Bridge{Out: NewWriter(&bytes.Buffer{}), Uplink: &fakeUplink{}, OnEvent: func(m map[string]any) { got = m }}
+	var from bytes.Buffer
+	w := NewWriter(&from)
+	w.Write(KindStackEvent, []byte(`{"pid":7,"rate":1.5,"big":18446744073709551615}`))
+	w.Write(KindStackEvent, []byte(`{"a":1} trailing`))
+	b.Pump(&from)
+	if got["pid"] != json.Number("7") || got["rate"] != json.Number("1.5") || got["big"] != json.Number("18446744073709551615") {
+		t.Fatalf("%#v", got)
+	}
+	if b.Malformed.Load() != 1 {
+		t.Fatalf("trailing garbage must count as malformed, got %d", b.Malformed.Load())
 	}
 }

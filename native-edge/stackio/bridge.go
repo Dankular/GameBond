@@ -1,6 +1,7 @@
 package stackio
 
 import (
+	"bytes"
 	"encoding/json"
 	"gamebond.local/nativeedge/bond"
 	"io"
@@ -73,7 +74,10 @@ func (b *Bridge) Pump(stackOut io.Reader) error {
 			}
 		case KindStackEvent:
 			var record map[string]any
-			if json.Unmarshal(f.Payload, &record) != nil {
+			// UseNumber keeps Python's int/float distinction (type(pid) is int).
+			dec := json.NewDecoder(bytes.NewReader(f.Payload))
+			dec.UseNumber()
+			if dec.Decode(&record) != nil || dec.More() {
 				b.Malformed.Add(1)
 				continue
 			}
