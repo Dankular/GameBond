@@ -143,8 +143,14 @@ func (c *Client) closeConns() {
 // Send queues a payload for the server. It never blocks: false means the
 // submission buffer is full and the packet was dropped.
 func (c *Client) Send(payload []byte, flow string, ttl time.Duration) bool {
+	return c.Submit(bond.QueuedPacket{Payload: payload, Flow: flow, Expires: time.Now().Add(ttl)})
+}
+
+// Submit queues a fully described packet (priority, replication, tag, expiry).
+func (c *Client) Submit(p bond.QueuedPacket) bool {
+	p.Payload = append([]byte(nil), p.Payload...)
 	select {
-	case c.submit <- bond.QueuedPacket{Payload: append([]byte(nil), payload...), Flow: flow, Expires: time.Now().Add(ttl)}:
+	case c.submit <- p:
 		return true
 	default:
 		c.mu.Lock()

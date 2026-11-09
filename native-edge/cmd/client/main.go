@@ -25,15 +25,16 @@ import (
 
 // fileConfig is the subset of configs/local-client.json this daemon reads.
 type fileConfig struct {
-	Session        string  `json:"session"`
-	Bind           [][]any `json:"bind"` // [[ip, port], ...] one per uplink; port is ignored (ephemeral)
-	Peer           []any   `json:"peer"`
-	MTU            int     `json:"mtu"`
-	InitialMbps    float64 `json:"bonding_initial_rate_mbps"`
-	MaxMbps        float64 `json:"bonding_max_rate_mbps"`
-	FailoverReplay bool    `json:"failover_replay"`
-	PathMTU        bool    `json:"path_mtu_discovery"`
-	InterfaceIndex []int   `json:"interface_indices"` // pin uplink i to this adapter index
+	Session        string   `json:"session"`
+	Bind           [][]any  `json:"bind"` // [[ip, port], ...] one per uplink; port is ignored (ephemeral)
+	Peer           []any    `json:"peer"`
+	MTU            int      `json:"mtu"`
+	InitialMbps    float64  `json:"bonding_initial_rate_mbps"`
+	MaxMbps        float64  `json:"bonding_max_rate_mbps"`
+	FailoverReplay bool     `json:"failover_replay"`
+	GameUDPPorts   []uint16 `json:"game_udp_ports"`
+	PathMTU        bool     `json:"path_mtu_discovery"`
+	InterfaceIndex []int    `json:"interface_indices"` // pin uplink i to this adapter index
 }
 
 func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
@@ -96,6 +97,14 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	classifier, err := bond.NewClassifier(nil, cfg.GameUDPPorts, bond.DefaultQoSSettings())
+	if err != nil {
+		return err
+	}
+	gamePorts := map[uint16]bool{}
+	for _, p := range cfg.GameUDPPorts {
+		gamePorts[p] = true
+	}
 	stack := exec.CommandContext(ctx, *stackPath, "--proxy-stdio")
 	stack.Stderr = os.Stderr
 	stdin, err := stack.StdinPipe()
@@ -106,7 +115,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	bridge := &stackio.Bridge{Out: stackio.NewWriter(stdin), OnEvent: func(m map[string]any) {
+	bridge := &stackio.Bridge{Classifier: classifier, GamePorts: gamePorts, Out: stackio.NewWriter(stdin), OnEvent: func(m map[string]any) {
 		if s, ok := m["socks"].(string); ok {
 			fmt.Printf("{\"status\":\"stack_ready\",\"socks\":%q}\n", s)
 		}
