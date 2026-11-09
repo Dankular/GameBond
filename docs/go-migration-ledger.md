@@ -128,6 +128,12 @@ The proposals, as written before the decision:
 
 `status` TestWriteJSONReplacesAtomicallyAndLeavesNoTemp failed 2 of 5 runs on this Windows host with the daemon running: 20 concurrent `WriteJSON` calls on one path made `ReplaceFileW` fail with "Unable to move the replacement file" and, once, stranded a `~RF*.TMP` backup. Cause: concurrent in-process writers. Fix: `status.WriteJSON` takes a package mutex (cross-process writers are still only protected by the ReplaceFile retry). After the fix: 30 consecutive runs pass. `client` TestPacedThroughput passed 5 of 5 (9 s) with the daemon running, so it was not reproduced as flaky; it is timing-based and was not stress-tested under CPU load.
 
+## Admin password reset and login check (2026-11-09)
+
+At the user's request the admin password was replaced: new random password stored in the git-ignored `.runtime/admin-password.txt`; the scrypt hash (made by `adminctl passwd`) replaced `admin.password_hash` in the live `configs/local-server.json` of release `native-a8492d9c4707` (backup `local-server.json.bak-pw` beside it). The first attempt wrote a mangled hash (the remote shell expanded `$` in the scrypt string), so the container exited on the entrypoint's config check for about 90 s; fixed from the backup and restarted. Verified: `POST /api/login` over HTTPS to :9444 with the new password returned 200 with a `gb_session` cookie (Secure, HttpOnly, SameSite=Strict) and a CSRF token. This is a curl login, not a browser login; the portal UI was not opened by eye.
+
+Test under load: `client` TestPacedThroughputIsNotCappedByTimerGranularity delivered 6591/20000 and timed out with 12 busy-loop processes on a 12-CPU host. The test sends 20,000 datagrams over loopback UDP with no retransmission, so socket-buffer overflow when the receiver is starved is loss the engine does not repair by design; it passes (5/5) on an idle host. Not investigated further; treat it as load-sensitive, not as an engine defect.
+
 ## Loopback throughput findings (one machine; not a link benchmark)
 
 Same 1000-byte payload stream, `tools/check_native_client.py` / `check_go_to_go.py`:
