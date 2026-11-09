@@ -453,6 +453,7 @@ type Client struct {
 	stop    chan struct{}
 	stopped sync.Once
 	wg      sync.WaitGroup
+	started bool
 }
 
 func (c *Client) clockNow() int64 { return tmask(c.now()) }
@@ -590,6 +591,7 @@ func (c *Client) sendPath(p *path, now int64, wire []byte) {
 func (c *Client) Start() *Client {
 	c.mu.Lock()
 	c.kx.rotateIfDue(c.clockNow(), KxTimeout)
+	c.started = true
 	c.mu.Unlock()
 	for _, p := range c.paths {
 		if p.conn != nil {
@@ -623,7 +625,9 @@ func (c *Client) reader(p *path) {
 		}
 		pkt := append([]byte(nil), buf[:n]...)
 		c.mu.Lock()
-		c.onPacket(p, from, pkt)
+		if c.paths[p.slot] == p { // a rebound slot's old socket may still hold a datagram
+			c.onPacket(p, from, pkt)
+		}
 		c.mu.Unlock()
 	}
 }
@@ -1153,4 +1157,63 @@ func (c *Client) update() {
 		c.windowTime = now
 	}
 	c.window = min(c.window, c.rate*100*OneMsec/OneSec)
+}
+
+// Rebind describes a slot that could not be bound by UpdatePaths.
+type Rebind struct {
+	Slot  int
+	Error string
+}
+
+// UpdatePaths follows adapter changes: only slots whose address, interface or
+// availability changed are rebound (new socket, fresh path state); usage
+// counters carry over. The slot count must stay the same. indices and
+// available may be nil.
+func (c *Client) UpdatePaths(localIPs []string, indices []int, available []bool) ([]Rebind, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	select {
+	case <-c.stop:
+		return nil, errors.New("client is closed")
+	default:
+	}
+	if len(localIPs) != len(c.paths) {
+		return nil, errors.New("path slots must remain stable")
+	}
+	if (indices != nil && len(indices) != len(c.paths)) || (available != nil && len(available) != len(c.paths)) {
+		return nil, errors.New("interface_indices and available must have one entry per path")
+	}
+	var errs []Rebind
+	for slot, ip := range localIPs {
+		old := c.paths[slot]
+		index := 0
+		if indices != nil {
+			index = indices[slot]
+		}
+		up := available == nil || available[slot]
+		wanted := up && old.role != "never" && ip != "" && ip != "0.0.0.0"
+		if ip == old.localIP && index == old.index && wanted == old.enabled {
+			continue
+		}
+		if old.conn != nil {
+			old.conn.Close() // its reader exits on the closed socket
+		}
+		pref := -1
+		if old.basePref != rolePrefOr(old.role, -1) {
+			pref = old.basePref // a custom preference survives
+		}
+		fresh := c.newPath(slot, ip, index, up, old.role, pref)
+		fresh.tx.total, fresh.tx.bytes = old.tx.total, old.tx.bytes
+		fresh.rx.total, fresh.rx.bytes = old.rx.total, old.rx.bytes
+		if wanted && !fresh.enabled {
+			errs = append(errs, Rebind{Slot: slot, Error: fresh.reason})
+		}
+		c.paths[slot] = fresh
+		if c.started && fresh.conn != nil {
+			c.wg.Add(1)
+			go c.reader(fresh)
+		}
+	}
+	c.errors["rebinds"]++
+	return errs, nil
 }
