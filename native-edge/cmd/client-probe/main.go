@@ -31,6 +31,7 @@ type config struct {
 	Profile      string  // write a CPU profile here (diagnostics)
 	AsyncWrite   bool    // hand frames to a per-uplink writer goroutine instead of writing inline
 	Spin         bool    // busy-poll instead of sleeping on a ticker (timer-granularity experiment)
+	Failover     bool    // enable suspect-path tracking and replay
 	Policy       bool    // send a primary link policy on every uplink (50 Mbit/s each way)
 }
 
@@ -91,7 +92,7 @@ func run() error {
 		return err
 	}
 	sender, err := bond.NewSender(receiver, max(10, c.Rate/4), max(20, c.Rate))
-	_ = sender
+	sender.EnableFailover(c.Failover)
 	if err != nil {
 		return err
 	}
@@ -152,7 +153,7 @@ func run() error {
 	if c.Policy {
 		policies := make([]bond.PathPolicy, c.Paths)
 		for i := range policies {
-			policies[i] = bond.PathPolicy{Role: bond.Primary, UploadMbps: max(1, c.PolicyMbps), DownloadMbps: max(1, c.PolicyMbps)}
+			policies[i] = bond.PathPolicy{Role: bond.Primary, UploadMbps: policyMbps(c), DownloadMbps: policyMbps(c)}
 		}
 		if err = receiver.SetClientLinkPolicies(policies, time.Now()); err != nil {
 			return err
@@ -249,4 +250,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// policyMbps defaults to 50, the value the interop checks assert.
+func policyMbps(c config) float64 {
+	if c.PolicyMbps <= 0 {
+		return 50
+	}
+	return max(1, c.PolicyMbps)
 }
