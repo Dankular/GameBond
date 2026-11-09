@@ -43,7 +43,7 @@ a product decision before work starts.
 | Python | Lines | Go | Status | Gap |
 |---|---:|---|---|---|
 | `userspace.py` (ProxiFyre -> netstack -> Node) | 694 | `netstack/` (proxy/capture) | PART | Go owns the IP stack; the transport and orchestration are Python |
-| `app.py`, `app_events.py`, `app_policy.py` | 773 | `netstack/app_*.go` | PART | |
+| `app.py`, `app_events.py`, `app_policy.py` | 773 | `apppolicy/` | PART | `app_policy.py` ported (canonical_path, rule normalisation, PolicyEvaluator, authorize, snapshot, digest) and replayed against 1503 paths and 920 configs (~3k decisions) from the real Python (`tools/generate_native_app_policy_vectors.py`); mutations on UNC root skipping, normcase table, rule cap and outbound check are caught. Caveats: `normcase_table.go` is generated from a Windows host (`tools/generate_native_app_policy_normcase.py`), and the normpath logic follows CPython 3.12's C implementation. Not ported: `app.py`, `app_events.py`, `resolve_process` (Windows-only), the daemon `application*` status fields; the daemon still denies authorization requests. |
 | `capture.py`, `tun.py` | 249 | `netstack/capture.go` | PART | |
 | `windows_network.py`, `windows_adapters.py` | 727 | `uplink.InterfaceFor` | PART | Only bind-address -> adapter index/name resolution (stdlib `net.Interfaces`, no PowerShell), used by `cmd/client` to pin an uplink when `interface_indices` is absent; unit-tested on loopback. Not ported: route/gateway discovery, link inventory and metered/Wi-Fi/cellular detection, adapter change notifications, hotspot handling, `unavailable_links` |
 | `windows_launcher.py`, `windows_packet_filter.py`, `windows_dns.py`, `process_job.py` | 985 | none | TODO | |
