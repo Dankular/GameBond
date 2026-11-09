@@ -19,7 +19,7 @@ The daemon now supplies uplink GUIDs to LAN validation and rejects index overlap
 before opening the driver. Physical UGREEN/PS5, server allowlisting and live LAN
 forwarding checks remain open. Desktop parity remains PART; older notes below
 about JSON editors/missing settings and absent saved adapter selection are
-superseded by this update. Scanner, journal and other listed gaps remain open.
+superseded by this update. Scanner and journal follow-ups are recorded below; other listed gaps remain open.
 
 ## Working rules and constraints (from the user)
 
@@ -47,8 +47,10 @@ Added and verified on 2026-11-09:
 
 Scanner verification (2026-11-09): `go test ./...` passes on Windows. Endpoint tests prove passive reads send no probes, reject public/off-subnet/stale adapters, enforce one active job and persist observations, and cancel bounded work. Headless Edge checked live passive inventory (2 adapters, 2 devices), one explicit live ICMP target (`192.168.1.94` from `.93`, timeout status 11010), then simulated responses/search/cancel/auto-scan with no further LAN traffic and no page errors. Screenshots inspected at `.runtime/settings-preview/scanner-passive.png`; other captures are `scanner-live.png` and `scanner-responsive.png`. No hostname/vendor/location is invented.
 
+Event journal verification (2026-11-09): `eventjournal` ports the version-1 `.runtime/dashboard-events.json` file, first-use deduplication (including existing Python integer timestamps/Unicode paths), connection transitions, read markers and bounded history. One asynchronous writer coalesces pending snapshots and flushes on graceful exit; corrupted originals stay intact with a visible error. Background sampling ingests events even while the widget is hidden. Go tests cover restart/read-state persistence, corruption, transitions, limits and a blocked writer retaining only the latest snapshot. Log Analysis now has kind/period/search filters, grouped date cards and Mark all as read; cards are reused and bounded to 512 cached entries/256 visible events. Edge checks used the real journal (32 events) plus simulated filter/read/card-reuse cases, zero page errors; screenshot `.runtime/settings-preview/journal.png` inspected. `go test ./...` passes on Windows.
+
 Still open:
-- **Desktop parity:** full Protect application activity/sparklines, persistent searchable event journal, reload-interface action and route-metric gateway selection remain incomplete. DNS, link limits, Connected devices, OMR and retained offline adapter selection now have forms. Network Scanner now has passive neighbors, bounded source-bound discovery, progress/cancel, search, opt-in 60-second auto-scan and persisted observation history. Do not label this GUI DONE.
+- **Desktop parity:** full Protect application activity/sparklines, reload-interface action and route-metric gateway selection remain incomplete. DNS, link limits, Connected devices, OMR and retained offline adapter selection now have forms. Network Scanner now has passive neighbors, bounded source-bound discovery, progress/cancel, search, opt-in 60-second auto-scan and persisted observation history. Do not label this GUI DONE.
 - **Desktop QA:** rendered traffic/Protect/network-selector screenshots inspected in `.runtime/go-widget-preview/`; native Go window is responsive. Interactive desktop tools still fail at initialization with sandbox-helper errors, so direct tray click/menu/toast/autostart/minimize/maximize/hide checks remain unverified. Headless Edge verified page/controls and live graph data.
 - **Config location:** `.runtime/widget-config-path.txt` records the actual supervised daemon config path for default widget launches (currently in the previous session's temporary directory). Consolidate supervisor/widget config to a persistent workspace location before treating startup/reboot behavior as complete.
 

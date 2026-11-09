@@ -25,6 +25,7 @@ import (
 	"gamebond.local/nativeedge/atomicio"
 	"gamebond.local/nativeedge/capture"
 	"gamebond.local/nativeedge/dns"
+	"gamebond.local/nativeedge/eventjournal"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/scanner"
 )
@@ -55,6 +56,7 @@ type Options struct {
 	OMRLogin      OMRLogin
 	ScanInventory func() (scanner.Inventory, error)
 	ScanProbe     scanner.Probe
+	Journal       *eventjournal.Journal
 }
 
 // Server is a running dashboard.
@@ -93,6 +95,7 @@ func Start(o Options) (*Server, string, error) {
 	mux.HandleFunc("/api/omr-check", s.guard(s.omrCheck))
 	mux.HandleFunc("/api/networks", s.guard(s.networks))
 	mux.HandleFunc("/api/scanner", s.guard(s.scannerAPI))
+	mux.HandleFunc("/api/events", s.guard(s.journalAPI))
 	mux.HandleFunc("/api/hardware", s.guard(s.hardware))
 	mux.HandleFunc("/api/log", s.guard(s.logLines))
 	s.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 190 * time.Second}

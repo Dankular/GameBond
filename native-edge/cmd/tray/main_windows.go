@@ -16,7 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gamebond.local/nativeedge/atomicio"
 	"gamebond.local/nativeedge/dashboard"
+	"gamebond.local/nativeedge/eventjournal"
 	"gamebond.local/nativeedge/hwmon"
 	"gamebond.local/nativeedge/tray"
 	"gamebond.local/nativeedge/ttyrelay"
@@ -70,6 +72,17 @@ func main() {
 	if !lease.Owner {
 		return // the running agent was asked to show itself
 	}
+	journal, err := eventjournal.Open(abs(filepath.Join(".runtime", "dashboard-events.json")), 2048)
+	if err != nil {
+		fail(err)
+	}
+	defer journal.Close()
+	var appHistory struct {
+		Events []any `json:"events"`
+	}
+	if atomicio.ReadJSONShared(abs(filepath.Join(".runtime", "app-history.json")), 4<<20, &appHistory) == nil {
+		journal.Ingest(appHistory.Events)
+	}
 	var busy atomic.Bool
 	var latest atomic.Value
 	var refreshMu sync.Mutex
@@ -81,6 +94,7 @@ func main() {
 			return ttyrelay.Control(abs(*relayPath), "status", 2*time.Second, io.Discard)
 		})
 		doc["adapter_activity"] = latest.Load().(map[string]any)["adapter_activity"]
+		journal.Observe(doc)
 		latest.Store(doc)
 	}
 	control := func(command string) (map[string]any, error) {
@@ -126,7 +140,7 @@ func main() {
 			time.Sleep(time.Second)
 		}
 	}()
-	server, url, err := dashboard.Start(dashboard.Options{StatusPath: abs(*statusPath), ConfigPath: abs(*configPath), RootPath: absRoot, AssetsPath: abs(*assetsPath), Snapshot: sample, Control: control, Hardware: hardware, Log: logLines})
+	server, url, err := dashboard.Start(dashboard.Options{StatusPath: abs(*statusPath), ConfigPath: abs(*configPath), RootPath: absRoot, AssetsPath: abs(*assetsPath), Snapshot: sample, Control: control, Hardware: hardware, Log: logLines, Journal: journal})
 	if err != nil {
 		fail(err)
 	}
