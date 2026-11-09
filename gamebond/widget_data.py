@@ -82,6 +82,54 @@ ConvertTo-Json -InputObject $rows -Depth 4 -Compress
     return rows
 
 
+def usb_adapter_indices():
+    """Windows interface indices backed by USB hardware. Best effort: any failure yields an empty set."""
+    script = r'''
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+$rows=@(Get-NetAdapter -Physical | Where-Object { $_.PnPDeviceID -like 'USB\*' } | ForEach-Object { [int]$_.ifIndex })
+ConvertTo-Json -InputObject $rows -Compress
+'''
+    try:
+        result = subprocess.run(['powershell','-NoProfile','-NonInteractive','-Command',script],
+                                capture_output=True,timeout=12,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        if result.returncode:return set()
+        rows = json.loads(result.stdout.decode('utf-8-sig') or '[]')
+        return {int(v) for v in (rows if isinstance(rows,list) else [rows])}
+    except (OSError,ValueError,subprocess.SubprocessError):
+        return set()
+
+
+def lan_candidates(links, config):
+    """Adapters that can serve a connected device: everything physical that is not a selected uplink."""
+    ids = {v.casefold() for v in config.get('interface_ids',[]) if v}
+    indices = set(config.get('interface_indices',[]))
+    usb = usb_adapter_indices() if os.name == 'nt' else set()
+    rows = []
+    for row in links:
+        identity = (row.get('id') or '').casefold()
+        if (identity and identity in ids) or (not identity and row['index'] in indices):continue
+        rows.append(dict(row, usb=row['index'] in usb))
+    return sorted(rows, key=lambda r: (not r['usb'], r.get('name','')))
+
+
+def save_lan_devices(devices, config_path=CONFIG):
+    """Atomically store `lan_devices` after full validation against the rest of the configuration."""
+    from .lan_gateway import load_lan_devices
+    path = Path(config_path);original = path.read_bytes();config = json.loads(original)
+    config['lan_devices'] = list(devices)
+    load_lan_devices(config)
+    if path.read_bytes() != original:raise RuntimeError('Configuration changed; try saving again')
+    temporary = path.with_name(path.name+'.lan-'+secrets.token_hex(4))
+    try:
+        temporary.write_text(json.dumps(config,indent=2)+'\n',encoding='utf-8')
+        from .atomic_io import replace_file
+        replace_file(temporary,path)
+    finally:
+        if temporary.exists():temporary.unlink()
+    return config
+
+
 class RateSampler:
     """Counter deltas over actual elapsed time; resets never invent traffic."""
     def __init__(self):

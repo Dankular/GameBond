@@ -47,6 +47,29 @@ if len(Path(sys.argv[2]).read_bytes()) != 32:
     raise SystemExit('The read-only shared key must contain exactly 32 bytes')
 PY
 
+# Attached LAN devices (for example a console behind a client USB adapter) each get their
+# own tunnel address. Without any, the original lone-client /30 and single-source NAT stay.
+LAN_IPS=$(python - "$CONFIG" <<'PY'
+import sys
+from gamebond.app import load_config
+print(' '.join(load_config(sys.argv[1]).get('lan_tunnel_ips', [])))
+PY
+)
+TUNNEL_PREFIX=30
+NAT_SOURCES='10.77.0.2/32'
+if [[ -n "$LAN_IPS" ]]; then
+    [[ ${GAMEBOND_NATIVE_EDGE:-0} != 1 ]] || {
+        echo 'lan_tunnel_ips are supported by the Python server only; unset GAMEBOND_NATIVE_EDGE' >&2; exit 1;
+    }
+    for lan_ip in $LAN_IPS; do
+        [[ "$lan_ip" =~ ^10\.77\.0\.([3-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-4])$ ]] || {
+            echo "LAN device address $lan_ip must be 10.77.0.3 to 10.77.0.254" >&2; exit 1;
+        }
+    done
+    TUNNEL_PREFIX=24
+    NAT_SOURCES="{ 10.77.0.2, ${LAN_IPS// /, } }"
+fi
+
 NFT_TABLES=$(nft list tables)
 if grep -Fxq 'table ip gamebond' <<< "$NFT_TABLES"; then
     echo 'Container gamebond nft table already exists; refusing overwrite' >&2; exit 1
@@ -75,12 +98,12 @@ for ((attempt=0; attempt<100; attempt++)); do
     sleep 0.1
 done
 [[ -e /sys/class/net/gamebond0 ]] || { echo 'Timed out waiting for gamebond0' >&2; exit 1; }
-ip address add 10.77.0.1/30 dev gamebond0
+ip address add "10.77.0.1/$TUNNEL_PREFIX" dev gamebond0
 ip link set dev gamebond0 mtu 1280 up
 nft -f - <<EOF
 add table ip gamebond
 add chain ip gamebond postrouting { type nat hook postrouting priority srcnat; policy accept; }
-add rule ip gamebond postrouting ip saddr 10.77.0.2/32 oifname "$WAN" masquerade
+add rule ip gamebond postrouting ip saddr $NAT_SOURCES oifname "$WAN" masquerade
 EOF
 nat_added=1
 kill -0 "$child"

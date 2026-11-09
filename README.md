@@ -9,6 +9,7 @@ Stripes bulk traffic across IPv4 uplinks and duplicates selected traffic for res
 - All-app or selected-app capture, with application traffic profiles.
 - Adaptive redundancy, link roles, speed limits, and usage caps.
 - Dashboard and tray controls for connection health and app traffic.
+- Connected devices: a console on a spare (USB) adapter gets its own bond address ([setup](docs/lan-devices.md)).
 
 ## Client
 
@@ -26,6 +27,7 @@ Choose **Connect** in the dashboard. **Manage apps** controls capture;
 Closing the window hides it in the tray; **Quit (stop tunnel)** exits.
 
 For several Starlinks, see [multiple uplinks](docs/multiple-uplinks.md).
+For a PS5 or other device on a USB adapter, see [connected devices](docs/lan-devices.md).
 
 The default uses a userspace network stack. Administrator/Wintun commands
 belong to a separate legacy backend.
