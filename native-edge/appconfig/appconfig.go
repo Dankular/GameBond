@@ -2,8 +2,8 @@
 //
 // Decoded JSON keeps integers as json.Number so Python's `type(x) is int`
 // checks stay exact. Sections that already have their own typed Go validator
-// elsewhere (admin, dns) are NOT checked here; Result.Unchecked lists the ones present in
-// the config so the caller can run those validators.
+// elsewhere are NOT checked here; Result.Unchecked lists the ones present in
+// the config so the caller can run those validators (currently always empty).
 package appconfig
 
 import (
@@ -237,11 +237,6 @@ func Load(raw []byte, opt Options) (*Result, error) {
 // Validate is load_config on a decoded config (omr.ParseConfig).
 func Validate(config map[string]any, opt Options) (*Result, error) {
 	res := &Result{Config: config}
-	for _, k := range []string{"admin", "dns"} {
-		if v, ok := config[k]; ok && v != nil {
-			res.Unchecked = append(res.Unchecked, k)
-		}
-	}
 	role, _ := config["role"].(string)
 	if !has(config, "role") {
 		return nil, bad("role")
@@ -396,11 +391,16 @@ func Validate(config map[string]any, opt Options) (*Result, error) {
 	if err := lanTunnelIPs(config, role, clientIP); err != nil {
 		return nil, err
 	}
-	if v, ok := config["admin"]; ok && v != nil && role != "server" {
-		return nil, bad("the admin portal belongs to the server configuration")
+	if v, ok := config["admin"]; ok && v != nil {
+		if role != "server" {
+			return nil, bad("the admin portal belongs to the server configuration")
+		}
+		if err := checkAdmin(v); err != nil {
+			return nil, err
+		}
 	}
-	if v, ok := config["dns"]; ok && v != nil && role != "client" {
-		return nil, bad("managed DNS overrides belong to the client configuration")
+	if err := checkDNS(config, role); err != nil {
+		return nil, err
 	}
 	return res, nil
 }

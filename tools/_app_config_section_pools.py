@@ -71,3 +71,49 @@ SECTION_POOLS = {
         {'1': {'overlimit': 'stop', 'overlimit_mbps': 0}}, {'1': {'overlimit': 'x'}}, {'1': {'bogus': 1}},
         {'1': {}, '2': {'role': 'x'}}],
 }
+
+
+def _dns(**kw):
+    return dict({'records': {'game.example.com': {'A': ['203.0.113.5']}}, 'bind': ['10.77.0.2', 53]}, **kw)
+
+
+SECTION_POOLS['admin'] = [
+    None, {}, [], {'password_hash': 'scrypt$x'}, {'password_hash': 'scrypt$x', 'enabled': False},
+    {'enabled': False}, {'enabled': 1}, {'password_hash': 'x'}, {'password_hash': 5}, {'password_hash': 'scrypt$'}, {'password_hash': 'scrypt'}, {'password_hash': 'scryptx'},
+    {'password_hash': 'scrypt$x', 'bind': ['0.0.0.0', 8443]},
+    {'password_hash': 'scrypt$x', 'bind': ['0.0.0.0', 8443], 'tls_cert': 'c', 'tls_key': 'k'},
+    {'password_hash': 'scrypt$x', 'bind': ['0.0.0.0', 8443], 'tls_cert': 'c'},
+    {'password_hash': 'scrypt$x', 'bind': ['0.0.0.0', 8443], 'tls_cert': 'c', 'tls_key': ''},
+    {'password_hash': 'scrypt$x', 'bind': ['127.0.0.5', 8443]}, {'password_hash': 'scrypt$x', 'bind': ['127.0.0.1', 0]},
+    {'password_hash': 'scrypt$x', 'bind': ['127.0.0.1', 65536]}, {'password_hash': 'scrypt$x', 'bind': ['x', 80]},
+    {'password_hash': 'scrypt$x', 'bind': ['127.0.0.1']}, {'password_hash': 'scrypt$x', 'bind': 'ab'},
+    {'password_hash': 'scrypt$x', 'bind': [2130706433, 80]},
+    {'password_hash': 'scrypt$x', 'log_lines': 9}, {'password_hash': 'scrypt$x', 'log_lines': 10},
+    {'password_hash': 'scrypt$x', 'log_lines': 2000}, {'password_hash': 'scrypt$x', 'log_lines': 2001},
+    {'password_hash': 'scrypt$x', 'log_lines': True}, {'password_hash': 'scrypt$x', 'bogus': 1}]
+SECTION_POOLS['dns'] = [
+    None, {}, [], _dns(), _dns(enabled=False), _dns(enabled=1), _dns(bogus=1), _dns(bind=['10.77.0.3', 53]),
+    _dns(bind=['10.77.0.2', 54]), _dns(bind=['127.0.0.1', 0]), _dns(bind=['127.0.0.1', 5353]),
+    _dns(bind=['10.77.0.2']), _dns(bind=['x', 53]), _dns(ttl=300), _dns(ttl=301), _dns(ttl=-1), _dns(ttl=True),
+    _dns(ttl=1.0), _dns(workers=0), _dns(workers=8), _dns(workers=9), _dns(pending=0), _dns(pending=32),
+    _dns(pending=33), _dns(timeout=0.05), _dns(timeout=0.04), _dns(timeout=3), _dns(timeout=3.1), _dns(timeout=True),
+    _dns(records={}), _dns(records={}, enabled=False), _dns(records=[]), _dns(records={'a': {}}),
+    _dns(records={'game.example.com': {}}), _dns(records={'game.example.com': {'A': []}}),
+    _dns(records={'game.example.com': {'A': ['203.0.113.%d' % i for i in range(1, 17)]}}),
+    _dns(records={'game.example.com': {'A': ['203.0.113.%d' % i for i in range(1, 18)]}}),
+    _dns(records={'game.example.com': {'AAAA': ['2001:db8::1']}}),
+    _dns(records={'game.example.com': {'A': ['2001:db8::1']}}),
+    _dns(records={'game.example.com': {'AAAA': ['203.0.113.5']}}),
+    _dns(records={'game.example.com': {'MX': ['x']}}), _dns(records={'game.example.com': {'A': [5]}}),
+    _dns(records={'game.example.com': {'A': ['nope']}}),
+    _dns(records={'Game.Example.com': {'A': ['203.0.113.5']}, 'game.example.com.': {'A': ['203.0.113.6']}}),
+    _dns(records={'game.example.com.': {'A': ['203.0.113.5']}}),
+    _dns(records={'example': {'A': ['203.0.113.5']}}), _dns(records={'*.example.com': {'A': ['203.0.113.5']}}),
+    _dns(records={'1.2.3.4': {'A': ['203.0.113.5']}}), _dns(records={'a_b.example.com': {'A': ['203.0.113.5']}}),
+    _dns(records={'-a.example.com': {'A': ['203.0.113.5']}}),
+    _dns(records={'%s.example.com' % ('a' * 63): {'A': ['203.0.113.5']}}),
+    _dns(records={'%s.example.com' % ('a' * 64): {'A': ['203.0.113.5']}}),
+    _dns(records={'h%d.example.com' % i: {'A': ['203.0.113.5']} for i in range(64)}),
+    _dns(records={'h%d.example.com' % i: {'A': ['203.0.113.5']} for i in range(65)}),
+    _dns(upstream=['8.8.8.8', 53]), _dns(upstream=['10.0.0.1', 53]), _dns(upstream=['8.8.8.8', 0]),
+    _dns(upstream=['8.8.8.8']), _dns(upstream=None), _dns(upstream=['x', 53])]
