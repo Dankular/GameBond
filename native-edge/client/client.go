@@ -45,6 +45,8 @@ type Config struct {
 	// QoS enables adaptive duplication of tagged traffic (nil: off, as a
 	// client built without adaptive_qos settings).
 	QoS *bond.QoSSettings
+	// LossTracking sends replicated packets as DATA_COPY (config loss_tracking).
+	LossTracking bool
 }
 
 type inbound struct {
@@ -128,6 +130,7 @@ func New(cfg Config) (*Client, error) {
 		return nil, err
 	}
 	s.EnableFailover(cfg.Failover)
+	s.EnableLossTracking(cfg.LossTracking)
 	q, err := bond.NewTransmitQueue(s, cfg.QueuePackets, cfg.QueueBytes)
 	if err != nil {
 		return nil, err

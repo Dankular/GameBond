@@ -41,6 +41,7 @@ type fileConfig struct {
 	FailoverReplay bool                         `json:"failover_replay"`
 	LinkPolicies   map[string]linkpolicy.Policy `json:"link_policies"` // keyed by interface index, as in Python
 	GameUDPPorts   []uint16                     `json:"game_udp_ports"`
+	LossTracking   bool                         `json:"loss_tracking"`
 	PathMTU        bool                         `json:"path_mtu_discovery"`
 	InterfaceIndex []int                        `json:"interface_indices"` // pin uplink i to this adapter index
 	AdaptiveQoS    json.RawMessage              `json:"adaptive_qos"`
@@ -237,7 +238,7 @@ func run() error {
 	}}
 	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs,
 		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay,
-		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings})
+		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking})
 	if err != nil {
 		return err
 	}

@@ -10,6 +10,7 @@ tunnel are touched.
     python tools/check_go_daemon.py
 """
 import json
+import os
 from pathlib import Path
 import secrets
 import socket
@@ -60,7 +61,7 @@ def main():
         host, port = server.addresses[0]
         (tmp / 'key').write_bytes(key)
         (tmp / 'config.json').write_text(json.dumps(dict(session=session.hex(), bind=[['127.0.0.1', 0], ['127.0.0.1', 0]],
-                                                         peer=[host, port], mtu=1280, game_udp_ports=[27015],
+                                                         peer=[host, port], mtu=1280, game_udp_ports=[27015], loss_tracking=bool(os.environ.get('GB_LOSS_TRACKING')),
                                                          link_policies={'0': dict(role='primary', daily_bytes=30000), '1': dict(role='primary')},
                                                          bonding_initial_rate_mbps=10, bonding_max_rate_mbps=100)))
         (tmp / 'stack.py').write_text(FAKE_STACK)
@@ -101,6 +102,13 @@ def main():
             assert injected >= 50, injected
             stats = server.stats()
             assert stats['auth_failures'] == 0
+            if os.environ.get('GB_LOSS_TRACKING'):
+                # Replicated game packets are DATA_COPY: the Python server must score them and the Go client must receive its COPY_REPORT.
+                time.sleep(1.5)
+                stats = server.stats()
+                seen = sum(p['copy_quality']['seen'] for p in stats['paths'])
+                assert seen > 0, [p['copy_quality'] for p in stats['paths']]
+                print(json.dumps(dict(python_server_copy_quality=[p['copy_quality'] for p in stats['paths']])), flush=True)
             # Uplink 0 has a 30 kB daily cap and must be blocked once metered; uplink 1 stays open.
             deadline = time.monotonic() + 8
             blocked = []

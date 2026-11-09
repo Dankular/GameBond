@@ -41,6 +41,7 @@ type Sender struct {
 	askedOrder        list.List
 	nextRepairRequest time.Time
 	failover          bool
+	lossTracking      bool
 	replayQueue       []replayItem
 }
 
@@ -56,6 +57,11 @@ func NewSender(r *Receiver, initial, maximum float64) (*Sender, error) {
 	r.probeInterval = 250 * time.Millisecond
 	return &Sender{r: r, flows: make(map[string]*sendFlow), repairs: make(map[MissingPacket]*repairEntry), repairRequests: make(map[MissingPacket]*list.Element), asked: make(map[MissingPacket]*askedRepair)}, nil
 }
+
+// EnableLossTracking makes replicated priority sends use DATA_COPY so the peer
+// can score each path's copy (Python's loss_tracking option).
+func (s *Sender) EnableLossTracking(on bool) { s.lossTracking = on }
+
 func (s *Sender) Stats() SenderStats { return s.stats }
 func (s *Sender) syncPeer() {
 	if s.r.handshake.hasPeer && (!s.hasPeer || s.peer != s.r.handshake.peer) {
@@ -239,7 +245,11 @@ func (s *Sender) Urgent(payload []byte, replicate bool, now time.Time, writer Da
 		}
 		return ca < cb
 	})
-	frame, err := s.r.codec.Encode(Data, payload)
+	kind := Data
+	if replicate && s.lossTracking {
+		kind = DataCopy
+	}
+	frame, err := s.r.codec.Encode(kind, payload)
 	if err != nil {
 		return 0, err
 	}

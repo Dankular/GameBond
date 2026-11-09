@@ -1,6 +1,11 @@
 package bond
 
-import "testing"
+import (
+	"bytes"
+	"net/netip"
+	"testing"
+	"time"
+)
 
 // Replicated copies are scored by the receiver and the score is reported back
 // to the sender, which feeds it to AdaptiveQoS as the only data-path loss
@@ -76,6 +81,102 @@ func TestLateCopyReversesMissedCount(t *testing.T) {
 	for k, path := range p.server.paths {
 		if k.Remote == p.src[1] && (path.copyMissed != 0 || path.copyLate != 1 || !path.hasCopyLag) {
 			t.Fatalf("path 1: missed=%d late=%d", path.copyMissed, path.copyLate)
+		}
+	}
+}
+
+// With loss tracking a replicated priority send is DATA_COPY on every path and
+// the server scores it; without it the same send is plain DATA, unscored.
+func TestSenderLossTrackingUsesDataCopy(t *testing.T) {
+	for _, tracking := range []bool{false, true} {
+		key, session := bytes.Repeat([]byte{4}, 32), bytes.Repeat([]byte{5}, 16)
+		cc, _ := NewCodec(key, session, "client")
+		sc, _ := NewCodec(key, session, "server")
+		cr, _ := NewReceiver(cc, 1400)
+		sr, _ := NewReceiver(sc, 1400)
+		cr.probeInterval, sr.probeInterval = 250*time.Millisecond, 250*time.Millisecond
+		sender, err := NewSender(cr, 50, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sender.EnableLossTracking(tracking)
+		now := time.Unix(8000, 0)
+		srv := netip.MustParseAddrPort("203.0.113.1:4433")
+		src := [2]netip.AddrPort{netip.MustParseAddrPort("198.51.100.1:5000"), netip.MustParseAddrPort("198.51.100.2:5000")}
+		for i := range src {
+			if err := cr.AddClientPath(i, srv, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var toServer []Datagram
+		flush := func() {
+			for len(toServer) > 0 {
+				d := toServer[0]
+				toServer = toServer[1:]
+				res, _ := sr.ReceiveOn(0, d.Frame, src[d.Local], now)
+				for _, r := range res.Send {
+					for i, s := range src {
+						if s == r.Endpoint {
+							back, _ := cr.ReceiveOn(i, r.Frame, srv, now)
+							toServer = append(toServer, back.Send...)
+						}
+					}
+				}
+			}
+		}
+		step := func() {
+			now = now.Add(50 * time.Millisecond)
+			co, _ := cr.Tick(now)
+			toServer = append(toServer, co.Send...)
+			so, _ := sr.Tick(now)
+			for _, r := range so.Send {
+				for i, s := range src {
+					if s == r.Endpoint {
+						back, _ := cr.ReceiveOn(i, r.Frame, srv, now)
+						toServer = append(toServer, back.Send...)
+					}
+				}
+			}
+			flush()
+		}
+		for i := 0; i < 60 && cr.ReadyPaths(now) < 2; i++ {
+			step()
+		}
+		for i := 0; i < 10; i++ {
+			step()
+		}
+		var sent []Datagram
+		write := func(d Datagram) error { sent = append(sent, d); toServer = append(toServer, d); return nil }
+		for i := 0; i < 5; i++ {
+			if n, err := sender.Urgent([]byte("game"), true, now, write); err != nil || n != 2 {
+				t.Fatalf("urgent sent %d err %v", n, err)
+			}
+			flush()
+		}
+		for i := 0; i < 8; i++ {
+			step()
+		}
+		kinds := map[byte]int{}
+		for _, d := range sent {
+			pkt, err := sc.Decode(d.Frame)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kinds[pkt.Header.Kind]++
+		}
+		var seen uint64
+		for _, path := range sr.paths {
+			seen += path.copySeen
+		}
+		want := byte(Data)
+		if tracking {
+			want = DataCopy
+		}
+		if kinds[want] != 10 || len(kinds) != 1 {
+			t.Fatalf("tracking=%v frame kinds %v", tracking, kinds)
+		}
+		if tracking && seen != 10 || !tracking && seen != 0 {
+			t.Fatalf("tracking=%v server scored %d copies", tracking, seen)
 		}
 	}
 }
