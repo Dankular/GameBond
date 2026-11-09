@@ -14,6 +14,10 @@ import (
 // zero-delay lossless wire. Any ceiling it reports belongs to the Go protocol
 // logic itself, separately from what the network or host scheduler add. It
 // returns payload Mbit/s over the virtual duration and the sender counters.
+// virtualViaQueue drives the sender through TransmitQueue.Pump, as the real
+// clients do, instead of calling Bulk directly.
+var virtualViaQueue bool
+
 func virtualThroughput(t testing.TB, uplinks int, policyMbps, rateMbps, seconds float64) (float64, SenderStats, bool) {
 	t.Helper()
 	key, session := bytes.Repeat([]byte{4}, 32), bytes.Repeat([]byte{5}, 16)
@@ -93,6 +97,7 @@ func virtualThroughput(t testing.TB, uplinks int, policyMbps, rateMbps, seconds 
 		}
 	}
 	writer := func(d Datagram) error { toServer = append(toServer, d); return nil }
+	queue, _ := NewTransmitQueue(sender, 40000, 64<<20)
 	payload := make([]byte, 1000)
 	start, sent := now, 0
 	nextTick := now
@@ -101,7 +106,20 @@ func virtualThroughput(t testing.TB, uplinks int, policyMbps, rateMbps, seconds 
 			tick()
 			nextTick = now.Add(2 * time.Millisecond)
 		}
-		ok, next, err := sender.Bulk(payload, "virtual", now, writer)
+		var ok bool
+		var next time.Time
+		var err error
+		if virtualViaQueue {
+			before := queue.Stats().Completed
+			for queue.Stats().QueuedPackets < 256 {
+				queue.Enqueue(QueuedPacket{Payload: payload, Flow: "virtual", Expires: now.Add(time.Hour)})
+			}
+			next, err = queue.Pump(now, writer)
+			sent += int(queue.Stats().Completed - before)
+			ok = false // Pump batches; always advance to its wakeup
+		} else {
+			ok, next, err = sender.Bulk(payload, "virtual", now, writer)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,5 +163,14 @@ func TestVirtualThroughputHonoursPolicyAndHasNoHiddenCeiling(t *testing.T) {
 	free, _, _ := virtualThroughput(t, 2, 0, 4000, 2)
 	if free < 300 {
 		t.Fatalf("unpaced logic ceiling %.1f Mbit/s is suspiciously low", free)
+	}
+}
+
+func TestVirtualThroughputThroughPump(t *testing.T) {
+	virtualViaQueue = true
+	defer func() { virtualViaQueue = false }()
+	for _, policy := range []float64{50, 200} {
+		mbit, st, _ := virtualThroughput(t, 2, policy, 4000, 5)
+		t.Logf("via Pump: policy=%v -> %.1f Mbit/s (wire-limited %d)", policy, mbit, st.WireLimited)
 	}
 }

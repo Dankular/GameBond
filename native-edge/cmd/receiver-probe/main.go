@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gamebond.local/nativeedge/bond"
+	"gamebond.local/nativeedge/hrclock"
 )
 
 type config struct {
@@ -78,13 +79,13 @@ func run() error {
 		if n := receiver.Stats().PayloadPackets; n != seenPayloads {
 			seenPayloads = n
 			if firstPayload.IsZero() {
-				firstPayload = time.Now()
+				firstPayload = hrclock.Now()
 			}
-			lastPayload = time.Now()
+			lastPayload = hrclock.Now()
 		}
 		if c.Sink {
 			if sender != nil {
-				sender.Controls(result, time.Now(), writer)
+				sender.Controls(result, hrclock.Now(), writer)
 			} else {
 				for _, d := range result.Send {
 					_, err := conn.WriteToUDPAddrPort(d.Frame, d.Endpoint)
@@ -94,7 +95,7 @@ func run() error {
 			return nil
 		}
 		if sender != nil {
-			now := time.Now()
+			now := hrclock.Now()
 			sender.Controls(result, now, writer)
 			for _, payload := range result.Deliver {
 				if !outbound.Enqueue(bond.QueuedPacket{Payload: payload, Flow: "probe-echo", Expires: now.Add(200 * time.Millisecond)}) {
@@ -131,11 +132,11 @@ func run() error {
 		return nil
 	}
 	buffer := make([]byte, 65536)
-	end := time.Now().Add(30 * time.Second)
-	nextTick := time.Now()
+	end := hrclock.Now().Add(30 * time.Second)
+	nextTick := hrclock.Now()
 	nextBulk := nextTick
-	for time.Now().Before(end) {
-		deadline := time.Now().Add(2 * time.Millisecond)
+	for hrclock.Now().Before(end) {
+		deadline := hrclock.Now().Add(2 * time.Millisecond)
 		if outbound != nil && outbound.Stats().QueuedPackets > 0 && nextBulk.Before(deadline) {
 			deadline = nextBulk
 		}
@@ -146,7 +147,7 @@ func run() error {
 				break
 			}
 		} else {
-			result, err := receiver.Receive(buffer[:n], endpoint, time.Now())
+			result, err := receiver.Receive(buffer[:n], endpoint, hrclock.Now())
 			if err != nil {
 				return err
 			}
@@ -154,7 +155,7 @@ func run() error {
 				return err
 			}
 		}
-		if now := time.Now(); !now.Before(nextTick) {
+		if now := hrclock.Now(); !now.Before(nextTick) {
 			result, err := receiver.Tick(now)
 			if err != nil {
 				return err
@@ -164,13 +165,13 @@ func run() error {
 			}
 			nextTick = now.Add(2 * time.Millisecond)
 			if sender != nil {
-				if err := sender.Maintenance(time.Now(), writer); err != nil {
+				if err := sender.Maintenance(hrclock.Now(), writer); err != nil {
 					return err
 				}
 			}
 		}
 		if outbound != nil && outbound.Stats().QueuedPackets > 0 {
-			nextBulk, err = outbound.Pump(time.Now(), writer)
+			nextBulk, err = outbound.Pump(hrclock.Now(), writer)
 			if err != nil {
 				return err
 			}
@@ -179,7 +180,7 @@ func run() error {
 	report := map[string]any{"receiver": receiver.Stats(), "reorder": receiver.ReorderStats(), "payload_seconds": lastPayload.Sub(firstPayload).Seconds()}
 	if sender != nil {
 		report["sender"] = sender.Stats()
-		report["paths"] = sender.Paths(time.Now())
+		report["paths"] = sender.Paths(hrclock.Now())
 		report["transmit_queue"] = outbound.Stats()
 	}
 	return encoder.Encode(report)

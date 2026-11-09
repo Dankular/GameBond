@@ -19,23 +19,25 @@ import (
 	"time"
 
 	"gamebond.local/nativeedge/bond"
+	"gamebond.local/nativeedge/hrclock"
 )
 
 type config struct {
-	Key, Session string
-	Server       string
-	Paths        int
-	Send         int     // payloads to send once every uplink is ready
-	MTU          bool    // enable per-path MTU discovery
-	Rate         float64 // sender initial and maximum Mbit/s per uplink (default 10/20)
-	PolicyMbps   float64 // upload/download policy per uplink when Policy is set (default 50)
-	Profile      string  // write a CPU profile here (diagnostics)
-	AsyncWrite   bool    // hand frames to a per-uplink writer goroutine instead of writing inline
-	Spin         bool    // busy-poll instead of sleeping on a ticker (timer-granularity experiment)
-	Blackhole    int     // uplink index to black-hole (1-based; 0 = none) BlackholeMS after the stream starts
-	BlackholeMS  int
-	Failover     bool // enable suspect-path tracking and replay
-	Policy       bool // send a primary link policy on every uplink (50 Mbit/s each way)
+	Key, Session      string
+	Server            string
+	Paths             int
+	Send              int     // payloads to send once every uplink is ready
+	MTU               bool    // enable per-path MTU discovery
+	Rate              float64 // sender initial and maximum Mbit/s per uplink (default 10/20)
+	PolicyMbps        float64 // upload/download policy per uplink when Policy is set (default 50)
+	Profile           string  // write a CPU profile here (diagnostics)
+	AsyncWrite        bool    // hand frames to a per-uplink writer goroutine instead of writing inline
+	Spin              bool    // busy-poll instead of sleeping on a ticker (timer-granularity experiment)
+	Blackhole         int     // uplink index to black-hole (1-based; 0 = none) BlackholeMS after the stream starts
+	BlackholeMS       int
+	MaintenanceMicros int  // run Tick+Maintenance at most this often (0 = every loop pass, the old behaviour)
+	Failover          bool // enable suspect-path tracking and replay
+	Policy            bool // send a primary link policy on every uplink (50 Mbit/s each way)
 }
 
 type datagram struct {
@@ -113,7 +115,7 @@ func run() error {
 			return err
 		}
 		defer conns[i].Close()
-		if err = receiver.AddClientPath(i, server, time.Now()); err != nil {
+		if err = receiver.AddClientPath(i, server, hrclock.Now()); err != nil {
 			return err
 		}
 		go func(i int) {
@@ -166,7 +168,7 @@ func run() error {
 		for i := range policies {
 			policies[i] = bond.PathPolicy{Role: bond.Primary, UploadMbps: policyMbps(c), DownloadMbps: policyMbps(c)}
 		}
-		if err = receiver.SetClientLinkPolicies(policies, time.Now()); err != nil {
+		if err = receiver.SetClientLinkPolicies(policies, hrclock.Now()); err != nil {
 			return err
 		}
 	}
@@ -176,7 +178,7 @@ func run() error {
 	delivered := map[int]int{}
 	corrupt := 0
 	handle := func(result bond.ReceiveResult) {
-		now := time.Now()
+		now := hrclock.Now()
 		sender.Controls(result, now, writer)
 		for _, p := range result.Deliver {
 			if len(p) != 1000 {
@@ -191,8 +193,8 @@ func run() error {
 			delivered[n]++
 		}
 	}
-	sent, firstReady, firstSend := false, time.Time{}, time.Now()
-	end := time.Now().Add(30 * time.Second)
+	sent, firstReady, firstSend := false, time.Time{}, hrclock.Now()
+	end := hrclock.Now().Add(30 * time.Second)
 	tick := time.NewTicker(100 * time.Microsecond)
 	defer tick.Stop()
 	tickC := tick.C
@@ -201,28 +203,33 @@ func run() error {
 		close(ready)
 		tickC = ready
 	}
-	nextBulk := time.Now()
+	nextBulk := hrclock.Now()
+	var lastMaintenance time.Time
+	maintenanceEvery := time.Duration(c.MaintenanceMicros) * time.Microsecond
 loop:
-	for time.Now().Before(end) {
+	for hrclock.Now().Before(end) {
 		select {
 		case <-quit:
 			break loop
 		case d := <-incoming:
-			result, err := receiver.ReceiveOn(d.local, d.frame, d.endpoint, time.Now())
+			result, err := receiver.ReceiveOn(d.local, d.frame, d.endpoint, hrclock.Now())
 			if err != nil {
 				return err
 			}
 			handle(result)
 		case <-tickC:
 		}
-		now := time.Now()
-		result, err := receiver.Tick(now)
-		if err != nil {
-			return err
-		}
-		handle(result)
-		if err = sender.Maintenance(now, writer); err != nil {
-			return err
+		now := hrclock.Now()
+		if now.Sub(lastMaintenance) >= maintenanceEvery {
+			lastMaintenance = now
+			result, err := receiver.Tick(now)
+			if err != nil {
+				return err
+			}
+			handle(result)
+			if err = sender.Maintenance(now, writer); err != nil {
+				return err
+			}
 		}
 		if !sent && receiver.ReadyPaths(now) == c.Paths {
 			if firstReady.IsZero() {
@@ -242,8 +249,8 @@ loop:
 		if c.Blackhole > 0 && sent && blackholed.Load() == 0 && now.Sub(firstSend) >= time.Duration(c.BlackholeMS)*time.Millisecond {
 			blackholed.Store(int64(c.Blackhole))
 		}
-		if outbound.Stats().QueuedPackets > 0 && !time.Now().Before(nextBulk) {
-			if nextBulk, err = outbound.Pump(time.Now(), writer); err != nil {
+		if outbound.Stats().QueuedPackets > 0 && !hrclock.Now().Before(nextBulk) {
+			if nextBulk, err = outbound.Pump(hrclock.Now(), writer); err != nil {
 				return err
 			}
 		}
@@ -254,8 +261,8 @@ loop:
 	for _, count := range delivered {
 		duplicates += count - 1
 	}
-	return encoder.Encode(map[string]any{"receiver": receiver.Stats(), "sender": sender.Stats(), "paths": sender.Paths(time.Now()),
-		"transmit_queue": outbound.Stats(), "ready_paths": receiver.ReadyPaths(time.Now()),
+	return encoder.Encode(map[string]any{"receiver": receiver.Stats(), "sender": sender.Stats(), "paths": sender.Paths(hrclock.Now()),
+		"transmit_queue": outbound.Stats(), "ready_paths": receiver.ReadyPaths(hrclock.Now()),
 		"delivered_unique": unique, "delivered_duplicates": duplicates, "corrupt": corrupt, "sent_enqueued": sent, "seconds_to_drain": drained.Seconds()})
 }
 

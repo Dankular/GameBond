@@ -82,7 +82,7 @@ def leg_logic_virtual():
 def leg_go_to_go(repeats):
     base = [sys.executable, str(ROOT / 'tools/check_go_to_go.py'), '--send', '30000', '--rate', '4000']
     plain = [last_json(run(base).stdout) for _ in range(repeats)]
-    paced = [last_json(run(base + ['--policy', '--policy-mbps', '50']).stdout) for _ in range(repeats)]
+    paced = [last_json(run(base + ['--policy', '--policy-mbps', '50', '--spin']).stdout) for _ in range(repeats)]
     return dict(mbit=median(plain, 'mbit_per_s'), delivered=median(plain, 'server_payloads'),
                 policy50_mbit=median(paced, 'mbit_per_s'), policy50_delivered=median(paced, 'server_payloads'))
 

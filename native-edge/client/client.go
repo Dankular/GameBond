@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"gamebond.local/nativeedge/hrclock"
 	"net"
 	"net/netip"
 	"sync"
@@ -16,6 +17,9 @@ import (
 	"gamebond.local/nativeedge/bond"
 	"gamebond.local/nativeedge/uplink"
 )
+
+// spinWindow is how close to the next paced release the loop stops sleeping.
+const spinWindow = time.Millisecond
 
 type Config struct {
 	Key, Session []byte
@@ -113,7 +117,7 @@ func New(cfg Config) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4)}
-	now := time.Now()
+	now := hrclock.Now()
 	for i, spec := range cfg.Uplinks {
 		conn, err := uplink.Open(spec)
 		if err != nil {
@@ -144,7 +148,7 @@ func (c *Client) closeConns() {
 // Send queues a payload for the server. It never blocks: false means the
 // submission buffer is full and the packet was dropped.
 func (c *Client) Send(payload []byte, flow string, ttl time.Duration) bool {
-	return c.Submit(bond.QueuedPacket{Payload: payload, Flow: flow, Expires: time.Now().Add(ttl)})
+	return c.Submit(bond.QueuedPacket{Payload: payload, Flow: flow, Expires: hrclock.Now().Add(ttl)})
 }
 
 // Submit queues a fully described packet (priority, replication, tag, expiry).
@@ -196,7 +200,9 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
-	nextBulk := time.Now()
+	closed := make(chan time.Time) // always ready: used to poll instead of sleeping
+	close(closed)
+	nextBulk := hrclock.Now()
 	lastSnap := time.Time{}
 	handle := func(res bond.ReceiveResult, now time.Time) {
 		c.sender.Controls(res, now, c.write)
@@ -205,24 +211,32 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 	}
 	for {
+		// A paced backlog whose next release is under a millisecond away is
+		// waited for by polling: sleeping on a timer would overshoot by the OS
+		// timer granularity and cap throughput at the pacer's burst per wakeup.
+		spin := c.queue.Stats().QueuedPackets > 0 && nextBulk.Sub(hrclock.Now()) < spinWindow
+		var idle <-chan time.Time = tick.C
+		if spin {
+			idle = closed
+		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case d := <-c.incoming:
-			res, err := c.recv.ReceiveOn(d.local, d.frame, d.endpoint, time.Now())
+			res, err := c.recv.ReceiveOn(d.local, d.frame, d.endpoint, hrclock.Now())
 			if err != nil {
 				return err
 			}
-			handle(res, time.Now())
+			handle(res, hrclock.Now())
 		case p := <-c.submit:
 			c.queue.Enqueue(p)
 		case policies := <-c.policies:
-			if err := c.recv.SetClientLinkPolicies(policies, time.Now()); err != nil {
+			if err := c.recv.SetClientLinkPolicies(policies, hrclock.Now()); err != nil {
 				return err
 			}
-		case <-tick.C:
+		case <-idle:
 		}
-		now := time.Now()
+		now := hrclock.Now()
 		res, err := c.recv.Tick(now)
 		if err != nil {
 			return err
