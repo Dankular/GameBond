@@ -18,8 +18,8 @@ package does not offer.
 
 ## What is NOT there yet
 
-- It is not wired into the runtime or the GUI. There is no `server_type`
-  setting yet; this is the transport only.
+- It is wired into the runtime only as the OMR leg of `server_type: "both"`
+  ([side-by-side.md](side-by-side.md)); there is no GUI for it yet.
 - No admin-API client yet (`/token`, `/config`, `/wan`).
 - IPv4 only, ChaCha only, client side only.
 - On this path GameBond cannot replicate packets or reorder: the protocol has

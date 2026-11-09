@@ -38,6 +38,8 @@ from .atomic_io import replace_file,read_json_shared
 from .lan_gateway import LanGateway,load_lan_devices
 from .frame_io import open_frame_io
 from .dns import load_dns_config,override_response
+from .transport_router import TransportRouter
+from .omr_settings import load_server_mode
 
 ROOT=Path(__file__).resolve().parents[1]
 RUNTIME=ROOT/'.runtime'
@@ -416,15 +418,37 @@ class Runtime:
             self.counts['direct_priority_packets']=self.counts.get('direct_priority_packets',0)+1
             urgent,replicate=self.qos.transmission(classification,len(packet))
             urgent=urgent or is_tcp_control(packet)
-            self.node.send(packet,replicate=replicate,flow_id=classification.info.flow,urgent=urgent)
+            self.transmit(packet,classification,replicate,urgent)
         elif self.scheduler.push(packet,classification):self.counts['bulk_enqueued']+=1
+
+    def build_router(self,gamebond,config):
+        """GameBond tunnel plus an OMR (Glorytun UDP) tunnel over the same uplinks, behind one Node-like object."""
+        from .omr_glorytun import MudClient,parse_key   # needs PyNaCl: pip install 'gamebond[omr]'
+        from .nat import Nat
+        settings=self.omr_settings
+        key_path=Path(settings.key_file)
+        if not key_path.is_absolute():key_path=ROOT/key_path
+        key=parse_key(key_path.read_text())
+        live=config.get('path_availability') or [True]*len(config['bind'])
+        locals_=[bind[0] for bind,up in zip(config['bind'],live) if up and bind[0]!='0.0.0.0']
+        if not locals_:raise RuntimeError('No available uplink address for the OMR tunnel')
+        omr=MudClient(key,settings.server,locals_,rate_mbps=settings.rate_mbps,beat_ms=settings.beat_ms).start()
+        try:return TransportRouter(gamebond,omr,Nat(settings.tunnel_ip),gamebond_dscp=settings.gamebond_dscp).start()
+        except BaseException:
+            omr.close();raise
+
+    def transmit(self,packet,classification,replicate,urgent):
+        """Hand a classified packet to the transport; with two transports the DSCP class picks which."""
+        if isinstance(self.node,TransportRouter):
+            return self.node.send(packet,replicate=replicate,flow_id=classification.info.flow,urgent=urgent,dscp=classification.dscp)
+        return self.node.send(packet,replicate=replicate,flow_id=classification.info.flow,urgent=urgent)
 
     def send_bulk(self):
         while not self.stop.is_set():
             item=self.scheduler.pop(.1)
             if item:
                 urgent,replicate=self.qos.transmission(item.classification,len(item.packet))
-                self.node.send(item.packet,replicate=replicate,flow_id=item.classification.info.flow,urgent=urgent)
+                self.transmit(item.packet,item.classification,replicate,urgent)
 
     def receive(self):
         while not self.stop.is_set():
@@ -540,6 +564,8 @@ class Runtime:
                 link_states=([operational_state(self.link_policies[str(index)],self.usage_ledger.usage(str(index),self.link_policies[str(index)]))
                              for index in self.policy_keys] if 'link_policies' in config else None),
                 path_availability=config.get('path_availability'),outer_transport=config.get('outer_transport')).start()
+            self.server_type,self.omr_settings=load_server_mode(config)
+            if self.server_type=='both':self.node=self.build_router(self.node,config)
             self.state='connecting';self.publish()
             deadline=time.monotonic()+12
             heartbeat=0

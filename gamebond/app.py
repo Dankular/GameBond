@@ -124,6 +124,8 @@ def load_config(path,*,allow_unavailable_links=False):
     if len(bytes.fromhex(config["session"])) != 16:
         raise ValueError("session must contain 16 random bytes in hex")
     ipaddress.IPv4Address(config["client_tunnel_ip"])
+    from .omr_settings import load_server_mode
+    load_server_mode(config)
     from .lan_gateway import load_lan_devices,load_lan_tunnel_ips
     load_lan_devices(config)
     load_lan_tunnel_ips(config)
@@ -143,6 +145,8 @@ def load_config(path,*,allow_unavailable_links=False):
 def run(config, key_path, configure=False, *, stop_event=None, on_ready=None):
     if configure and (os.name != "nt" or config["role"] != "client"):
         raise ValueError("automatic network setup is for the Windows client only")
+    if config.get("server_type","gamebond")!="gamebond":
+        raise ValueError("server_type 'both' needs the userspace runtime (python -m gamebond.userspace)")
     if config.get("lan_devices"):
         raise ValueError("lan_devices need the userspace runtime (python -m gamebond.userspace); the legacy TUN runner cannot serve them")
     dns_config = load_dns_config(config.get("dns"))
