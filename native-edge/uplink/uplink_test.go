@@ -56,3 +56,17 @@ func TestOpenRejectsBadSpecs(t *testing.T) {
 		t.Fatal("unknown interface accepted")
 	}
 }
+
+func TestInterfaceForFindsTheOwningAdapter(t *testing.T) {
+	index, name, err := InterfaceFor(netip.MustParseAddr("127.0.0.1"))
+	if err != nil || index == 0 || name == "" {
+		t.Fatalf("loopback owner: %d %q %v", index, name, err)
+	}
+	ifc, err := net.InterfaceByIndex(index)
+	if err != nil || ifc.Name != name {
+		t.Fatalf("index %d does not name %q: %v", index, name, err)
+	}
+	if _, _, err = InterfaceFor(netip.MustParseAddr("203.0.113.77")); err == nil {
+		t.Fatal("an address no adapter owns was resolved")
+	}
+}

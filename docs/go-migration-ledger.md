@@ -45,7 +45,7 @@ a product decision before work starts.
 | `userspace.py` (ProxiFyre -> netstack -> Node) | 694 | `netstack/` (proxy/capture) | PART | Go owns the IP stack; the transport and orchestration are Python |
 | `app.py`, `app_events.py`, `app_policy.py` | 773 | `netstack/app_*.go` | PART | |
 | `capture.py`, `tun.py` | 249 | `netstack/capture.go` | PART | |
-| `windows_network.py`, `windows_adapters.py` | 727 | none | TODO | adapter/route discovery (PowerShell/WMI today) |
+| `windows_network.py`, `windows_adapters.py` | 727 | `uplink.InterfaceFor` | PART | Only bind-address -> adapter index/name resolution (stdlib `net.Interfaces`, no PowerShell), used by `cmd/client` to pin an uplink when `interface_indices` is absent; unit-tested on loopback. Not ported: route/gateway discovery, link inventory and metered/Wi-Fi/cellular detection, adapter change notifications, hotspot handling, `unavailable_links` |
 | `windows_launcher.py`, `windows_packet_filter.py`, `windows_dns.py`, `process_job.py` | 985 | none | TODO | |
 | `hardware_monitor.py`, `gpu_monitor.py`, `tray.py` | 336 | none | TODO / DECIDE | |
 

@@ -73,6 +73,12 @@ func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
 		if i < len(c.InterfaceIndex) {
 			spec.InterfaceIndex = c.InterfaceIndex[i]
 		}
+		if spec.InterfaceIndex == 0 && a.IsValid() && !a.IsUnspecified() {
+			// No index configured: pin to the adapter that owns the bind address.
+			if idx, _, err := uplink.InterfaceFor(a); err == nil {
+				spec.InterfaceIndex = idx
+			}
+		}
 		specs = append(specs, spec)
 	}
 	return c, specs, netip.AddrPortFrom(addr, uint16(port)), nil
@@ -152,8 +158,8 @@ func run() error {
 		policies := make([]linkpolicy.Policy, len(specs))
 		for i := range specs {
 			keys[i] = strconv.Itoa(i) // no adapter index configured: key by uplink slot
-			if specs[i].InterfaceIndex != 0 {
-				keys[i] = strconv.Itoa(specs[i].InterfaceIndex) // as in the Python config
+			if i < len(cfg.InterfaceIndex) && cfg.InterfaceIndex[i] != 0 {
+				keys[i] = strconv.Itoa(cfg.InterfaceIndex[i]) // as in the Python config
 			}
 			p, ok := cfg.LinkPolicies[keys[i]]
 			if !ok {
