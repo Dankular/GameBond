@@ -19,6 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from collections import OrderedDict, deque
+from contextlib import contextmanager
 import math
 
 from .link_limits import MAX_LINKS
@@ -221,6 +222,8 @@ class _Path:
     probe_lost: int = field(default=0,init=False)
     probe_lost_early: int = field(default=0,init=False)
     probe_late: int = field(default=0,init=False)
+    suspect: bool = field(default=False,init=False)
+    suspect_since: float = field(default=0.0,init=False)
     probe_acked_sent_at: float = field(default=-1.0,init=False)
     copy_seen: int = field(default=0,init=False)
     copy_missed: int = field(default=0,init=False)
@@ -306,7 +309,7 @@ class Node:
                  link_states: list[dict] | None = None, path_availability: list[bool] | None = None,
                  outer_transport: dict | None = None,
                  loss_tracking: bool = False, path_mtu_discovery: bool = False,
-                 repair_deadline: float = .25):
+                 repair_deadline: float = .25, failover_replay: bool = False):
         if len(key) != 32 or len(session) != 16:
             raise ValueError("key must be 32 bytes and session must be 16 bytes")
         if role not in ("client", "server"):
@@ -328,6 +331,10 @@ class Node:
             raise ValueError("repair_deadline must be between 0.01 and 2 seconds")
         if (loss_tracking or path_mtu_discovery) and not bonding_mode:
             raise ValueError("loss_tracking and path_mtu_discovery require bonding_mode")
+        if type(failover_replay) is not bool:
+            raise ValueError("failover_replay must be a boolean")
+        if failover_replay and not bonding_mode:
+            raise ValueError("failover_replay requires bonding_mode")
         if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0
                for v in (initial_rate_mbps, max_rate_mbps, reorder_timeout)) or initial_rate_mbps > max_rate_mbps:
             raise ValueError("invalid bonding rates or reorder timeout")
@@ -370,6 +377,8 @@ class Node:
         self._repair_asked = OrderedDict()
         self._repair_next_request = 0.0
         self._repair_deadline = float(repair_deadline)
+        self._failover = failover_replay
+        self._replay_queue = deque()
         self._loss_tracking = loss_tracking
         self._mtu_enabled = path_mtu_discovery
         self._df_enforced = {}
@@ -384,6 +393,8 @@ class Node:
         self._replay = ReplayWindow()
         self._receive_floor = 0
         self._lock = threading.RLock()
+        self._priority_condition = threading.Condition()
+        self._priority_pending = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._received = _PriorityInbox(receive_capacity)
@@ -575,6 +586,7 @@ class Node:
         self._flow_paths.clear()
         self._stripe_flows.clear()
         self._repair_cache.clear()
+        self._replay_queue.clear()
         self._repair_requests.clear()
         self._repair_asked.clear()
         self._repair_next_request = 0.0
@@ -738,6 +750,27 @@ class Node:
             self._counts["socket_errors"] += 1
             return False
 
+    @contextmanager
+    def _priority_access(self):
+        # RLock has no fairness guarantee. Announce the sender before waiting
+        # so a continuously readable socket cannot repeatedly overtake it.
+        with self._priority_condition:
+            self._priority_pending += 1
+        try:
+            with self._lock:
+                yield
+        finally:
+            with self._priority_condition:
+                self._priority_pending -= 1
+                if not self._priority_pending:
+                    self._priority_condition.notify_all()
+
+    def _wait_for_priority(self):
+        if self._priority_pending:
+            with self._priority_condition:
+                self._priority_condition.wait_for(
+                    lambda: not self._priority_pending or self._stop.is_set(), timeout=.005)
+
     def send(self, payload: bytes, replicate: bool = True, flow_id=None, *, urgent: bool = False) -> int:
         """Send data, duplicating gameplay or optionally striping a bulk flow.
 
@@ -752,7 +785,7 @@ class Node:
             return self._send_bonded(payload, flow_id)
         if not replicate and flow_id is not None:
             hash(flow_id)
-        with self._lock:
+        with self._priority_access():
             if self._closed:
                 raise RuntimeError("node is closed")
             packet = self._encode(DATA_COPY if (replicate and self._loss_tracking) else DATA, payload)
@@ -814,6 +847,7 @@ class Node:
         deadline = time.perf_counter() + .2
         while not self._stop.is_set():
             pacing_waiters=[]
+            self._wait_for_priority()
             with self._lock:
                 if self._closed:
                     raise RuntimeError("node is closed")
@@ -823,6 +857,11 @@ class Node:
                 paths=self._eligible_paths(paths,boost=True)
                 if not paths:
                     return 0
+                if self._failover:
+                    # A silent path is probably down. Bulk avoids it while any
+                    # other path is alive; probes and gameplay copies still use it.
+                    alive=[p for p in paths if not self._path_suspect(p,now)]
+                    if alive:paths=alive
                 paths=self._fit_paths(paths,size)
                 readiness={id(p):p.budget.ready_at(size,now) for p in paths}
                 if self._policy_enabled:
@@ -867,8 +906,8 @@ class Node:
                         packet = self._encode(STRIPED, STRIPE_HEADER.pack(flow, number, path.tx_epoch) + payload)
                         if self._write(packet, path):
                             path.budget.sent(sequence, len(packet), now)
-                            if len(payload) <= 2048 and _repairable(payload):
-                                self._repair_cache[(flow, number)] = (payload, now, 0)
+                            if len(payload) <= 2048 and (self._failover or _repairable(payload)):
+                                self._repair_cache[(flow, number)] = (payload, now, 0, path)
                             while len(self._repair_cache) > 2048:
                                 self._repair_cache.popitem(last=False)
                             path.bulk_finish=max(path.bulk_finish,self._bulk_clock)+(len(packet)+28)/path.budget.rate_bytes_per_second
@@ -927,7 +966,7 @@ class Node:
                  "receive_buffer_force_error": self._receive_buffer_force_errors.get(p.socket_index),
                  "interface_index": self._interface_indices[p.socket_index] if self._interface_indices else None,
                  "outer_transport":self._sockets[p.socket_index].stats() if self._outer_settings is not None and hasattr(self._sockets[p.socket_index],'stats') else dict(mode='udp'),
-                 "available":p.available,"ready": p.ready,
+                 "available":p.available,"ready": p.ready,"suspect":p.suspect,
                  "healthy": p.available and p.ready and p.policy_confirmed and p.last_rx > 0 and now - p.last_rx < self.path_timeout,
                  "enabled": not p.link_state or (not p.link_state['blocked'] and p.link_state['role']!='never'),
                  "link_policy":p.link_state,"policy_confirmed":p.policy_confirmed,
@@ -1227,14 +1266,17 @@ class Node:
         now = time.perf_counter()
         # Recover only bounded recent bulk holes; never block gameplay delivery
         # or the receive worker waiting for a pacing slot.
-        paths = self._eligible_paths([p for p in self._paths.values() if p.ready and now-p.last_rx < self.path_timeout],boost=True)
+        # Most arrivals are already in order. Avoid path/skew/repair scans when
+        # there is neither a receive gap nor a peer request to service.
+        paths = (self._eligible_paths([p for p in self._paths.values() if p.ready and now-p.last_rx < self.path_timeout],boost=True)
+                 if self._reorder.has_pending or self._repair_requests else [])
         if paths:
             skew = (max(p.rtt_ms or 0 for p in paths)-min(p.rtt_ms or 0 for p in paths))/2000
             path = min(paths, key=lambda p: p.rtt_ms or 1000)
             jitter=max(p.rtt_jitter_ms for p in paths)/1000
             missing = (self._reorder.missing(delay=max(.015,skew+2*jitter), limit=4, now=now,
                                              predicate=_repairable, with_age=True)
-                       if now >= self._repair_next_request else [])
+                       if self._reorder.has_pending and now >= self._repair_next_request else [])
             if missing:
                 self._repair_next_request = now + .01
             # Earliest useful repair: time already spent behind the hole plus
@@ -1259,7 +1301,7 @@ class Node:
                 if not cached or now-cached[1]>=1 or cached[2]>=2:
                     self._repair_requests.pop(key,None)
                     continue
-                inner, sent_at, attempts = cached
+                inner, sent_at, attempts, _ = cached
                 size = len(inner)+BOND_OVERHEAD+OVERHEAD
                 ready = [p for p in self._fit_paths(paths,size) if p.budget.ready_at(size,now)<=now+.000001]
                 if not ready:
@@ -1269,15 +1311,18 @@ class Node:
                 packet = self._encode(STRIPED, STRIPE_HEADER.pack(*key,target.tx_epoch)+inner)
                 if self._write(packet,target):
                     target.budget.sent(sequence,len(packet),now)
-                    self._repair_cache[key]=(inner,sent_at,attempts+1)
+                    self._repair_cache[key]=(inner,sent_at,attempts+1,target)
                     self._repair_requests.pop(key,None)
                     self._counts['repair_packets'] = self._counts.get('repair_packets',0)+1
                     self._counts['tx_copies'] += 1
         while self._repair_cache and now-next(iter(self._repair_cache.values()))[1]>=1:
             self._repair_cache.popitem(last=False)
+        if self._failover:
+            self._failover_step(now)
         for payload in self._reorder.poll(now=now):
             self._deliver(payload)
-        for identity, outcome in self._copy_ledger.resolve(now, self._copy_resolve_delay()):
+        outcomes = self._copy_ledger.resolve(now, self._copy_resolve_delay()) if self._copy_ledger.has_pending else ()
+        for identity, outcome in outcomes:
             target = self._paths.get(identity)
             if target is not None:
                 if outcome == "seen":
@@ -1337,6 +1382,78 @@ class Node:
             return fit
         self._counts["mtu_no_fit"] = self._counts.get("mtu_no_fit", 0) + 1
         return paths
+
+    def _suspect_after(self, path) -> float:
+        """Silence that marks a path suspect, well before ``path_timeout``.
+
+        About two and a half probe intervals (unanswered probes are the only
+        evidence on an idle link), stretched for slow or jittery paths and
+        bounded by half of path_timeout.
+        """
+        rtt = path.rtt_ms or 0.0
+        return min(self.path_timeout / 2, max(2.5 * self.probe_interval,
+                                              (4 * rtt + 8 * path.rtt_jitter_ms) / 1000))
+
+    def _path_suspect(self, path, now) -> bool:
+        return path.last_rx > 0 and now - path.last_rx >= self._suspect_after(path)
+
+    def _failover_step(self, now) -> None:
+        """Replay bulk last sent on a newly silent path over a live one.
+
+        Only packets sent since the path last proved alive (less one RTT of
+        in-flight allowance) are queued; older ones were almost certainly
+        delivered. Replays are paced by the target's budget and capped per tick.
+        The receiver already discards a duplicate (flow, number), so a replay of
+        a packet that did arrive costs bandwidth, not correctness. Nothing is
+        guaranteed: a replay can still miss the application's deadline.
+        """
+        for path in self._paths.values():
+            suspect = path.ready and self._path_suspect(path, now)
+            if suspect and not path.suspect:
+                path.suspect, path.suspect_since = True, now
+                self._counts["failover_suspected"] = self._counts.get("failover_suspected", 0) + 1
+                horizon = path.last_rx - (path.rtt_ms or 0.0) / 1000
+                queued = 0
+                for key, entry in self._repair_cache.items():
+                    if entry[3] is path and entry[1] >= horizon and queued < 512:
+                        self._replay_queue.append((key, path))
+                        queued += 1
+            elif path.suspect and not suspect:
+                path.suspect = False
+                self._counts["failover_recovered"] = self._counts.get("failover_recovered", 0) + 1
+        if not self._replay_queue:
+            return
+        live = [p for p in self._paths.values()
+                if p.ready and not p.suspect and now - p.last_rx < self.path_timeout]
+        live = self._eligible_paths(live, boost=True)
+        sent = 0
+        while self._replay_queue and sent < 16:
+            key, origin = self._replay_queue[0]
+            entry = self._repair_cache.get(key)
+            if entry is None or entry[3] is not origin or now - entry[1] >= 1:
+                # Evicted, expired, or already moved by a repair request.
+                self._replay_queue.popleft()
+                self._counts["failover_replay_dropped"] = self._counts.get("failover_replay_dropped", 0) + 1
+                continue
+            inner, sent_at, attempts, _ = entry
+            size = len(inner) + BOND_OVERHEAD + OVERHEAD
+            ready = [p for p in self._fit_paths(live, size) if p.budget.ready_at(size, now) <= now + .000001]
+            if not ready:
+                if not live:
+                    self._counts["failover_replay_dropped"] = (
+                        self._counts.get("failover_replay_dropped", 0) + len(self._replay_queue))
+                    self._replay_queue.clear()
+                break
+            target = min(ready, key=lambda p: p.budget.score(size, now, p.rtt_ms))
+            sequence = self._sequence
+            packet = self._encode(STRIPED, STRIPE_HEADER.pack(*key, target.tx_epoch) + inner)
+            self._replay_queue.popleft()
+            if self._write(packet, target):
+                target.budget.sent(sequence, len(packet), now)
+                self._repair_cache[key] = (inner, sent_at, attempts, target)
+                self._counts["failover_replayed"] = self._counts.get("failover_replayed", 0) + 1
+                self._counts["tx_copies"] += 1
+                sent += 1
 
     def _early_loss_delay(self, path) -> float:
         """Minimum age before an overtaken probe counts as lost.
@@ -1442,12 +1559,15 @@ class Node:
                         with self._lock:
                             self._counts["socket_errors"] += 1
                         break
+                    self._wait_for_priority()
                     with self._lock:
                         if sock in self._sockets:self._receive(self._sockets.index(sock), packet, endpoint, received_at=received_at)
             if self.bonding_mode:
+                self._wait_for_priority()
                 with self._lock:
                     self._maintenance()
             if time.perf_counter() >= next_probe:
+                self._wait_for_priority()
                 with self._lock:
                     self._probe()
                 next_probe = time.perf_counter() + self.probe_interval

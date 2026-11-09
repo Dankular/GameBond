@@ -113,7 +113,7 @@ def load_config(path,*,allow_unavailable_links=False):
     if (type(reorder_timeout) not in (int, float) or not math.isfinite(reorder_timeout)
             or not 1 <= reorder_timeout <= 200):
         raise ValueError("reorder_timeout_ms must be finite and between 1 and 200")
-    for name in ("loss_tracking", "path_mtu_discovery"):
+    for name in ("loss_tracking", "path_mtu_discovery", "failover_replay"):
         if type(config.get(name, False)) is not bool:
             raise ValueError(f"{name} must be a boolean")
         if config.get(name, False) and not config.get("bonding_mode", False):
@@ -215,6 +215,7 @@ def run(config, key_path, configure=False, *, stop_event=None, on_ready=None, co
                 outer_transport=config.get('outer_transport'),
                 loss_tracking=config.get("loss_tracking", False),
                 path_mtu_discovery=config.get("path_mtu_discovery", False),
+                failover_replay=config.get("failover_replay", False),
                 repair_deadline=config.get("repair_deadline_ms", 250) / 1000)
     tun = None
     network = None

@@ -172,3 +172,35 @@ Implements steps 1-3 of the suggested order in [analysis-recovery.md](docs/analy
 - The expected-path set is the receiver's view of ready, enabled paths; a sender that excluded a path for a reason the receiver cannot see would show that path as missing.
 - MTU discovery measures the outbound direction of each node only. The inner tunnel MTU is still one configured number: a path whose discovered size is below it is avoided per packet, not fixed, so lower `mtu` if `mtu.path_mtu` stays under the configured size. If `df_enforced` is false the platform call failed and a probe answer does not prove the datagram was not fragmented.
 - Verified only by unit tests and loopback tests with software-injected drops (`tests/test_path_quality.py`, `tests/test_data_plane_quality.py`, `tests/test_adaptive_qos_copy_loss.py`). No 5G/Starlink measurement, no server deployment and no live Call of Duty result exists for any of this.
+
+
+## Sender-driven failover replay (`failover_replay`)
+
+Speedify's failover chain (`0x14028f9d4` -> `0x140424d64` -> `0x140299434`, see [analysis-recovery.md](docs/analysis-recovery.md)) takes the packets buffered for a failed connection and retries them on another one, without waiting for the receiver. Before this change GameBond learned of a dead path only after `path_timeout` (2.0 s default): early probe-loss detection needs a *later* probe on the same path to be answered, which cannot happen on a dead link. For that window the striper kept writing bulk into the dead path, and recovery depended on the receiver noticing a gap. That never happens for a **tail** loss (nothing follows the lost packet) or for non-TCP bulk, which the receiver never asks to repair.
+
+Original GameBond design, opt-in (`failover_replay`, default off, requires `bonding_mode`). **No wire change**: replays are ordinary `STRIPED` packets with the original flow and sequence, so no peer upgrade is needed and the receiver's existing duplicate suppression absorbs any packet that had already arrived.
+
+- **Suspicion.** A path is suspect after `min(path_timeout/2, max(2.5*probe_interval, 4*srtt + 8*jitter))` without any authenticated packet (about 0.625 s at defaults, against 2.0 s). Stats show per-path `suspect`; counters `failover_suspected`, `failover_recovered`.
+- **Avoidance.** Bulk striping skips suspect paths while at least one other path is alive; a sole path stays usable. Probes and replicated gameplay still use a suspect path, so recovery is noticed.
+- **Replay.** On the healthy-to-suspect transition, cached bulk packets last sent on that path since it last proved alive (less one RTT) are queued, up to 512, and re-sent on the best live path, paced by that path's budget, 16 per maintenance tick. Counters `failover_replayed`, `failover_replay_dropped` (evicted, older than 1 s, or already moved by a receiver repair).
+- **Cache.** With the option on, the existing bounded repair cache (2,048 packets, <= 2 KiB payload, 1 s) also keeps non-TCP bulk, and each entry records the path it last used.
+
+Tests: [tests/test_failover_replay.py](tests/test_failover_replay.py), real loopback sockets with one path blackholed in both directions. A negative control with the option off confirms the tail packet is lost; with it on the packet is delivered (25 of 25 repeated runs).
+
+**Limits.**
+- A replay is not a deadline guarantee. It arrives at least one suspicion interval (about 0.6 s at defaults) after the original, so it recovers a TCP/QUIC bulk segment but not a real-time game packet; gameplay continuity during an outage still relies on replicated copies.
+- Replayed packets can arrive after the reorder deadline (30 ms) and are delivered late and out of order rather than holding other packets back.
+- Replays of packets that had in fact arrived cost bandwidth until the duplicate is discarded; the volume is bounded by the 512-packet cap and the horizon, not measured.
+- Suspicion is silence-based. A path that is alive but one-way (receives nothing, still delivers) is treated as suspect, and a briefly quiet healthy path with a slow probe interval could be flagged and then recovered; the thresholds were not tuned on a physical 5G/Starlink link.
+- No live measurement and no server deployment exist for this change. Enable it on both ends only after validating against a physical interruption; it needs no server upgrade but the server benefits only if it enables it too.
+
+
+## Throughput pinned near the start rate on a jittery link
+
+Reported: a single ~105 Mbps link delivered roughly 1.5-10 Mbps. Live status (`.runtime/userspace-status.json`, one path up) showed the client's budget at 1.5-2.25 Mbps with only 2 growth steps, minimum RTT 23 ms against smoothed 60-85 ms, jitter 40-130 ms and a 270 ms spike. The second path was unavailable (Ethernet 3 had no IPv4 address and gateway), so this was a one-link measurement.
+
+Cause (reproduced, not just inferred): the delay gate in `PathBudget.acknowledge` compared smoothed RTT with a **lifetime-minimum** RTT and no jitter allowance (`srtt - min_rtt > max(25 ms, 0.5*min_rtt)`). On a link whose best case is rare, that fires whenever the flow is backlogged, i.e. exactly when growth is wanted, and `delay_samples > 0` blocks additive and startup growth. With the budget stuck near 1 Mbps, the 100 ms bulk queue ages packets out, the inner TCP window collapses, and the flow never produces the evidence needed to grow. In a loopback emulation (40 Mbps bottleneck, 25 ms base RTT, up to 60 ms jitter each way, Reno-style source behind the configured 100 ms / 256-packet bulk queue) the old gate held the budget at 1.0 Mbps for 14 s with `delay_samples` stuck at 3.
+
+Fix (Python `gamebond/bonding.py` and the Go mirror `native-edge/bond/budget.go`): the queue-delay estimate now uses a decaying baseline (minimum of the current and previous 10 s buckets) and requires queue delay to exceed `4 * rtt_var` (smoothed mean deviation) as well as the previous thresholds. A standing queue far above jitter still stops growth. `rtt_var_ms` is exposed in stats. Go vectors regenerated from Python (`tools/generate_native_budget_vectors.py`); Go and Python agree on all 94,607 operations. Regression tests: `test_rtt_jitter_alone_does_not_pin_a_backlogged_path_at_its_start_rate` (fails on the old gate) and `test_genuine_queue_growth_still_stops_growth`.
+
+Not established: no physical measurement after the fix, and neither fix is deployed. Downloads are paced by the **server's** budget, so the server (195.154.119.136) must run the fixed code; a client-only restart improves upload only. Emulated delivery after escaping the pin follows the toy TCP source, not a 105 Mbps result. The 1 Mbps start (`bonding_initial_rate_mbps`) still costs a few seconds of ramp on every new path.

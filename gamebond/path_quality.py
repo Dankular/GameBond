@@ -34,6 +34,10 @@ class CopyLedger:
         self._pending = OrderedDict()   # sequence -> [first_at, expected, {identity: at}]
         self._resolved = OrderedDict()  # sequence -> (first_at, {identities counted missed})
 
+    @property
+    def has_pending(self):
+        return bool(self._pending)
+
     def first(self, sequence, identity, expected, now):
         self._pending[sequence] = [now, tuple(expected), {identity: now}]
         while len(self._pending) > self.capacity:

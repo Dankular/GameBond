@@ -55,6 +55,50 @@ def wait_for(predicate, timeout=3):
 
 
 class BondedTransportTests(unittest.TestCase):
+    def test_priority_sender_announces_contention_and_clears_it_on_error(self):
+        handshake_without_threads(self.client,self.server)
+        errors=[]
+        def send():
+            try:self.client.send(b'game',replicate=True)
+            except RuntimeError as exc:errors.append(str(exc))
+        with mock.patch.object(self.client,'_write',side_effect=RuntimeError('injected write failure')):
+            with self.client._lock:
+                sender=threading.Thread(target=send)
+                sender.start()
+                wait_for(lambda:self.client._priority_pending==1)
+            sender.join(1)
+        self.assertFalse(sender.is_alive())
+        self.assertEqual(errors,['injected write failure'])
+        self.assertEqual(self.client._priority_pending,0)
+        self.client._wait_for_priority()
+
+    def test_priority_handoff_wait_is_bounded_during_sustained_priority_load(self):
+        # A sender can be descheduled while waiting: receive/feedback must keep
+        # making progress instead of waiting indefinitely for that sender.
+        self.client._priority_pending=1
+        resumed=threading.Event()
+        receiver=threading.Thread(target=lambda:(self.client._wait_for_priority(),resumed.set()))
+        try:
+            receiver.start()
+            self.assertTrue(resumed.wait(.5))
+        finally:
+            with self.client._priority_condition:
+                self.client._priority_pending=0
+                self.client._priority_condition.notify_all()
+            receiver.join(1)
+
+    def test_empty_reorder_buffer_does_not_scan_repair_candidates(self):
+        handshake_without_threads(self.client,self.server)
+        with mock.patch.object(self.client._reorder,'missing',wraps=self.client._reorder.missing) as missing:
+            self.client._maintenance()
+        missing.assert_not_called()
+
+    def test_empty_copy_ledger_does_not_calculate_path_skew(self):
+        handshake_without_threads(self.client,self.server)
+        with mock.patch.object(self.client,'_copy_resolve_delay',wraps=self.client._copy_resolve_delay) as delay:
+            self.client._maintenance()
+        delay.assert_not_called()
+
     def test_udp_bulk_does_not_enter_tcp_repair_cache(self):
         self.start()
         self.client.send(b'opaque UDP payload',replicate=False,flow_id='udp')

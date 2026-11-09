@@ -74,6 +74,10 @@ class ReorderBuffer:
         flow.seen_bits|=1<<offset
         return True
 
+    @property
+    def has_pending(self):
+        return self._packets != 0
+
     def _now(self, now):
         value = self.clock() if now is None else now
         if not isinstance(value, (int, float)) or not math.isfinite(value):

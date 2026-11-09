@@ -600,7 +600,8 @@ class Runtime:
                 max_rate_mbps=config.get('bonding_max_rate_mbps',100),
                 link_states=([operational_state(self.link_policies[str(index)],self.usage_ledger.usage(str(index),self.link_policies[str(index)]))
                              for index in self.policy_keys] if 'link_policies' in config else None),
-                path_availability=config.get('path_availability'),outer_transport=config.get('outer_transport')).start()
+                path_availability=config.get('path_availability'),outer_transport=config.get('outer_transport'),
+                failover_replay=config.get('failover_replay',False)).start()
             self.maintain_omr()     # a failing OMR leg is reported and retried; it never stops the GameBond tunnel
             self.state='connecting';self.publish()
             deadline=time.monotonic()+12

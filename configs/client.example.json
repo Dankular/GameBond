@@ -16,6 +16,7 @@
   "reorder_timeout_ms": 30,
   "loss_tracking": false,
   "path_mtu_discovery": false,
+  "failover_replay": false,
   "repair_deadline_ms": 250,
   "direct_priority": true,
   "bulk_rate_mbps": 0,
