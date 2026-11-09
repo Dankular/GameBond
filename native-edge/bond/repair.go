@@ -13,6 +13,7 @@ type repairEntry struct {
 	at       time.Time
 	attempts int
 	order    *list.Element
+	origin   *receivePath // path that last carried this packet (failover replay)
 }
 type askedRepair struct {
 	key      MissingPacket
@@ -25,11 +26,11 @@ func repairable(packet []byte) bool {
 	p, err := ParseIPv4(packet)
 	return err == nil && p.Protocol == 6 && !p.Fragmented
 }
-func (s *Sender) cacheRepair(key MissingPacket, payload []byte, now time.Time) {
-	if len(payload) > 2048 || !repairable(payload) {
+func (s *Sender) cacheRepair(key MissingPacket, payload []byte, now time.Time, origin *receivePath) {
+	if len(payload) > 2048 || !(s.failover || repairable(payload)) {
 		return
 	}
-	entry := &repairEntry{key: key, payload: append([]byte(nil), payload...), at: now}
+	entry := &repairEntry{key: key, payload: append([]byte(nil), payload...), at: now, origin: origin}
 	entry.order = s.repairOrder.PushBack(entry)
 	s.repairs[key] = entry
 	for len(s.repairs) > 2048 {
@@ -46,7 +47,7 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 	s.syncPeer()
 	for s.repairOrder.Len() > 0 {
 		old := s.repairOrder.Front().Value.(*repairEntry)
-		if now.Sub(old.at) < time.Second {
+		if now.Sub(old.at) < s.repairLife() {
 			break
 		}
 		delete(s.repairs, old.key)
@@ -59,6 +60,11 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		}
 		delete(s.asked, old.key)
 		s.askedOrder.Remove(old.order)
+	}
+	if s.failover {
+		if err := s.failoverStep(now, writer); err != nil {
+			return err
+		}
 	}
 	paths := s.eligible(now, true)
 	if len(paths) == 0 {
@@ -159,6 +165,7 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		if s.written(Datagram{Endpoint: target.endpoint, Frame: frame, Local: target.local}, target, now, writer) {
 			target.budget.Sent(binary.BigEndian.Uint64(frame[37:]), len(frame), timestamp)
 			cached.attempts++
+			cached.origin = target
 			delete(s.repairRequests, key)
 			s.requestOrder.Remove(e)
 			s.stats.RepairCopies++
@@ -168,4 +175,13 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		}
 	}
 	return nil
+}
+
+// repairLife is how long a sent packet stays cached; failover needs it to
+// outlive the suspicion delay.
+func (s *Sender) repairLife() time.Duration {
+	if s.failover {
+		return 3 * time.Second
+	}
+	return time.Second
 }

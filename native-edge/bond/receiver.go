@@ -65,6 +65,7 @@ type receivePath struct {
 	hasFeedback                      bool
 	mtu                              *MTUProber
 	mtuAcks, mtuSkips                uint64
+	suspect                          bool
 	peerCopy                         [3]uint64
 }
 type pendingProbe struct {

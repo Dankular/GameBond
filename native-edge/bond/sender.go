@@ -19,7 +19,7 @@ type sendFlow struct {
 	last       time.Time
 	lru        *list.Element
 }
-type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, MTUNoFit uint64 }
+type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped uint64 }
 
 // Sender is the actor-owned transmit half. A caller retries a pending bulk
 // packet at the returned time, servicing Receive/Tick/urgent queues meanwhile.
@@ -40,6 +40,8 @@ type Sender struct {
 	asked             map[MissingPacket]*askedRepair
 	askedOrder        list.List
 	nextRepairRequest time.Time
+	failover          bool
+	replayQueue       []replayItem
 }
 
 func NewSender(r *Receiver, initial, maximum float64) (*Sender, error) {
@@ -71,6 +73,7 @@ func (s *Sender) syncPeer() {
 		clear(s.asked)
 		s.askedOrder.Init()
 		s.nextRepairRequest = time.Time{}
+		s.replayQueue = nil
 	}
 }
 func (s *Sender) eligible(now time.Time, boost bool) []*receivePath {
@@ -310,6 +313,19 @@ func (s *Sender) Bulk(payload []byte, key string, now time.Time, writer Datagram
 	}
 	timestamp := s.r.seconds(now)
 	size := len(payload) + Overhead + 24
+	if s.failover {
+		// A silent path is probably down: bulk avoids it while any other path is
+		// alive; probes and gameplay copies still use it.
+		var alive []*receivePath
+		for _, p := range paths {
+			if !s.pathSuspect(p, now) {
+				alive = append(alive, p)
+			}
+		}
+		if len(alive) > 0 {
+			paths = alive
+		}
+	}
 	paths = s.fitPaths(paths, size)
 	ready := make(map[*receivePath]float64, len(paths))
 	transit := make(map[*receivePath]float64, len(paths))
@@ -413,7 +429,7 @@ func (s *Sender) Bulk(payload []byte, key string, now time.Time, writer Datagram
 			sequence := binary.BigEndian.Uint64(frame[37:])
 			p.budget.Sent(sequence, len(frame), timestamp)
 			p.bulkFinish = math.Max(p.bulkFinish, s.bulkClock) + float64(len(frame)+28)/p.budget.rate
-			s.cacheRepair(MissingPacket{f.id, f.number}, payload, now)
+			s.cacheRepair(MissingPacket{f.id, f.number}, payload, now, p)
 			if f.number == math.MaxUint64 {
 				f.exhausted = true
 			} else {
@@ -451,6 +467,7 @@ type PathSnapshot struct {
 	MTU                                              *MTUStats
 	MTUAcks, MTUSkips                                uint64
 	PolicyConfirmed                                  bool
+	Suspect                                          bool
 }
 
 func (s *Sender) Paths(now time.Time) []PathSnapshot {
@@ -461,7 +478,7 @@ func (s *Sender) Paths(now time.Time) []PathSnapshot {
 			copy := *p.policy
 			policy = &copy
 		}
-		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats(), mtuStats(p), p.mtuAcks, p.mtuSkips, p.policyConfirmed})
+		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats(), mtuStats(p), p.mtuAcks, p.mtuSkips, p.policyConfirmed, p.suspect})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Endpoint.Compare(out[j].Endpoint) < 0 })
 	return out
