@@ -35,6 +35,8 @@ from .link_policy import LinkPolicy, UsageLedger, operational_state
 from .app_events import AppEventStore,resolve_process
 from .adaptive_qos import AdaptiveQoS,QoSSettings,profile_policies,mark_dscp
 from .atomic_io import replace_file,read_json_shared
+from .lan_gateway import LanGateway,load_lan_devices
+from .frame_io import open_frame_io
 
 ROOT=Path(__file__).resolve().parents[1]
 RUNTIME=ROOT/'.runtime'
@@ -181,7 +183,7 @@ class Runtime:
             self.capture_extension=extension;self.capture_token=secrets.token_hex(32)
         try:self.app_events=AppEventStore(RUNTIME/'app-history.json')
         except (ValueError,OSError,KeyError,TypeError) as exc:self.app_events=None;self.app_event_error=str(exc)
-        self.stack_write_lock=threading.Lock();self.authorization_slots=threading.BoundedSemaphore(64)
+        self.classify_lock=threading.Lock();self.stack_write_lock=threading.Lock();self.authorization_slots=threading.BoundedSemaphore(64)
         self.authorization_workers=ThreadPoolExecutor(max_workers=4,thread_name_prefix='gamebond-app-policy')
         self.authorization_counts=dict(allowed=0,denied=0,errors=0);self.authorization_decisions=deque(maxlen=32)
         self.authorization_lock=threading.Lock();self.flow_profiles=OrderedDict()
@@ -189,6 +191,8 @@ class Runtime:
         self.policy_lock=threading.Lock();self.policy_stamp=None;self.application_policy=PolicyEvaluator(config)
         self.application_policy_state=self.policy_snapshot()
         self.last_transport={}
+        self.lan_devices=load_lan_devices(config);self.lan_gateways={};self.lan_by_ip={};self.lan_errors={}
+        self.lan_retry_at={};self.lan_opener=open_frame_io
         self.application_bytes=None
         self.usage_ledger=UsageLedger(RUNTIME/'link-usage.json')
         self.previous_wire={};self.link_usage={}
@@ -231,7 +235,7 @@ class Runtime:
             application_traffic={key:value for key,value in app_traffic.items() if key!='rows'} if app_traffic else None,
             app_authorization=self.authorization_snapshot(),
             application_policy=self.application_policy_state,
-            link_usage=self.link_usage,
+            link_usage=self.link_usage,lan_devices=self.lan_status(),
             qos=self.qos.stats(),transport=self.last_transport,packets=dict(self.counts)))
 
     def meter_links(self):
@@ -279,6 +283,41 @@ class Runtime:
         except (OSError,ValueError,RuntimeError) as exc:
             if initial:raise
             self.link_inventory_error=str(exc)
+
+    def lan_status(self):
+        rows=[]
+        for device in self.lan_devices:
+            gateway=self.lan_gateways.get(device.name)
+            if gateway is not None:rows.append(gateway.stats())
+            else:rows.append(dict(name=device.name,tunnel_ip=device.tunnel_ip,up=False,leased=False,error=self.lan_errors.get(device.name,'Starting')))
+        return rows
+
+    def maintain_lan(self):
+        """Start missing device gateways and restart failed ones; an unplugged adapter never stops the tunnel."""
+        for device in self.lan_devices:
+            gateway=self.lan_gateways.get(device.name)
+            if gateway is not None and gateway.alive:continue
+            if gateway is not None:
+                self.lan_errors[device.name]=gateway.error or 'Adapter stopped';self.lan_by_ip.pop(gateway.device_raw,None)
+                self.lan_gateways.pop(device.name,None)
+                try:gateway.close()
+                except OSError:pass
+                print(json.dumps(dict(status='lan_device_down',name=device.name,error=self.lan_errors[device.name])),flush=True)
+            if time.monotonic()<self.lan_retry_at.get(device.name,0):continue
+            self.lan_retry_at[device.name]=time.monotonic()+5
+            try:
+                io=self.lan_opener(device)
+                try:
+                    gateway=LanGateway(device,io,self.send_outbound,client_tunnel_ip=self.config['client_tunnel_ip'],
+                                       tunnel_mtu=self.config.get('mtu',1280)).start()
+                except BaseException:
+                    io.close();raise
+            except (OSError,ValueError,RuntimeError) as exc:
+                if self.lan_errors.get(device.name)!=str(exc):
+                    print(json.dumps(dict(status='lan_device_unavailable',name=device.name,error=str(exc))),flush=True)
+                self.lan_errors[device.name]=str(exc);continue
+            self.lan_gateways[device.name]=gateway;self.lan_by_ip[gateway.device_raw]=gateway;self.lan_errors.pop(device.name,None)
+            print(json.dumps(dict(status='lan_device_up',name=device.name,tunnel_ip=device.tunnel_ip,adapter_mac=gateway.stats()['adapter_mac'])),flush=True)
 
     def policy_snapshot(self):
         snapshot=self.application_policy.snapshot()
@@ -342,7 +381,12 @@ class Runtime:
                 else:self.counts['malformed']+=1
                 continue
             if kind!=0:raise ValueError('Unexpected stack endpoint')
-            try:
+            self.send_outbound(packet)
+
+    def send_outbound(self,packet):
+        """Classify and transmit one IPv4 packet from the local netstack or an attached LAN device."""
+        try:
+            with self.classify_lock:
                 packet=mark_game_udp(packet,self.config.get('game_udp_ports',[]))
                 classification=self.classifier.classify(packet)
                 self.qos.refresh(self.node.stats)
@@ -352,15 +396,15 @@ class Runtime:
                 if record:record['last_seen']=time.monotonic()
                 classification=self.qos.classify(classification,record['profile'] if record else None)
                 if record and self.qos.settings.enabled:packet=mark_dscp(packet,classification.dscp)
-            except ValueError:
-                self.counts['malformed']+=1;continue
-            if classification.policy.priority or is_tcp_control(packet):
-                if classification.dscp==46 and classification.info.protocol==17:self.counts['tagged_game_udp']+=1
-                self.counts['direct_priority_packets']=self.counts.get('direct_priority_packets',0)+1
-                urgent,replicate=self.qos.transmission(classification,len(packet))
-                urgent=urgent or is_tcp_control(packet)
-                self.node.send(packet,replicate=replicate,flow_id=classification.info.flow,urgent=urgent)
-            elif self.scheduler.push(packet,classification):self.counts['bulk_enqueued']+=1
+        except ValueError:
+            self.counts['malformed']+=1;return
+        if classification.policy.priority or is_tcp_control(packet):
+            if classification.dscp==46 and classification.info.protocol==17:self.counts['tagged_game_udp']+=1
+            self.counts['direct_priority_packets']=self.counts.get('direct_priority_packets',0)+1
+            urgent,replicate=self.qos.transmission(classification,len(packet))
+            urgent=urgent or is_tcp_control(packet)
+            self.node.send(packet,replicate=replicate,flow_id=classification.info.flow,urgent=urgent)
+        elif self.scheduler.push(packet,classification):self.counts['bulk_enqueued']+=1
 
     def send_bulk(self):
         while not self.stop.is_set():
@@ -373,6 +417,11 @@ class Runtime:
         while not self.stop.is_set():
             try:packet=self.node.recv(.1)
             except queue.Empty:continue
+            gateway=self.lan_by_ip.get(bytes(packet[16:20])) if len(packet)>=20 else None
+            if gateway is not None:
+                # Addressed to an attached LAN device: out its adapter, never into the local netstack.
+                if gateway.deliver(packet):self.counts['lan_delivered']=self.counts.get('lan_delivered',0)+1
+                continue
             self.write_stack_frame(0,packet)
             self.counts['injected']+=1
 
@@ -429,9 +478,10 @@ class Runtime:
             if str(source)!=self.config['client_tunnel_ip'] or not 1<=source_port<=65535 or not 1<=destination_port<=65535:return
             endpoints=sorted(((source.packed,source_port),(destination.packed,destination_port)))
             key=(source.version,6 if record['protocol']=='tcp' else 17,*endpoints)
-            self.flow_profiles[key]=dict(profile=record['profile'],pid=record.get('pid'),created_filetime=record.get('created_filetime'),last_seen=time.monotonic())
-            self.flow_profiles.move_to_end(key)
-            while len(self.flow_profiles)>4096:self.flow_profiles.popitem(last=False)
+            with self.classify_lock:
+                self.flow_profiles[key]=dict(profile=record['profile'],pid=record.get('pid'),created_filetime=record.get('created_filetime'),last_seen=time.monotonic())
+                self.flow_profiles.move_to_end(key)
+                while len(self.flow_profiles)>4096:self.flow_profiles.popitem(last=False)
         except (ValueError,KeyError,TypeError):return
 
     def stage_proxy(self,address):
@@ -506,7 +556,7 @@ class Runtime:
             self.stage_proxy(address)
             self.state='running';self.publish()
             while not self.stop.wait(1):
-                self.refresh_links()
+                self.refresh_links();self.maintain_lan()
                 if self.stack.poll() is not None or self.proxy.poll() is not None:raise RuntimeError('Network stack or application capture stopped unexpectedly')
                 self.publish()
             if not self.errors.empty():raise RuntimeError(self.errors.get())
@@ -514,7 +564,11 @@ class Runtime:
             self.error=str(exc);self.state='failed'
         finally:
             if self.adapter_notifications:self.adapter_notifications.close()
-            self.stop.set();self.scheduler.close()
+            self.stop.set()
+            for gateway in list(self.lan_gateways.values()):
+                try:gateway.close()
+                except OSError:pass
+            self.scheduler.close()
             self.authorization_workers.shutdown(wait=True,cancel_futures=True)
             failed=self.state=='failed';self.state='stopping'
             try:self.publish()

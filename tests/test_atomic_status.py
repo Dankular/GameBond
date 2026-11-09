@@ -54,7 +54,7 @@ class AtomicStatusTests(unittest.TestCase):
         runtime.node=runtime.proxy=runtime.stack=None;runtime.adapter_notifications=None
         runtime.publish=Mock(side_effect=[None,PermissionError('locked status'),None]);runtime.worker=Mock();runtime.controller=Mock()
         runtime.refresh_links=Mock();runtime.scheduler=Mock();runtime.authorization_workers=Mock();runtime.job=Mock()
-        runtime.workers=[];runtime.logs=[];runtime.listener=Mock()
+        runtime.workers=[];runtime.logs=[];runtime.listener=Mock();runtime.lan_gateways={}
         with patch('gamebond.transport.Node.start',side_effect=RuntimeError('original startup failure')):
             # Avoid constructing any real sockets, jobs or runtime files.
             with patch('gamebond.userspace.Node') as node,patch('gamebond.windows_adapters.AdapterNotifications'):

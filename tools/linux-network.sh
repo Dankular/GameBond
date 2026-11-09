@@ -4,12 +4,21 @@ set -euo pipefail
 WAN=${1:?Usage: linux-network.sh WAN_INTERFACE [--apply]}
 if [[ ! "$WAN" =~ ^[a-zA-Z0-9_.:-]+$ ]]; then echo 'Invalid WAN interface' >&2; exit 1; fi
 if [[ "$WAN" == gamebond0 ]]; then echo 'WAN must be separate from gamebond0' >&2; exit 1; fi
+# Optional LAN devices (e.g. a console behind a client USB adapter): GAMEBOND_LAN_IPS="10.77.0.3 10.77.0.4".
+# Must match lan_tunnel_ips in the server config. Without it nothing changes (/30, one NAT source).
+LAN_IPS=${GAMEBOND_LAN_IPS:-}
+PREFIX=30
+NAT_SOURCES='10.77.0.2/32'
+for lan_ip in $LAN_IPS; do
+    [[ "$lan_ip" =~ ^10\.77\.0\.([3-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-4])$ ]] || { echo "Invalid LAN device address: $lan_ip" >&2; exit 1; }
+done
+if [[ -n "$LAN_IPS" ]]; then PREFIX=24; NAT_SOURCES="{ 10.77.0.2, ${LAN_IPS// /, } }"; fi
 if [[ ${2:-} != --apply ]]; then
     printf 'Start the GameBond server first, then run as root:\n'
-    printf 'ip address add 10.77.0.1/30 dev gamebond0\nip link set dev gamebond0 mtu 1280 up\nsysctl -w net.ipv4.ip_forward=1\n'
+    printf 'ip address add 10.77.0.1/%s dev gamebond0\nip link set dev gamebond0 mtu 1280 up\nsysctl -w net.ipv4.ip_forward=1\n' "$PREFIX"
     printf 'nft add table ip gamebond\n'
     printf "nft 'add chain ip gamebond postrouting { type nat hook postrouting priority srcnat; policy accept; }'\n"
-    printf "nft 'add rule ip gamebond postrouting ip saddr 10.77.0.2/32 oifname \"%s\" masquerade'\n" "$WAN"
+    printf "nft 'add rule ip gamebond postrouting ip saddr %s oifname \"%s\" masquerade'\n" "$NAT_SOURCES" "$WAN"
     printf 'Also allow UDP/4433 INPUT and gamebond0 <-> %s FORWARD in your existing firewall; this script does not replace it.\n' "$WAN"
     exit 0
 fi
@@ -30,13 +39,13 @@ ADDRESS_ADDED=0
 NAT_ADDED=0
 rollback() {
     if [[ $NAT_ADDED == 1 ]]; then nft delete table ip gamebond 2>/dev/null || true; fi
-    if [[ $ADDRESS_ADDED == 1 ]]; then ip address del 10.77.0.1/30 dev gamebond0 2>/dev/null || true; fi
+    if [[ $ADDRESS_ADDED == 1 ]]; then ip address del "10.77.0.1/$PREFIX" dev gamebond0 2>/dev/null || true; fi
     ip link set dev gamebond0 mtu "$OLD_MTU" 2>/dev/null || true
     if [[ $OLD_UP == 0 ]]; then ip link set dev gamebond0 down 2>/dev/null || true; fi
     sysctl -w net.ipv4.ip_forward="$OLD_FORWARD" >/dev/null || true
 }
 trap rollback ERR
-ip address add 10.77.0.1/30 dev gamebond0
+ip address add "10.77.0.1/$PREFIX" dev gamebond0
 ADDRESS_ADDED=1
 ip link set dev gamebond0 mtu 1280 up
 sysctl -w net.ipv4.ip_forward=1
@@ -45,7 +54,7 @@ sysctl -w net.ipv4.ip_forward=1
 nft -f - <<EOF
 add table ip gamebond
 add chain ip gamebond postrouting { type nat hook postrouting priority srcnat; policy accept; }
-add rule ip gamebond postrouting ip saddr 10.77.0.2/32 oifname "$WAN" masquerade
+add rule ip gamebond postrouting ip saddr $NAT_SOURCES oifname "$WAN" masquerade
 EOF
 NAT_ADDED=1
 trap - ERR

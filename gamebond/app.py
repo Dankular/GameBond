@@ -124,6 +124,10 @@ def load_config(path,*,allow_unavailable_links=False):
     if len(bytes.fromhex(config["session"])) != 16:
         raise ValueError("session must contain 16 random bytes in hex")
     ipaddress.IPv4Address(config["client_tunnel_ip"])
+    from .lan_gateway import load_lan_devices,load_lan_tunnel_ips
+    load_lan_devices(config)
+    load_lan_tunnel_ips(config)
+    if config["role"]=="client" and config.get("lan_tunnel_ips"):raise ValueError("lan_tunnel_ips belong to the server configuration; the client uses lan_devices")
     dns_config = load_dns_config(config.get("dns"))
     if dns_config is not None:
         if config["role"] != "client":
@@ -139,6 +143,8 @@ def load_config(path,*,allow_unavailable_links=False):
 def run(config, key_path, configure=False, *, stop_event=None, on_ready=None):
     if configure and (os.name != "nt" or config["role"] != "client"):
         raise ValueError("automatic network setup is for the Windows client only")
+    if config.get("lan_devices"):
+        raise ValueError("lan_devices need the userspace runtime (python -m gamebond.userspace); the legacy TUN runner cannot serve them")
     dns_config = load_dns_config(config.get("dns"))
     if dns_config is not None and dns_config.enabled and not configure:
         raise ValueError("managed DNS requires the Windows client with --configure")
@@ -174,6 +180,8 @@ def run(config, key_path, configure=False, *, stop_event=None, on_ready=None):
         record["mean"] += (elapsed - record["mean"]) / record["count"]
         record["max"] = max(record["max"], elapsed)
     client_ip = ipaddress.IPv4Address(config["client_tunnel_ip"]).packed
+    # The server also accepts, and routes back to, each attached LAN device's own tunnel address.
+    allowed_ips = {client_ip}|{ipaddress.IPv4Address(a).packed for a in config.get("lan_tunnel_ips",[])}
     node = Node(key, config["role"], bytes.fromhex(config["session"]),
                 [tuple(b) for b in config["bind"]],
                 tuple(config["peer"]) if config.get("peer") else None,
@@ -202,14 +210,14 @@ def run(config, key_path, configure=False, *, stop_event=None, on_ready=None):
             reason = str(exc)
             counters["parse_errors"][reason] = counters["parse_errors"].get(reason, 0) + 1
             return None
-        # This first deployment supports a single IPv4 client and IPv4 NAT only.
-        # Enforce anti-spoofing before injecting authenticated peer traffic.
+        # One authenticated client session, IPv4 only. Enforce anti-spoofing so the peer can only
+        # use its own tunnel address and the explicitly configured LAN-device addresses.
         if packet[0] >> 4 != 4:
             counters["malformed"] += 1
             return None
         is_client_packet = (config["role"] == "server") == incoming
         addr = packet[12:16] if is_client_packet else packet[16:20]
-        if addr != client_ip:
+        if addr not in allowed_ips:
             counters["wrong_tunnel_address"] += 1
             return None
         classification = classifier.classify_info(info)

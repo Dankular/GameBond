@@ -2,10 +2,10 @@
 import json
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import (QDialog,QVBoxLayout,QHBoxLayout,QLabel,QRadioButton,QButtonGroup,QListWidget,
+from PyQt5.QtWidgets import (QLineEdit,QDialog,QVBoxLayout,QHBoxLayout,QLabel,QRadioButton,QButtonGroup,QListWidget,
     QPushButton,QFileDialog,QDialogButtonBox,QCheckBox,QMessageBox,QScrollArea,QWidget,QFormLayout,QComboBox,QDoubleSpinBox,QSpinBox,QGroupBox)
 
-from .widget_data import CONFIG,save_applications,save_selection,save_link_policies,human_bytes,discover_links
+from .widget_data import CONFIG,save_applications,save_selection,save_link_policies,human_bytes,discover_links,save_lan_devices,lan_candidates
 from .capture import normalize_apps
 from .link_policy import LinkPolicy,UsageLedger
 from .glass_theme import ROOT
@@ -116,6 +116,79 @@ class NetworksDialog(SettingsDialog):
         selected.sort(key=lambda index:order.get(rows[index].get('id','').casefold() or str(index),len(order)))
         if set(selected)==set(self.config['interface_indices']):selected=self.config['interface_indices']
         return save_selection(selected,links=self.links)
+
+
+class LanDevicesDialog(SettingsDialog):
+    """Dedicate a (usually USB) adapter to a console or other device that joins the bond."""
+    def __init__(self,links,runtime=None,parent=None):
+        super().__init__('Connected devices',parent);self.resize(680,520);self.rows=[];self.links=[]
+        self.live={row.get('name'):row for row in ((runtime or {}).get('lan_devices') or [])}
+        note=QLabel('Plug the device (for example a PS5) into a spare network adapter, tick that adapter and name the device. '
+                    'The device then gets its own address on the bond network and its traffic uses all selected links. '
+                    'The adapter is dedicated: Windows stops using it. Each address must also be listed in the server\'s lan_tunnel_ips.')
+        note.setWordWrap(True);self.body.addWidget(note)
+        row=QHBoxLayout();self.status=QLabel();refresh=QPushButton('Refresh adapters');refresh.clicked.connect(self.refresh);self.refresh_button=refresh
+        row.addWidget(self.status,1);row.addWidget(refresh);self.body.addLayout(row)
+        scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setFrameShape(QScrollArea.NoFrame)
+        self.content=QWidget();self.list_layout=QVBoxLayout(self.content);self.list_layout.setAlignment(Qt.AlignTop);scroll.setWidget(self.content);self.body.addWidget(scroll,1)
+        from .glass_panels import _AsyncCall
+        self.worker=_AsyncCall(self);self.worker.done.connect(self._refreshed);self.worker.failed.connect(self._refresh_failed)
+        self.finished.connect(lambda _:self.worker.shutdown())
+        self.feedback.setText('Changes apply on your next connection. Saving does not start the tunnel.')
+        self._set_links(links) if links else self.refresh()
+
+    def _next_address(self,taken):
+        from .lan_gateway import tunnel_subnet
+        base=tunnel_subnet(self.config['client_tunnel_ip']).network_address
+        for offset in range(3,250):
+            candidate=str(base+offset)
+            if candidate not in taken:return candidate
+        return ''
+
+    def _set_links(self,links):
+        saved={d.get('interface_id','').casefold() or str(d.get('interface_index')):d for d in self.config.get('lan_devices',[])}
+        previous={r['identity']:(r['box'].isChecked(),r['name'].text(),r['ip'].text()) for r in self.rows}
+        while self.list_layout.count():
+            item=self.list_layout.takeAt(0)
+            if item.widget():item.widget().deleteLater()
+        self.rows=[];self.links=lan_candidates(links,self.config)
+        taken={d['tunnel_ip'] for d in self.config.get('lan_devices',[])}
+        for link in self.links:
+            identity=(link.get('id') or '').casefold() or str(link['index'])
+            current=saved.get(identity);was=previous.get(identity)
+            box=QCheckBox(f"{link['name']}{' · USB' if link.get('usb') else ''} · {link.get('description','')}")
+            name=QLineEdit();ip=QLineEdit()
+            if was:box.setChecked(was[0]);name.setText(was[1]);ip.setText(was[2])
+            elif current:box.setChecked(True);name.setText(current['name']);ip.setText(current['tunnel_ip'])
+            else:name.setText('PS5');ip.setText(self._next_address(taken))
+            taken.add(ip.text())
+            name.setPlaceholderText('Device name');ip.setPlaceholderText('Tunnel address')
+            state=self.live.get(name.text()) if current else None
+            detail=QLabel('' if not state else ('Device connected and addressed' if state.get('leased') else ('Waiting for the device to request an address' if state.get('up') else 'Adapter unavailable: '+str(state.get('error',''))))
+                          )
+            line=QHBoxLayout();line.addSpacing(24);line.addWidget(name,1);line.addWidget(ip,1);line.addWidget(detail,2)
+            self.list_layout.addWidget(box);holder=QWidget();holder.setLayout(line);self.list_layout.addWidget(holder)
+            self.rows.append(dict(identity=identity,link=link,box=box,name=name,ip=ip))
+        self.status.setText(f'{len(self.links)} adapters available' if self.links else 'No spare adapters found')
+
+    def refresh(self):
+        self.refresh_button.setEnabled(False);self.feedback.setText('Detecting adapters…');self.worker.start(discover_links)
+
+    def _refreshed(self,links):
+        self.refresh_button.setEnabled(True);self._set_links(links);self.feedback.setText('Adapters refreshed. Save to use this selection on your next connection.')
+
+    def _refresh_failed(self,message):
+        self.refresh_button.setEnabled(True);self.feedback.setText('Could not refresh adapters: '+message)
+
+    def write_config(self):
+        devices=[]
+        for row in self.rows:
+            if not row['box'].isChecked():continue
+            link=row['link']
+            if not link.get('id'):raise ValueError('Refresh the adapters: a stable Windows adapter identifier is required')
+            devices.append(dict(name=row['name'].text().strip(),tunnel_ip=row['ip'].text().strip(),
+                                interface_id=link['id'],interface_index=link['index']))
+        return save_lan_devices(devices)
 
 
 class LinkControlsDialog(SettingsDialog):

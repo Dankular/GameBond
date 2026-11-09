@@ -309,7 +309,8 @@ class GlassDashboard(QMainWindow):
         self._rebuild_network_cards()
         self.network_button=QPushButton('Select networks');self.network_button.setObjectName('glassSelectNetworksButton');self.network_button.clicked.connect(self.open_networks)
         self.link_limits_button=QPushButton('Link roles & limits');self.link_limits_button.setObjectName('glassLinkLimitsButton');self.link_limits_button.clicked.connect(self.open_link_controls)
-        network_row.addWidget(self.network_button);network_row.addWidget(self.link_limits_button);outer.addWidget(networks)
+        self.devices_button=QPushButton('Connected devices');self.devices_button.setObjectName('glassConnectedDevicesButton');self.devices_button.clicked.connect(self.open_lan_devices)
+        network_row.addWidget(self.network_button);network_row.addWidget(self.link_limits_button);network_row.addWidget(self.devices_button);outer.addWidget(networks)
         self.views=QStackedWidget();self.views.setObjectName('glassPanelStack');outer.addWidget(self.views,1)
         if panel_factories is None:
             from .glass_traffic import TrafficPanel
@@ -354,6 +355,7 @@ class GlassDashboard(QMainWindow):
         menu.addAction('Application routing',self.open_applications)
         menu.addAction('Select networks',self.open_networks)
         menu.addAction('Link roles and limits',self.open_link_controls)
+        menu.addAction('Connected devices',self.open_lan_devices)
         menu.addAction('DNS settings',lambda:self.select_tab(5))
         menu.addSeparator();menu.addAction('Reload interface (keep tunnel)',self.reload_interface)
         return menu
@@ -533,6 +535,10 @@ class GlassDashboard(QMainWindow):
     def open_networks(self):
         from .glass_settings import NetworksDialog
         self._dialog(NetworksDialog(self.monitor_data.get('links',[]),self))
+
+    def open_lan_devices(self):
+        from .glass_settings import LanDevicesDialog
+        self._dialog(LanDevicesDialog(self.monitor_data.get('links',[]),self.runtime,self))
 
     def open_link_controls(self):
         from .glass_settings import LinkControlsDialog

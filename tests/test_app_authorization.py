@@ -53,7 +53,7 @@ class AppAuthorizationTests(unittest.TestCase):
             self.assertEqual(runtime.authorization_counts,dict(allowed=1,denied=1,errors=0))
 
     def test_profile_metadata_uses_exact_packet_flow_key(self):
-        runtime=object.__new__(Runtime);runtime.config=dict(client_tunnel_ip='10.77.0.2');runtime.flow_profiles=OrderedDict()
+        runtime=object.__new__(Runtime);runtime.config=dict(client_tunnel_ip='10.77.0.2');runtime.flow_profiles=OrderedDict();runtime.classify_lock=threading.Lock()
         runtime.observe_flow_profile(dict(profile='call',protocol='tcp',source='10.77.0.2:50000',destination='1.1.1.1:443',pid=42,created_filetime='134000000000000000'))
         tcp=struct.pack('!HHIIBBHHH',50000,443,0,0,0x50,0x10,1000,0,0)
         ip=struct.pack('!BBHHHBBH4s4s',0x45,0,40,0,0,64,6,0,b'\x0a\x4d\0\x02',b'\x01'*4)
