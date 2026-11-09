@@ -418,3 +418,15 @@ func (p *Policy) Digest() string {
 
 // NormPath is ntpath.normpath.
 func NormPath(path string) string { return normPath(path) }
+
+// SplitDrive is ntpath.splitdrive(path)[0].
+func SplitDrive(path string) string {
+	drive, _, _ := splitRoot([]rune(path))
+	return string(drive)
+}
+
+// HasExeSuffix reports whether path.lower().endswith(".exe").
+func HasExeSuffix(path string) bool { return hasExeSuffix(path) }
+
+// PyStrip is str.strip().
+func PyStrip(s string) string { return pyStrip(s) }
