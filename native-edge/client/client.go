@@ -42,6 +42,9 @@ type Config struct {
 	// FallbackAfter seconds without authenticated UDP the path moves to a
 	// stream carrier and tries UDP again every RecoveryInterval.
 	Outer *carrier.Settings
+	// QoS enables adaptive duplication of tagged traffic (nil: off, as a
+	// client built without adaptive_qos settings).
+	QoS *bond.QoSSettings
 }
 
 type inbound struct {
@@ -56,6 +59,7 @@ type Client struct {
 	recv     *bond.Receiver
 	sender   *bond.Sender
 	queue    *bond.TransmitQueue
+	qos      *bond.AdaptiveQoS
 	conns    []*net.UDPConn
 	socks    []*carrier.Socket // nil entry: plain UDP
 	lastRec  []time.Time
@@ -78,6 +82,8 @@ type Snapshot struct {
 	Rejected uint64
 	// Carrier has one entry per uplink; Mode is empty for a plain UDP uplink.
 	Carrier []carrier.Stats
+	// QoS is AdaptiveQoS.Stats; nil when adaptive QoS is not configured.
+	QoS map[string]any
 }
 
 var ErrConfig = errors.New("client: invalid configuration")
@@ -126,7 +132,14 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4)}
+	var qos *bond.AdaptiveQoS
+	if cfg.QoS != nil {
+		if qos, err = bond.NewAdaptiveQoS(*cfg.QoS); err != nil {
+			return nil, err
+		}
+		q.SetQoS(qos)
+	}
+	c := &Client{qos: qos, cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4)}
 	now := hrclock.Now()
 	for i, spec := range cfg.Uplinks {
 		conn, err := uplink.Open(spec)
@@ -324,6 +337,9 @@ func (c *Client) Run(ctx context.Context) error {
 			c.snapshot.Ready, c.snapshot.Uplinks = c.recv.ReadyPaths(now), len(c.conns)
 			c.snapshot.Receiver, c.snapshot.Sender = c.recv.Stats(), c.sender.Stats()
 			c.snapshot.Queue, c.snapshot.Paths = c.queue.Stats(), c.sender.Paths(now)
+			if c.qos != nil {
+				c.snapshot.QoS = c.qos.Stats(now)
+			}
 			if c.cfg.Outer != nil {
 				c.snapshot.Carrier = make([]carrier.Stats, len(c.socks))
 				for i, s := range c.socks {

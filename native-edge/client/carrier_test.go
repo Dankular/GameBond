@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"gamebond.local/nativeedge/bond"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/uplink"
 )
@@ -84,9 +85,10 @@ func TestCarrierFallbackAndUDPRecovery(t *testing.T) {
 	set := carrier.DefaultSettings(carrier.StreamEndpoint{Mode: "tcp", Port: relay.Addr().(*net.TCPAddr).Port})
 	set.FallbackAfter, set.RecoveryInterval = .5, .5
 	lo := netip.MustParseAddr("127.0.0.1")
+	qosSet := bond.DefaultQoSSettings()
 	var delivered atomic.Int64
 	c, err := New(Config{Key: key, Session: session, Server: g.conn.LocalAddr().(*net.UDPAddr).AddrPort(),
-		Uplinks: []uplink.Spec{{Addr: lo}}, Outer: &set, Deliver: func([]byte) { delivered.Add(1) }})
+		Uplinks: []uplink.Spec{{Addr: lo}}, Outer: &set, QoS: &qosSet, Deliver: func([]byte) { delivered.Add(1) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +123,9 @@ func TestCarrierFallbackAndUDPRecovery(t *testing.T) {
 	wait("recovery to udp", func() bool { return mode() == "udp" })
 	base = received.Load()
 	wait("delivery after recovery", func() bool { return received.Load() > base+20 })
+	if q := c.Snapshot().QoS; q == nil || q["enabled"] != true {
+		t.Fatalf("qos stats missing: %v", q)
+	}
 	if n := c.Snapshot().Carrier[0].Counters["udp_recoveries"]; n < 1 {
 		t.Fatalf("udp_recoveries=%d", n)
 	}

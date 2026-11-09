@@ -118,3 +118,19 @@ func TestOuterSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestQoSFromConfig(t *testing.T) {
+	d, err := qosFromConfig(nil)
+	if err != nil || d.GameDeadlineMS != 20 || !d.Enabled {
+		t.Fatalf("%+v %v", d, err)
+	}
+	s, err := qosFromConfig([]byte(`{"game_deadline_ms":30,"enabled":false}`))
+	if err != nil || s.GameDeadlineMS != 30 || s.Enabled || s.CallDeadlineMS != 60 {
+		t.Fatalf("%+v %v", s, err)
+	}
+	for _, bad := range []string{`{"bogus":1}`, `{"loss_threshold":0}`, `{"loss_threshold":2}`, `{"game_deadline_ms":5000}`, `{"enabled":"yes"}`, `[]`} {
+		if _, err := qosFromConfig([]byte(bad)); err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+}

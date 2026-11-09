@@ -43,6 +43,7 @@ type fileConfig struct {
 	GameUDPPorts   []uint16                     `json:"game_udp_ports"`
 	PathMTU        bool                         `json:"path_mtu_discovery"`
 	InterfaceIndex []int                        `json:"interface_indices"` // pin uplink i to this adapter index
+	AdaptiveQoS    json.RawMessage              `json:"adaptive_qos"`
 	ClientTunnelIP string                       `json:"client_tunnel_ip"`
 	LANDevices     json.RawMessage              `json:"lan_devices"`
 	DNS            json.RawMessage              `json:"dns"`
@@ -90,6 +91,24 @@ func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
 		specs = append(specs, spec)
 	}
 	return c, specs, netip.AddrPortFrom(addr, uint16(port)), nil
+}
+
+// qosFromConfig is QoSSettings(**config.get('adaptive_qos', {})): defaults for
+// omitted keys, unknown keys and invalid values rejected.
+func qosFromConfig(raw json.RawMessage) (bond.QoSSettings, error) {
+	set := bond.DefaultQoSSettings()
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "null" {
+		return set, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&set); err != nil {
+		return set, fmt.Errorf("adaptive_qos: %w", err)
+	}
+	if err := set.Validate(); err != nil {
+		return set, fmt.Errorf("adaptive_qos: invalid settings")
+	}
+	return set, nil
 }
 
 // outerSettings parses outer_transport like OuterSettings(**dict): defaults for
@@ -147,7 +166,11 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	classifier, err := bond.NewClassifier(nil, cfg.GameUDPPorts, bond.DefaultQoSSettings())
+	qosSettings, err := qosFromConfig(cfg.AdaptiveQoS)
+	if err != nil {
+		return err
+	}
+	classifier, err := bond.NewClassifier(nil, cfg.GameUDPPorts, qosSettings)
 	if err != nil {
 		return err
 	}
@@ -214,7 +237,7 @@ func run() error {
 	}}
 	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs,
 		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay,
-		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer})
+		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings})
 	if err != nil {
 		return err
 	}
@@ -328,5 +351,5 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
 		"transport": map[string]any{"paths": paths},
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"qos":       map[string]any{}, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "dns": l.dnsStatus()}
+		"qos":       s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "dns": l.dnsStatus()}
 }
