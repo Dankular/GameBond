@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"gamebond.local/nativeedge/launcher"
 	"io"
 	"net/netip"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"os/signal"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"gamebond.local/nativeedge/adapterwatch"
@@ -135,19 +137,25 @@ func outerSettings(raw json.RawMessage) (*carrier.Settings, error) {
 	return &set, nil
 }
 
-func run() error {
-	configPath := flag.String("config", "configs/local-client.json", "client config")
-	keyPath := flag.String("key", "secrets/gamebond.key", "shared key file")
-	stackPath := flag.String("netstack", "", "path to the netstack executable (required)")
-	usagePath := flag.String("usage", ".runtime/link-usage.json", "link usage ledger shared with the Python runtime")
-	ttyPath := flag.String("tty", "", "start the read-only log relay with this metadata file and publish daemon logs to it (empty disables)")
-	appCaptureFlag := flag.Bool("app-capture", false, "the netstack runs with the owner-attribution capture extension: authorize and record per-application use (default: deny every request to the bulk profile)")
-	historyPath := flag.String("app-history", ".runtime/app-history.json", "first-use application history (empty disables)")
-	proxifyreFlag := flag.Bool("proxifyre", false, "stage and start ProxiFyre (WinDivert application capture) once the netstack is ready; verifies the attribution extension and enables app authorization when present. Diverts application traffic: never implicit")
-	rootFlag := flag.String("root", ".", "project root (build/ and .runtime/ live here) for -proxifyre")
-	proxifyreSource := flag.String("proxifyre-source", `C:\Program Files\ProxiFyre`, "installed ProxiFyre directory copied into .runtime/userspace-proxy")
-	statusPath := flag.String("status", ".runtime/userspace-status.json", "status file for the control tooling (empty disables)")
-	flag.Parse()
+var configPath = flag.String("config", "configs/local-client.json", "client config")
+var keyPath = flag.String("key", "secrets/gamebond.key", "shared key file")
+var stackPath = flag.String("netstack", "", "path to the netstack executable (required)")
+var usagePath = flag.String("usage", ".runtime/link-usage.json", "link usage ledger shared with the Python runtime")
+var ttyPath = flag.String("tty", "", "start the read-only log relay with this metadata file and publish daemon logs to it (empty disables)")
+var appCaptureFlag = flag.Bool("app-capture", false, "the netstack runs with the owner-attribution capture extension: authorize and record per-application use (default: deny every request to the bulk profile)")
+var historyPath = flag.String("app-history", ".runtime/app-history.json", "first-use application history (empty disables)")
+var proxifyreFlag = flag.Bool("proxifyre", false, "stage and start ProxiFyre (WinDivert application capture) once the netstack is ready; verifies the attribution extension and enables app authorization when present. Diverts application traffic: never implicit")
+var rootFlag = flag.String("root", ".", "project root (build/ and .runtime/ live here) for -proxifyre")
+var proxifyreSource = flag.String("proxifyre-source", `C:\Program Files\ProxiFyre`, "installed ProxiFyre directory copied into .runtime/userspace-proxy")
+var statusPath = flag.String("status", ".runtime/userspace-status.json", "status file for the control tooling (empty disables)")
+var superviseFlag = flag.Bool("supervise", false, "run under the launcher supervisor: the log relay (-tty) owner accepts stop AND restart, relaunching the tunnel in this process; --stopped/--once as in windows_launcher.py")
+var stoppedFlag = flag.Bool("stopped", false, "with -supervise: register the supervisor but wait for an authenticated restart before starting the tunnel")
+var onceFlag = flag.Bool("once", false, "with -supervise: exit after one run instead of retaining the restart supervisor")
+
+// session is one tunnel run: everything the Python launcher's app.run does.
+// ready is called once the first uplink is ready. A stop requested through
+// ctx is a clean end (nil), not an error.
+func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) error {
 	if *stackPath == "" {
 		return fmt.Errorf("-netstack is required")
 	}
@@ -175,32 +183,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("invalid session: %w", err)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := context.WithCancel(parent)
 	defer stop()
-
-	var logOut, relayOnly io.Writer = os.Stderr, io.Discard
-	if *ttyPath != "" {
-		relay, err := ttyrelay.Start(ttyrelay.Options{Metadata: *ttyPath})
-		if err != nil {
-			return fmt.Errorf("log relay: %w", err)
-		}
-		defer relay.Close()
-		logOut, relayOnly = io.MultiWriter(os.Stderr, relay), relay
-		// Register as the control owner so `ttyrelay control stop` ends the daemon.
-		// Restart needs a supervisor that relaunches the process; the Go daemon has none.
-		go func() {
-			err := ttyrelay.ServeOwner(ctx, *ttyPath, func(command string) (string, error) {
-				if command == "stop" {
-					stop()
-					return "stopping", nil
-				}
-				return "running", fmt.Errorf("%s is not supported: the Go daemon has no supervisor to relaunch it", command)
-			})
-			if err != nil && ctx.Err() == nil {
-				fmt.Fprintln(logOut, "log relay owner ended:", err)
-			}
-		}()
-	}
 
 	qosSettings, err := qosFromConfig(cfg.AdaptiveQoS)
 	if err != nil {
@@ -336,6 +320,7 @@ func run() error {
 			fmt.Fprintln(logOut, "netstack job assignment failed:", aerr)
 		}
 	}
+	var readyOnce sync.Once
 	created := time.Now()
 	errs := make(chan error, 3)
 	go func() {
@@ -382,6 +367,9 @@ func run() error {
 		for ctx.Err() == nil {
 			time.Sleep(time.Second)
 			s := c.Snapshot()
+			if s.Ready > 0 {
+				readyOnce.Do(ready)
+			}
 			if meter != nil {
 				wire := make([][2]uint64, len(specs))
 				for _, p := range s.Paths {
@@ -415,7 +403,60 @@ func run() error {
 	err = <-errs
 	stop()
 	_ = stack.Wait()
+	if parent.Err() != nil {
+		return nil // stopped on request
+	}
 	return err
+}
+
+func run() error {
+	flag.Parse()
+	if *stackPath == "" {
+		return fmt.Errorf("-netstack is required")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	var logOut, relayOnly io.Writer = os.Stderr, io.Discard
+	if *ttyPath != "" {
+		relay, err := ttyrelay.Start(ttyrelay.Options{Metadata: *ttyPath})
+		if err != nil {
+			return fmt.Errorf("log relay: %w", err)
+		}
+		defer relay.Close()
+		logOut, relayOnly = io.MultiWriter(os.Stderr, relay), relay
+	}
+	if *superviseFlag {
+		if *ttyPath == "" {
+			return fmt.Errorf("-supervise needs -tty (the relay is how stop and restart arrive)")
+		}
+		owner := launcher.NewOwner()
+		defer owner.Close()
+		go ttyrelay.ServeSupervisor(ctx, *ttyPath, owner, nil)
+		status := launcher.Supervise(ctx, owner, func(c context.Context, ready func()) error {
+			return session(c, ready, logOut, relayOnly)
+		}, launcher.Options{Once: *onceFlag, InitiallyStopped: *stoppedFlag, Log: func(m string) { fmt.Fprintln(logOut, m) }})
+		if status != 0 {
+			return fmt.Errorf("the tunnel failed (see the log)")
+		}
+		return nil
+	}
+	if *ttyPath != "" {
+		// Register as the control owner so `ttyrelay control stop` ends the daemon.
+		// Restart needs -supervise, which relaunches the tunnel.
+		go func() {
+			err := ttyrelay.ServeOwner(ctx, *ttyPath, func(command string) (string, error) {
+				if command == "stop" {
+					stop()
+					return "stopping", nil
+				}
+				return "running", fmt.Errorf("%s needs -supervise: without it the daemon has no supervisor to relaunch it", command)
+			})
+			if err != nil && ctx.Err() == nil {
+				fmt.Fprintln(logOut, "log relay owner ended:", err)
+			}
+		}()
+	}
+	return session(ctx, func() {}, logOut, relayOnly)
 }
 
 func main() {

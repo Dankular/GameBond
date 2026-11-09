@@ -91,3 +91,5 @@ func ServeOwner(ctx context.Context, metadata string, handle OwnerHandler) error
 		}
 	}
 }
+
+func ownerPID() int { return os.Getpid() }
