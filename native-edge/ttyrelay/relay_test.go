@@ -312,14 +312,16 @@ func TestPythonClientInterop(t *testing.T) {
 	_ = pub
 	waitFor(t, "published", func() bool { return r.Counts().PublishedBytes == 11 })
 	script := "import sys,io\nsys.path.insert(0,sys.argv[1])\nfrom gamebond import tty_server as t\n" +
-		"record=t.read_metadata(sys.argv[2])\nout=io.BytesIO()\nt.attach(sys.argv[2],tail=1,duration=.6,output=out)\n" +
+		"from unittest.mock import patch\nrecord=t.read_metadata(sys.argv[2])\n" +
+		"with patch.object(t.subprocess,'Popen',side_effect=AssertionError('unexpected relay spawn')):\n ensured=t.ensure_server(sys.argv[2])\n" +
+		"assert ensured==record\nprint('ensure reused Go relay')\nout=io.BytesIO()\nt.attach(sys.argv[2],tail=1,duration=.6,output=out)\n" +
 		"sys.stdout.write(repr(out.getvalue())+'\\n')\nprint(t.control('status',sys.argv[2],timeout=5,output=io.StringIO()))\n"
 	cmd := exec.Command(py, "-c", script, root, r.opt.Metadata)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), `b'beta\n'`) || !strings.Contains(string(out), "'owner_pid': None") {
+	if !strings.Contains(string(out), "ensure reused Go relay") || !strings.Contains(string(out), `b'beta\n'`) || !strings.Contains(string(out), "'owner_pid': None") {
 		t.Fatalf("unexpected python client output:\n%s", out)
 	}
 }

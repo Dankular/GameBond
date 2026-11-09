@@ -1,8 +1,7 @@
-// client is the Go GameBond client daemon (skeleton). It reads a subset of the
-// Python client config, starts the netstack helper with --proxy-stdio, and
-// bridges its packets over the bonded uplinks. Not yet at Python parity: no
-// traffic classification or QoS, usage caps, LAN gateways, OMR, app policy, or
-// status files. See docs/go-migration-ledger.md.
+// client runs the userspace GameBond VPN and its optional restart supervisor.
+// It bridges the netstack to one or more uplinks, classifies traffic, applies
+// application/link policy, meters usage, and hosts optional OMR/LAN legs.
+// Remaining migration evidence and gaps are in docs/go-migration-ledger.md.
 package main
 
 import (
@@ -18,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -440,7 +440,11 @@ func run() error {
 	defer stop()
 	var logOut, relayOnly io.Writer = os.Stderr, io.Discard
 	if *ttyPath != "" {
-		relay, err := ttyrelay.Start(ttyrelay.Options{Metadata: *ttyPath})
+		configIdentity, err := filepath.Abs(*configPath)
+		if err != nil {
+			return err
+		}
+		relay, err := ttyrelay.Start(ttyrelay.Options{Metadata: *ttyPath, ConfigPath: configIdentity})
 		if err != nil {
 			return fmt.Errorf("log relay: %w", err)
 		}

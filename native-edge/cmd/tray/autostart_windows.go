@@ -4,19 +4,23 @@ import (
 	"os"
 	"path/filepath"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
 const runKey = `Software\Microsoft\Windows\CurrentVersion\Run`
 
 // autostartValue is the command the Run entry launches: this binary for this root.
-func autostartValue(root, config string) string {
+func autostartValue(root, config, profile string) string {
 	exe, _ := os.Executable()
-	v := `"` + exe + `" -root "` + filepath.Clean(root) + `"`
+	args := []string{exe, "-root", filepath.Clean(root)}
 	if config != "" {
-		v += ` -config "` + config + `"`
+		args = append(args, "-config", config)
 	}
-	return v
+	if profile != "" {
+		args = append(args, "-runtime-profile", profile)
+	}
+	return windows.ComposeCommandLine(args)
 }
 
 func autostartEnabled() bool {
@@ -30,7 +34,11 @@ func autostartEnabled() bool {
 }
 
 func setAutostart(on bool, value string) error {
-	k, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.SET_VALUE)
+	return setAutostartAt(runKey, on, value)
+}
+
+func setAutostartAt(key string, on bool, value string) error {
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, key, registry.SET_VALUE)
 	if err != nil {
 		return err
 	}

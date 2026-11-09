@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +17,7 @@ import (
 
 	"gamebond.local/nativeedge/atomicio"
 	"gamebond.local/nativeedge/dashboard"
+	"gamebond.local/nativeedge/desktopruntime"
 	"gamebond.local/nativeedge/eventjournal"
 	"gamebond.local/nativeedge/hwmon"
 	"gamebond.local/nativeedge/tray"
@@ -41,6 +41,7 @@ func main() {
 	statusPath := flag.String("status", filepath.Join(".runtime", "userspace-status.json"), "daemon status file")
 	relayPath := flag.String("relay", filepath.Join(".runtime", "go-relay.json"), "daemon relay metadata (supervisor control)")
 	configPath := flag.String("config", "", "client config the link roles & limits editor changes")
+	profilePath := flag.String("runtime-profile", desktopruntime.ProfilePath, "persistent supervisor launch profile (used by Connect when no supervisor is running)")
 	assetsPath := flag.String("assets", filepath.Join("assets", "glasswire"), "desktop theme and icon assets")
 	printURL := flag.Bool("print-url", false, "print the dashboard URL (contains the access token) to stdout")
 	trayOnly := flag.Bool("tray", false, "start with the desktop widget hidden")
@@ -54,6 +55,10 @@ func main() {
 			return p
 		}
 		return filepath.Join(absRoot, p)
+	}
+	plan, profileErr := desktopruntime.Load(absRoot, *profilePath, *configPath, *relayPath, *statusPath)
+	if *configPath == "" && profileErr == nil {
+		*configPath = plan.Config
 	}
 	if *configPath == "" {
 		*configPath = filepath.Join("configs", "local-client.json")
@@ -72,6 +77,11 @@ func main() {
 	if !lease.Owner {
 		return // the running agent was asked to show itself
 	}
+	plan.Root, plan.Config, plan.Metadata, plan.Status = absRoot, abs(*configPath), abs(*relayPath), abs(*statusPath)
+	if plan.Client == "" {
+		plan.Client = abs("build/gamebond-native-client.exe")
+	}
+	runtimeOwner := &desktopruntime.Manager{Plan: plan, ProfileError: profileErr}
 	journal, err := eventjournal.Open(abs(filepath.Join(".runtime", "dashboard-events.json")), 2048)
 	if err != nil {
 		fail(err)
@@ -92,7 +102,7 @@ func main() {
 		refreshMu.Lock()
 		defer refreshMu.Unlock()
 		doc := dashboard.ReadStatus(abs(*statusPath), func() (map[string]any, error) {
-			return ttyrelay.Control(abs(*relayPath), "status", 2*time.Second, io.Discard)
+			return runtimeOwner.Status()
 		})
 		doc["adapter_activity"] = latest.Load().(map[string]any)["adapter_activity"]
 		doc["protect_activity"] = appActivity.Sample(doc, time.Now())
@@ -104,7 +114,7 @@ func main() {
 			return nil, fmt.Errorf("a connection action is already in progress")
 		}
 		defer busy.Store(false)
-		result, err := ttyrelay.Control(abs(*relayPath), command, 60*time.Second, io.Discard)
+		result, err := runtimeOwner.Control(command)
 		refresh()
 		return result, err
 	}
@@ -202,7 +212,10 @@ func main() {
 		case cmdToggle:
 			toggle()
 		case cmdAutostart:
-			_ = setAutostart(!autostartEnabled(), autostartValue(absRoot, *configPath))
+			if err := setAutostart(!autostartEnabled(), autostartValue(absRoot, abs(*configPath), abs(*profilePath))); err != nil {
+				fmt.Fprintln(os.Stderr, "autostart:", err)
+				shell.Balloon("GameBond autostart", err.Error())
+			}
 		case cmdQuit:
 			go func() {
 				control("stop")

@@ -8,28 +8,23 @@ import (
 	"io"
 	"math"
 	"net"
-	"os"
 	"time"
+
+	"gamebond.local/nativeedge/atomicio"
 )
 
 // Record is the validated metadata file (python read_metadata).
 type Record struct {
-	Version int    `json:"version"`
-	PID     int    `json:"pid"`
-	Port    int    `json:"port"`
-	Token   string `json:"token"`
+	Version    int    `json:"version"`
+	PID        int    `json:"pid"`
+	Port       int    `json:"port"`
+	Token      string `json:"token"`
+	ConfigPath string `json:"config_path,omitempty"`
 }
 
 // ReadMetadata is tty_server.read_metadata.
 func ReadMetadata(path string) (Record, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return Record{}, err
-	}
-	if info.Size() > maxMetadataBytes {
-		return Record{}, errors.New("invalid log relay metadata")
-	}
-	data, err := os.ReadFile(path)
+	data, err := atomicio.ReadBytesShared(path, maxMetadataBytes)
 	if err != nil {
 		return Record{}, err
 	}
@@ -61,6 +56,11 @@ func ReadMetadata(path string) (Record, error) {
 	}
 	rec.Version, rec.Port = 1, int(port)
 	_ = json.Unmarshal(raw["pid"], &rec.PID)
+	if v, exists := raw["config_path"]; exists {
+		if json.Unmarshal(v, &rec.ConfigPath) != nil {
+			return Record{}, bad
+		}
+	}
 	return rec, nil
 }
 

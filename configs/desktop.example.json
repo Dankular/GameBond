@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "config": "configs/local-client.json",
+  "key": "secrets/gamebond.key",
+  "netstack": "build/gamebond-netstack-attribution.exe",
+  "proxifyre": false
+}

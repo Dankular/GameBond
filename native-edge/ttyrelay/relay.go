@@ -12,12 +12,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
+
+	"gamebond.local/nativeedge/atomicio"
 )
 
 const (
@@ -37,6 +40,7 @@ const (
 // Options bound the relay. Zero values select the defaults.
 type Options struct {
 	Metadata       string
+	ConfigPath     string // optional supervised client config; no key material
 	RingLimit      int
 	ReaderLimit    int
 	MaxAttachments int
@@ -76,10 +80,13 @@ type Relay struct {
 	ownerState string
 	pending    map[string]*client
 
-	stop chan struct{}
-	done sync.WaitGroup
-	once sync.Once
+	stop  chan struct{}
+	done  sync.WaitGroup
+	once  sync.Once
+	lease io.Closer
 }
+
+var ErrMetadataInUse = errors.New("a log relay already owns this metadata path")
 
 // Start binds 127.0.0.1:0 and writes the metadata file (mode 0600).
 func Start(opt Options) (*Relay, error) {
@@ -95,6 +102,23 @@ func Start(opt Options) (*Relay, error) {
 	if opt.Metadata == "" {
 		return nil, errors.New("ttyrelay: metadata path required")
 	}
+	lease, err := lockMetadata(opt.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			lease.Close()
+		}
+	}()
+	// Also protect a live legacy relay which predates the OS file lease.
+	if rec, err := ReadMetadata(opt.Metadata); err == nil {
+		if conn, err := Connect(rec, "attach", map[string]any{"tail": 0}); err == nil {
+			conn.Close()
+			return nil, ErrMetadataInUse
+		}
+	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return nil, err
@@ -103,13 +127,14 @@ func Start(opt Options) (*Relay, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Relay{opt: opt, token: hex.EncodeToString(raw), listener: l, port: l.Addr().(*net.TCPAddr).Port,
+	r := &Relay{opt: opt, lease: lease, token: hex.EncodeToString(raw), listener: l, port: l.Addr().(*net.TCPAddr).Port,
 		clients: map[*client]struct{}{}, ownerState: "unavailable", pending: map[string]*client{}, stop: make(chan struct{})}
 	if err := r.writeMetadata(); err != nil {
 		l.Close()
 		return nil, err
 	}
 	r.done.Add(1)
+	keep = true
 	go r.accept()
 	return r, nil
 }
@@ -118,28 +143,18 @@ func (r *Relay) writeMetadata() error {
 	if err := os.MkdirAll(filepath.Dir(r.opt.Metadata), 0o755); err != nil {
 		return err
 	}
-	suffix := make([]byte, 8)
-	rand.Read(suffix)
-	tmp := r.opt.Metadata + ".tmp-" + hex.EncodeToString(suffix)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp)
 	enc := struct {
-		Version int    `json:"version"`
-		PID     int    `json:"pid"`
-		Port    int    `json:"port"`
-		Token   string `json:"token"`
-	}{metadataVersion, os.Getpid(), r.port, r.token}
-	err = json.NewEncoder(f).Encode(enc)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
+		Version    int    `json:"version"`
+		PID        int    `json:"pid"`
+		Port       int    `json:"port"`
+		Token      string `json:"token"`
+		ConfigPath string `json:"config_path,omitempty"`
+	}{metadataVersion, os.Getpid(), r.port, r.token, r.opt.ConfigPath}
+	raw, err := json.Marshal(enc)
 	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, r.opt.Metadata)
+	return atomicio.WriteFileAtomic(r.opt.Metadata, append(raw, '\n'), 0600)
 }
 
 // Port is the loopback listening port.
@@ -181,6 +196,7 @@ func (r *Relay) Close() {
 				os.Remove(r.opt.Metadata)
 			}
 		}
+		r.lease.Close()
 	})
 }
 
