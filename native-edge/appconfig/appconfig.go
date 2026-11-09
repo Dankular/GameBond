@@ -2,8 +2,7 @@
 //
 // Decoded JSON keeps integers as json.Number so Python's `type(x) is int`
 // checks stay exact. Sections that already have their own typed Go validator
-// elsewhere (adaptive_qos, outer_transport, stream_relays, link_policies,
-// admin, dns) are NOT checked here; Result.Unchecked lists the ones present in
+// elsewhere (admin, dns) are NOT checked here; Result.Unchecked lists the ones present in
 // the config so the caller can run those validators.
 package appconfig
 
@@ -238,41 +237,17 @@ func Load(raw []byte, opt Options) (*Result, error) {
 // Validate is load_config on a decoded config (omr.ParseConfig).
 func Validate(config map[string]any, opt Options) (*Result, error) {
 	res := &Result{Config: config}
-	for _, k := range []string{"adaptive_qos", "outer_transport", "stream_relays", "link_policies", "admin", "dns"} {
+	for _, k := range []string{"admin", "dns"} {
 		if v, ok := config[k]; ok && v != nil {
 			res.Unchecked = append(res.Unchecked, k)
 		}
 	}
-	// Python evaluates these section checks first; the role-dependent ones are
-	// cheap to repeat here because they are only about the role.
-	if v, ok := config["adaptive_qos"]; ok {
-		if _, isMap := v.(map[string]any); !isMap {
-			return nil, bad("adaptive_qos must be an object")
-		}
-	}
 	role, _ := config["role"].(string)
-	if config["role"] == nil && !has(config, "role") {
+	if !has(config, "role") {
 		return nil, bad("role")
 	}
-	if v, ok := config["outer_transport"]; ok && v != nil && role != "client" {
-		return nil, bad("Outer fallback belongs to the client")
-	}
-	if v, ok := config["stream_relays"]; ok {
-		l, isList := v.([]any)
-		if !isList || len(l) > 3 || (len(l) > 0 && role != "server") {
-			return nil, bad("Invalid server stream relays")
-		}
-	}
-	if v, ok := config["link_policies"]; ok {
-		m, isMap := v.(map[string]any)
-		if !isMap || len(m) > 64 {
-			return nil, bad("Invalid link policies")
-		}
-		for k, p := range m {
-			if _, isObj := p.(map[string]any); !isDigitString(k) || digitsValue(k) <= 0 || !isObj {
-				return nil, bad("Invalid link policy adapter")
-			}
-		}
+	if err := checkSections(config, role); err != nil {
+		return nil, err
 	}
 	if role != "client" && role != "server" {
 		return nil, bad("role must be client or server")

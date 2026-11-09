@@ -16,6 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from gamebond import app  # noqa: E402
+sys.path.insert(0, str(ROOT / "tools"))
+from _app_config_section_pools import SECTION_POOLS  # noqa: E402
 
 REAL_OS = app.os
 G1, G2, G3 = ('{%08X-0000-0000-0000-00000000000%d}' % (0xA0000000 + i, i) for i in (1, 2, 3))
@@ -82,12 +84,8 @@ POOL = {
     'omr': [None, {}, {'server': ['203.0.113.7', 5000]}],
     'admin': [None, {}, {'x': 1}],
     'dns': [None],
-    'adaptive_qos': [{}, None],
-    'outer_transport': [None, {'endpoints': [{'mode': 'tcp', 'port': 443}]}],
-    'stream_relays': [[], None, [{'bind': ['0.0.0.0', 443]}], [{}, {}, {}, {}], 'x'],
-    'link_policies': [{}, None, {'1': {}}, {'0': {}}, {'x': {}}, {'1': 5}, {'٣': {}}, {'²': {}}, [] ],
 }
-SERVER_ONLY = {'admin', 'stream_relays', 'lan_tunnel_ips'}
+POOL.update(SECTION_POOLS)
 
 
 def run_case(cfg, windows, allow):
