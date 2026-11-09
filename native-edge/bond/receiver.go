@@ -30,6 +30,8 @@ type ReceiveResult struct {
 	Send    []Datagram
 	Deliver [][]byte
 	Repairs []MissingPacket
+	// RepairPaths[i] is the path Repairs[i] arrived on (REPAIR_NA goes back there).
+	RepairPaths []PathKey
 	// Unavailable lists repairs the peer answered with REPAIR_NA.
 	Unavailable []MissingPacket
 	// Authenticated is true when the datagram proved a live peer on a ready path
@@ -460,6 +462,7 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		p.policyConfirmed = true
 	case Repair:
 		out.Repairs = append(out.Repairs, MissingPacket{binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:])})
+		out.RepairPaths = append(out.RepairPaths, PathKey{local, endpoint})
 	case Striped:
 		if !p.hasEpoch || (p.rxEpoch != epoch && h.Sequence > p.stripeHighest) {
 			p.rxEpoch = epoch

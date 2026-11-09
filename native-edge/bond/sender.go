@@ -19,7 +19,7 @@ type sendFlow struct {
 	last       time.Time
 	lru        *list.Element
 }
-type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped uint64 }
+type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, RepairUnavailableSent, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped uint64 }
 
 // Sender is the actor-owned transmit half. A caller retries a pending bulk
 // packet at the returned time, servicing Receive/Tick/urgent queues meanwhile.
@@ -201,9 +201,21 @@ func (s *Sender) cancelProbe(d Datagram) {
 // A denied control write is retried by protocol timers, as in the Python Node.
 func (s *Sender) Controls(result ReceiveResult, now time.Time, writer DatagramWriter) {
 	s.syncPeer()
-	for _, key := range result.Repairs {
+	for i, key := range result.Repairs {
 		cached := s.repairs[key]
 		if cached == nil || now.Sub(cached.at) >= time.Second || cached.attempts >= 2 {
+			// Tell the requester to stop waiting: one answer per request (a
+			// key already queued for repair is not answered).
+			if s.repairRequests[key] == nil && i < len(result.RepairPaths) {
+				body := make([]byte, 16)
+				binary.BigEndian.PutUint64(body, key.Flow)
+				binary.BigEndian.PutUint64(body[8:], key.Number)
+				at := result.RepairPaths[i]
+				before := len(result.Send)
+				if s.r.write(RepairNA, body, at.Local, at.Remote, &result) == nil && len(result.Send) > before {
+					s.stats.RepairUnavailableSent++
+				}
+			}
 			continue
 		}
 		if s.repairRequests[key] == nil {

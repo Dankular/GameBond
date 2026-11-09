@@ -40,10 +40,15 @@ func TestRepairRetainsFlowSequenceUsesFreshNonceAndStopsAfterTwo(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(frames) != 3 || s.Stats().RepairCopies != 2 || s.Stats().Copies != 3 || s.Stats().PayloadPackets != 1 {
+	// the third request is past the attempt limit: it is answered with REPAIR_NA
+	if len(frames) != 4 || s.Stats().RepairUnavailableSent != 1 || s.Stats().RepairCopies != 2 || s.Stats().Copies != 3 || s.Stats().PayloadPackets != 1 {
 		t.Fatal("repair attempts or payload accounting differ", s.Stats(), len(frames))
 	}
-	for _, d := range frames[1:] {
+	na, err := f.c.Decode(frames[3].Frame)
+	if err != nil || na.Header.Kind != RepairNA || !bytes.Equal(na.Payload, request) || frames[3].Endpoint != a[0] {
+		t.Fatal("expected REPAIR_NA for the exhausted request", err)
+	}
+	for _, d := range frames[1:3] {
 		packet, err := f.c.Decode(d.Frame)
 		if err != nil || packet.Header.Sequence <= original.Header.Sequence || !bytes.Equal(packet.Payload[:16], original.Payload[:16]) || !bytes.Equal(packet.Payload[24:], payload) {
 			t.Fatal("repair reused nonce or changed inner packet", err)
@@ -172,5 +177,43 @@ func TestPeerRestartDiscardsOldQueuedPlaintextAndRepairState(t *testing.T) {
 	})
 	if len(payloads) != 1 || !bytes.Equal(payloads[0], tcpPacket("new session")) || q.Stats().PeerResetDropped != 1 {
 		t.Fatal("old session crossed peer restart", q.Stats())
+	}
+}
+
+func TestUnknownRepairIsAnsweredOnceWithNAOnItsPath(t *testing.T) {
+	f, s, a := senderFixture(t, 1)
+	var frames []Datagram
+	writer := func(d Datagram) error { frames = append(frames, d); return nil }
+	request := make([]byte, 16)
+	binary.BigEndian.PutUint64(request, 7)
+	binary.BigEndian.PutUint64(request[8:], 99)
+	out := f.receive(t, Repair, request, a[0])
+	s.Controls(out, f.now, writer)
+	if len(frames) != 1 || s.Stats().RepairUnavailableSent != 1 {
+		t.Fatalf("frames=%d %+v", len(frames), s.Stats())
+	}
+	na, err := f.c.Decode(frames[0].Frame)
+	if err != nil || na.Header.Kind != RepairNA || !bytes.Equal(na.Payload, request) {
+		t.Fatal(err, na)
+	}
+	// a request that is still queued for repair must not also be answered NA
+	payload := tcpPacket("x")
+	f.now = f.now.Add(50 * time.Millisecond)
+	if sent, _, err := s.Bulk(payload, "flow", f.now, writer); !sent || err != nil {
+		t.Fatal(err)
+	}
+	original, _ := f.c.Decode(frames[1].Frame)
+	known := append([]byte(nil), original.Payload[:16]...)
+	n := len(frames)
+	s.Controls(f.receive(t, Repair, known, a[0]), f.now, writer)
+	s.Controls(f.receive(t, Repair, known, a[0]), f.now, writer) // already queued: silent
+	if len(frames) != n || s.Stats().RepairUnavailableSent != 1 {
+		t.Fatalf("queued repair was answered NA: frames %d->%d %+v", n, len(frames), s.Stats())
+	}
+	// queued, then the cached copy goes stale: still queued, so still no NA
+	f.now = f.now.Add(1100 * time.Millisecond)
+	s.Controls(f.receive(t, Repair, known, a[0]), f.now, writer)
+	if len(frames) != n || s.Stats().RepairUnavailableSent != 1 {
+		t.Fatalf("stale-but-queued request answered NA: %+v", s.Stats())
 	}
 }
