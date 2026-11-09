@@ -113,8 +113,7 @@ These are proposals from reading the Python code, not decisions:
 2. Go client <-> Go server passes the interop suite, plus Go<->Python in both
    directions while a mixed deployment exists. **Status:** Go<->Go loopback exists
    (`tools/check_go_to_go.py`; 1-3 uplinks, MTU, policy), Go client -> Python server
-   exists, Python client -> Go server exists (`check_native_receiver.py`); Go server ->
-   Go client with failover/blackhole cases is still missing.
+   exists, Python client -> Go server exists (`check_native_receiver.py`); Go client -> Go server failover now exists: `tools/check_go_failover.py` runs the Go client probe through a loopback UDP relay that blackholes one of two uplinks (cut at 4 s; restored at 10 s, or never): 99.1 % of 20 000 payloads delivered with restore and 99.25 % without (client left with 1 ready path), 0 auth errors; the control run with no cut fails as it should (no drops recorded). Still missing: the server -> client direction (the receiver probe is a sink) and failover against the real daemons, so criterion 2 is partly met, not met.
 3. `tools/benchmark_tunnel.py` shows Go at or above Python on the same link.
 4. A physical multi-uplink soak (not loopback) has been run. **Nothing in this
    repository has been validated that way yet**, for Python or for Go.
