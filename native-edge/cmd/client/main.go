@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
 	"strconv"
 	"time"
 
@@ -388,7 +389,7 @@ func run() error {
 				fmt.Fprintln(logOut, "application history write failed:", err)
 			}
 			if *statusPath != "" {
-				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture)); err != nil {
+				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture, c.DFEnforced())); err != nil {
 					fmt.Fprintln(logOut, "status write failed:", err)
 				}
 			}
@@ -414,7 +415,7 @@ func main() {
 
 // statusDocument is the Python-compatible subset of userspace-status.json the
 // control tooling reads: identity, state, peer, per-path transport and counters.
-func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState, l *lanManager, capture *appCapture) map[string]any {
+func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState, l *lanManager, capture *appCapture, df []bool) map[string]any {
 	state := "connecting"
 	if s.Ready > 0 {
 		state = "running"
@@ -423,7 +424,7 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 	for _, p := range s.Paths {
 		paths = append(paths, map[string]any{"slot": p.Local, "ready": p.Ready, "healthy": p.Healthy, "suspect": p.Suspect,
 			"rtt_ms": p.RTTMilliseconds, "rtt_jitter_ms": p.JitterMilliseconds, "wire_tx_bytes": p.WireTX, "wire_rx_bytes": p.WireRX,
-			"policy_confirmed": p.PolicyConfirmed, "remote": p.Endpoint.String()})
+			"policy_confirmed": p.PolicyConfirmed, "remote": p.Endpoint.String(), "mtu": mtuStatus(p, df)})
 	}
 	doc := map[string]any{"pid": os.Getpid(), "created": float64(created.UnixNano()) / 1e9, "updated_at": float64(time.Now().UnixNano()) / 1e9,
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
@@ -434,4 +435,17 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 		capture.status(doc)
 	}
 	return doc
+}
+
+// mtuStatus is a path's `mtu` entry (nil without discovery): the prober's
+// stats plus skips and whether the socket enforces don't-fragment.
+func mtuStatus(p bond.PathSnapshot, df []bool) any {
+	if p.MTU == nil {
+		return nil
+	}
+	failed := append([]int{}, p.MTU.FailedSizes...)
+	sort.Ints(failed)
+	enforced := p.Local >= 0 && p.Local < len(df) && df[p.Local]
+	return map[string]any{"path_mtu": p.MTU.PathMTU, "ceiling": p.MTU.Ceiling, "confirmed": p.MTU.Confirmed, "capable": p.MTU.Capable,
+		"rounds": p.MTU.Rounds, "acks": p.MTU.Acks, "failed_sizes": failed, "skips": p.MTUSkips, "df_enforced": enforced}
 }
