@@ -17,29 +17,84 @@ func stableID(id string) bool {
 	return len(id) == 38 && strings.HasPrefix(id, "{") && strings.HasSuffix(id, "}")
 }
 
-func selectAdapters(raw []byte, adapters []Adapter) (map[string]any, error) {
+// Keep unplugged selected adapters in the editor. Their stable identities let
+// the daemon park them safely instead of substituting a different adapter.
+func withSavedAdapters(cfg map[string]any, rows []Adapter) []Adapter {
+	out := append([]Adapter(nil), rows...)
+	var ids, names []string
 	var indices []int
-	if err := json.Unmarshal(raw, &indices); err != nil || len(indices) < 1 || len(indices) > 8 {
-		return nil, errors.New("choose 1 to 8 different adapters")
-	}
-	bind, ids, names, gateways := []any{}, []string{}, []string{}, []string{}
-	seen, seenIDs, sources := map[int]bool{}, map[string]bool{}, map[string]bool{}
-	allStable, needStable := true, false
-	for _, index := range indices {
-		if index <= 0 || index >= 1<<24 || seen[index] {
-			return nil, errors.New("choose distinct positive interface indices")
+	_ = typedValue(cfg["interface_ids"], &ids)
+	_ = typedValue(cfg["interface_names"], &names)
+	_ = typedValue(cfg["interface_indices"], &indices)
+	for i, id := range ids {
+		if !stableID(id) || i >= len(indices) {
+			continue
 		}
-		seen[index] = true
-		var row *Adapter
-		for i := range adapters {
-			if adapters[i].Index == index {
-				row = &adapters[i]
+		found := false
+		for _, row := range out {
+			if strings.EqualFold(row.ID, id) {
+				found = true
 				break
 			}
 		}
-		if row == nil {
+		if found {
+			continue
+		}
+		name := "Saved adapter"
+		if i < len(names) && names[i] != "" {
+			name = names[i]
+		}
+		out = append(out, Adapter{Index: indices[i], ID: id, Name: name, Addresses: []string{}})
+	}
+	return out
+}
+
+func selectAdapters(raw []byte, adapters []Adapter) (map[string]any, error) {
+	var requested []json.RawMessage
+	if err := json.Unmarshal(raw, &requested); err != nil || len(requested) < 1 || len(requested) > 8 {
+		return nil, errors.New("choose 1 to 8 different adapters")
+	}
+	bind, ids, names, gateways := []any{}, []string{}, []string{}, []string{}
+	indices := []int{}
+	seen, seenIDs, sources := map[int]bool{}, map[string]bool{}, map[string]bool{}
+	allStable, needStable := true, false
+	for _, selection := range requested {
+		var index int
+		identity := ""
+		if json.Unmarshal(selection, &index) != nil {
+			var object map[string]json.RawMessage
+			if json.Unmarshal(selection, &object) != nil || object == nil {
+				return nil, errors.New("invalid adapter selection")
+			}
+			for key := range object {
+				if key != "id" && key != "index" {
+					return nil, errors.New("unknown adapter selection field")
+				}
+			}
+			if json.Unmarshal(object["index"], &index) != nil || json.Unmarshal(object["id"], &identity) != nil || !stableID(identity) {
+				return nil, errors.New("invalid stable adapter selection")
+			}
+		}
+		if index <= 0 || index >= 1<<24 {
+			return nil, errors.New("invalid interface index")
+		}
+		var row *Adapter
+		matches := 0
+		for i := range adapters {
+			if (identity != "" && strings.EqualFold(adapters[i].ID, identity)) || (identity == "" && adapters[i].Index == index) {
+				row = &adapters[i]
+				matches++
+			}
+		}
+		if row == nil || matches != 1 {
 			return nil, errors.New("selected adapter disappeared; refresh the networks")
 		}
+		index = row.Index
+		if index <= 0 || index >= 1<<24 || seen[index] {
+			return nil, errors.New("choose distinct positive interface indices; remove an offline selection if its index was reused")
+		}
+		seen[index] = true
+		indices = append(indices, index)
 		id := strings.ToLower(row.ID)
 		if id != "" && seenIDs[id] {
 			return nil, errors.New("choose different physical adapters")

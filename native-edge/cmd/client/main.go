@@ -257,7 +257,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		if perr != nil {
 			return fmt.Errorf("lan_devices needs a valid client_tunnel_ip: %w", perr)
 		}
-		if lanMgr, err = newLanManager(cfg.LANDevices, clientIP, cfg.InterfaceIndex, cfg.MTU); err != nil {
+		if lanMgr, err = newLanManager(cfg.LANDevices, clientIP, cfg.InterfaceIDs, cfg.InterfaceIndex, cfg.MTU); err != nil {
 			return err
 		}
 		dnsCfg, derr := dns.Load(cfg.DNS)

@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ type Options struct {
 	StatusPath string
 	ConfigPath string
 	AssetsPath string // original desktop fonts, icons and themes
+	RootPath   string // resolves relative config file references and private files
 	// Snapshot supplies a shared live view including supervisor lifecycle state.
 	Snapshot func() map[string]any
 	// Control runs "stop" or "restart" against the daemon's supervisor relay.
@@ -46,7 +48,10 @@ type Options struct {
 	// Log returns the most recent daemon log lines; nil hides the panel.
 	Log func() []string
 	// Adapters overrides read-only OS discovery (for tests).
-	Adapters func() ([]Adapter, error)
+	Adapters          func() ([]Adapter, error)
+	USBNetworkDevices func() ([]USBNetworkDevice, error)
+	// OMRLogin overrides the pinned login check for tests.
+	OMRLogin OMRLogin
 }
 
 // Server is a running dashboard.
@@ -79,6 +84,9 @@ func Start(o Options) (*Server, string, error) {
 	mux.HandleFunc("/api/apps", s.guard(s.apps))
 	mux.HandleFunc("/api/app-policy", s.guard(s.appPolicy))
 	mux.HandleFunc("/api/dns", s.guard(s.dnsConfig))
+	mux.HandleFunc("/api/lan-devices", s.guard(s.lanDevices))
+	mux.HandleFunc("/api/omr", s.guard(s.omrConfig))
+	mux.HandleFunc("/api/omr-check", s.guard(s.omrCheck))
 	mux.HandleFunc("/api/networks", s.guard(s.networks))
 	mux.HandleFunc("/api/hardware", s.guard(s.hardware))
 	mux.HandleFunc("/api/log", s.guard(s.logLines))
@@ -210,6 +218,23 @@ func (s *Server) links(w http.ResponseWriter, r *http.Request) {
 		}
 		var policies any
 		_ = json.Unmarshal(raw, &policies)
+		var selected []int
+		_ = typedValue(cfg["interface_indices"], &selected)
+		if len(selected) > 0 {
+			var parsed map[string]linkpolicy.Policy
+			_ = json.Unmarshal(raw, &parsed)
+			enabled := false
+			for _, index := range selected {
+				p, has := parsed[strconv.Itoa(index)]
+				if !has || p.Role != "never" {
+					enabled = true
+				}
+			}
+			if !enabled {
+				reply(w, 422, map[string]any{"error": "keep at least one selected link enabled"})
+				return
+			}
+		}
 		cfg["link_policies"] = policies
 		if err := writeConfig(s.o.ConfigPath, cfg); err != nil {
 			reply(w, 500, map[string]any{"error": err.Error()})
@@ -290,6 +315,12 @@ func (s *Server) section(w http.ResponseWriter, r *http.Request, key string, val
 
 // configSection atomically updates related top-level settings together.
 func (s *Server) configSection(w http.ResponseWriter, r *http.Request, view func(map[string]any) map[string]any, validate func([]byte) (map[string]any, error)) {
+	s.configSectionWithConfig(w, r, view, func(_ map[string]any, raw []byte) (map[string]any, error) { return validate(raw) })
+}
+
+type deleteSetting struct{}
+
+func (s *Server) configSectionWithConfig(w http.ResponseWriter, r *http.Request, view func(map[string]any) map[string]any, validate func(map[string]any, []byte) (map[string]any, error)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cfg, err := readConfig(s.o.ConfigPath)
@@ -306,13 +337,17 @@ func (s *Server) configSection(w http.ResponseWriter, r *http.Request, view func
 			reply(w, 400, map[string]any{"error": "invalid request body"})
 			return
 		}
-		value, err := validate(raw)
+		value, err := validate(cfg, raw)
 		if err != nil {
 			reply(w, 422, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 		for key, v := range value {
-			cfg[key] = v
+			if _, remove := v.(deleteSetting); remove {
+				delete(cfg, key)
+			} else {
+				cfg[key] = v
+			}
 		}
 		if err := writeConfig(s.o.ConfigPath, cfg); err != nil {
 			reply(w, 500, map[string]any{"error": err.Error()})
@@ -358,9 +393,35 @@ func (s *Server) appPolicy(w http.ResponseWriter, r *http.Request) {
 
 // apps edits the captured application list (cod_executables).
 func (s *Server) apps(w http.ResponseWriter, r *http.Request) {
-	s.section(w, r, "cod_executables", func(raw []byte) (any, error) {
+	s.configSection(w, r, func(cfg map[string]any) map[string]any {
+		mode := cfg["capture_mode"]
+		if mode == nil {
+			mode = "all"
+		}
+		return map[string]any{"cod_executables": cfg["cod_executables"], "capture_mode": mode}
+	}, func(raw []byte) (map[string]any, error) {
 		var list []any
-		if err := json.Unmarshal(raw, &list); err != nil || list == nil {
+		patch := map[string]any{}
+		if err := json.Unmarshal(raw, &list); err != nil {
+			var body map[string]json.RawMessage
+			if json.Unmarshal(raw, &body) != nil || body == nil {
+				return nil, errors.New("applications must be a list or a routing settings object")
+			}
+			for key := range body {
+				if key != "capture_mode" && key != "cod_executables" {
+					return nil, errors.New("unknown application routing field: " + key)
+				}
+			}
+			var mode string
+			if json.Unmarshal(body["capture_mode"], &mode) != nil || (mode != "all" && mode != "selected") {
+				return nil, errors.New("choose All apps or Selected apps")
+			}
+			if json.Unmarshal(body["cod_executables"], &list) != nil {
+				return nil, errors.New("applications must be a list of executable paths")
+			}
+			patch["capture_mode"] = mode
+		}
+		if list == nil {
 			return nil, errors.New("applications must be a list of executable paths")
 		}
 		clean, err := capture.NormalizeApps(list)
@@ -371,8 +432,9 @@ func (s *Server) apps(w http.ResponseWriter, r *http.Request) {
 		for i, c := range clean {
 			out[i] = c
 		}
-		return out, nil
-	}, nil)
+		patch["cod_executables"] = out
+		return patch, nil
+	})
 }
 
 // dnsConfig edits the project DNS profile, validated by the daemon's own loader.
@@ -404,9 +466,26 @@ func (s *Server) networks(w http.ResponseWriter, r *http.Request) {
 		reply(w, 503, map[string]any{"error": err.Error()})
 		return
 	}
-	s.configSection(w, r, func(cfg map[string]any) map[string]any {
-		return map[string]any{"adapters": adapters, "bind": cfg["bind"], "interface_indices": cfg["interface_indices"], "interface_ids": cfg["interface_ids"], "interface_names": cfg["interface_names"], "gateways": cfg["gateways"]}
-	}, func(raw []byte) (map[string]any, error) { return selectAdapters(raw, adapters) })
+	s.configSectionWithConfig(w, r, func(cfg map[string]any) map[string]any {
+		return map[string]any{"adapters": withSavedAdapters(cfg, adapters), "bind": cfg["bind"], "interface_indices": cfg["interface_indices"], "interface_ids": cfg["interface_ids"], "interface_names": cfg["interface_names"], "gateways": cfg["gateways"]}
+	}, func(cfg map[string]any, raw []byte) (map[string]any, error) {
+		patch, err := selectAdapters(raw, withSavedAdapters(cfg, adapters))
+		if err != nil {
+			return nil, err
+		}
+		next := make(map[string]any, len(cfg)+len(patch))
+		for k, v := range cfg {
+			next[k] = v
+		}
+		for k, v := range patch {
+			next[k] = v
+		}
+		devices, _ := json.Marshal(cfg["lan_devices"])
+		if err := validateLANConfig(devices, next); err != nil {
+			return nil, err
+		}
+		return patch, nil
+	})
 }
 
 func (s *Server) hardware(w http.ResponseWriter, r *http.Request) {

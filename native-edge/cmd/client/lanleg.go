@@ -50,10 +50,19 @@ func (r *runningGateway) alive() bool {
 	return !r.done
 }
 
-func newLanManager(raw json.RawMessage, client netip.Addr, uplinkIndices []int, mtu int) (*lanManager, error) {
-	devices, err := lan.LoadDevices(raw, client, nil, uplinkIndices)
+func newLanManager(raw json.RawMessage, client netip.Addr, uplinkIDs []string, uplinkIndices []int, mtu int) (*lanManager, error) {
+	devices, err := lan.LoadDevices(raw, client, uplinkIDs, uplinkIndices)
 	if err != nil {
 		return nil, err
+	}
+	// Reject contradictory GUID/index selections before any packet-filter open.
+	// Keep the shared parser's Python compatibility contract unchanged.
+	for _, d := range devices {
+		for _, index := range uplinkIndices {
+			if d.InterfaceIndex != 0 && d.InterfaceIndex == index {
+				return nil, fmt.Errorf("%s: adapter is already selected as a VPN uplink", d.Name)
+			}
+		}
 	}
 	if len(devices) == 0 {
 		return nil, nil

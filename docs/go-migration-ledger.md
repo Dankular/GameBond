@@ -1,5 +1,20 @@
 # Python -> Go parity ledger
 
+2026-11-09 desktop settings/PS5 follow-up (GUI remains PART): structured DNS,
+link limits, LAN devices, OMR settings and capture-mode forms now use validated
+Go endpoints. Missing saved adapter GUIDs remain selectable; stable selections
+follow identity across index changes. OMR checks are explicit pinned operations;
+passwords are kept in a private file rather than returned to the renderer.
+Isolated Edge form checks and dashboard tests pass. Connected devices searches
+USB hardware/parent descriptions for UGREEN, reports uncertain chipset-only
+candidates and excludes configured uplinks/gateway adapters. A single confirmed
+match prefills PS5 and its free address without selecting or activating it.
+Hardware-brand classification, uplink exclusions and simulated UI prefill are
+tested; actual OS query returned no USB NIC. LAN manager now validates uplink
+GUIDs and rejects conflicting indices before driver open; shared parser vector
+semantics remain unchanged. Physical UGREEN/PS5 forwarding and VPS device-IP
+allowlisting remain pending. No complete GUI/LAN parity claim is made here.
+
 Goal: feature parity with the Python codebase, then retire Python entirely.
 This file is the checklist. A module is **parity** only when its Python tests'
 behaviour is reproduced in Go by tests that would fail if it were not (shared

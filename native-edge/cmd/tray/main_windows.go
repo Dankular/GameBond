@@ -126,7 +126,7 @@ func main() {
 			time.Sleep(time.Second)
 		}
 	}()
-	server, url, err := dashboard.Start(dashboard.Options{StatusPath: abs(*statusPath), ConfigPath: abs(*configPath), AssetsPath: abs(*assetsPath), Snapshot: sample, Control: control, Hardware: hardware, Log: logLines})
+	server, url, err := dashboard.Start(dashboard.Options{StatusPath: abs(*statusPath), ConfigPath: abs(*configPath), RootPath: absRoot, AssetsPath: abs(*assetsPath), Snapshot: sample, Control: control, Hardware: hardware, Log: logLines})
 	if err != nil {
 		fail(err)
 	}

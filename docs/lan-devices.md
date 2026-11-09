@@ -15,6 +15,19 @@ Workstation apps ---------- netstack -------------+
 
 ## Setup
 
+The Go desktop widget's **Connected devices** dialog searches for **UGREEN USB
+Ethernet** using USB device and parent manufacturer/product descriptions. It
+checks on open, refresh, and every 15 seconds while the dialog is open. A
+chipset-only USB NIC appears as an unconfirmed candidate; a renamed connection
+does not establish hardware identity. Selected VPN uplinks and adapters with an
+IPv4 gateway are excluded from this PS5 search.
+
+One confirmed UGREEN match prefills `PS5` and the next free tunnel address
+(normally `10.77.0.3`), leaving it unchecked until selected and saved. Detection
+does not activate a gateway or change Windows networking. On 2026-11-09 no USB
+Ethernet adapter was present; the built-in Realtek PCI Ethernet remains the
+uplink. Server allowlisting and physical PS5 traffic verification remain pending.
+
 1. Plug the PS5 into a spare adapter. Set the PS5 to automatic (DHCP) network
    settings. Leave the adapter itself unconfigured; GameBond takes it over.
 2. **Server:** add the device address(es) to the server config and restart it.

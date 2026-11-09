@@ -23,7 +23,7 @@ func lanPacket(dst [4]byte) []byte {
 func newTestLAN(t *testing.T) (*lanManager, *time.Time, *[]map[string]any, *int) {
 	t.Helper()
 	raw := json.RawMessage(`[{"name":"console","tunnel_ip":"10.77.0.9","interface_name":"eth9","device_mac":"02:00:00:00:00:aa"}]`)
-	m, err := newLanManager(raw, netip.MustParseAddr("10.77.0.2"), nil, 1280)
+	m, err := newLanManager(raw, netip.MustParseAddr("10.77.0.2"), nil, nil, 1280)
 	if err != nil || m == nil {
 		t.Fatal(err)
 	}
@@ -34,6 +34,20 @@ func newTestLAN(t *testing.T) (*lanManager, *time.Time, *[]map[string]any, *int)
 	m.out = func(l map[string]any) { lines = append(lines, l) }
 	m.outbound = func([]byte) bool { return true }
 	return m, &now, &lines, &opens
+}
+
+func TestLANManagerRejectsUplinkGUIDOrIndexBeforeOpeningDriver(t *testing.T) {
+	const id = "{11111111-1111-1111-1111-111111111111}"
+	raw := json.RawMessage(`[{"name":"PS5","tunnel_ip":"10.77.0.3","interface_id":"` + id + `","interface_index":30}]`)
+	for _, v := range []struct {
+		ids     []string
+		indices []int
+	}{{[]string{id}, nil}, {nil, []int{30}}} {
+		m, err := newLanManager(raw, netip.MustParseAddr("10.77.0.2"), v.ids, v.indices, 1280)
+		if err == nil || m != nil {
+			t.Fatal("uplink accepted as device adapter")
+		}
+	}
 }
 
 func TestLANManagerRetriesAndDelivers(t *testing.T) {
@@ -107,11 +121,11 @@ func TestLANManagerRetriesAndDelivers(t *testing.T) {
 }
 
 func TestLANManagerConfig(t *testing.T) {
-	if m, err := newLanManager(nil, netip.MustParseAddr("10.77.0.2"), nil, 0); m != nil || err != nil {
+	if m, err := newLanManager(nil, netip.MustParseAddr("10.77.0.2"), nil, nil, 0); m != nil || err != nil {
 		t.Fatal("empty config must disable LAN")
 	}
 	for _, bad := range []string{`[{"name":"x","tunnel_ip":"10.77.0.1","interface_name":"e"}]`, `[{"name":"x","bogus":1}]`} {
-		if _, err := newLanManager(json.RawMessage(bad), netip.MustParseAddr("10.77.0.2"), nil, 0); err == nil {
+		if _, err := newLanManager(json.RawMessage(bad), netip.MustParseAddr("10.77.0.2"), nil, nil, 0); err == nil {
 			t.Fatalf("accepted %s", bad)
 		}
 	}

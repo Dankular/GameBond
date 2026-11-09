@@ -6,6 +6,21 @@ Goal (still active): feature parity of the Python codebase in Go, then retire Py
 Source of truth is `docs/go-migration-ledger.md`. Update the ledger in the same commit as any row change.
 Work is committed locally; do not push without being asked. See the local Git log for the latest implementation commit.
 
+2026-11-09 settings/PS5 update: the Go desktop now has structured DNS and link
+limits, Connected devices, OMR key/admin settings, application capture mode,
+and offline saved adapter selection. Isolated Edge checks covered the settings
+forms; Go endpoint tests cover validation and private OMR password storage.
+Connected devices searches USB hardware/parent descriptions for UGREEN every
+15 seconds while open, distinguishes chipset-only candidates, excludes uplinks,
+and prefills an unchecked PS5 profile for one confirmed match. Actual Windows
+inventory has no USB Ethernet adapter yet. Simulated UGREEN detection/prefill
+passed with no page errors. No PS5 gateway was activated or VPS config changed.
+The daemon now supplies uplink GUIDs to LAN validation and rejects index overlap
+before opening the driver. Physical UGREEN/PS5, server allowlisting and live LAN
+forwarding checks remain open. Desktop parity remains PART; older notes below
+about JSON editors/missing settings and absent saved adapter selection are
+superseded by this update. Scanner, journal and other listed gaps remain open.
+
 ## Working rules and constraints (from the user)
 
 - Do not ask for approval; do the work. Do not repeat status text. Do not claim completion.

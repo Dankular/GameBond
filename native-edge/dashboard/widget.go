@@ -15,6 +15,9 @@ import (
 //go:embed widget.html
 var widgetHTML []byte
 
+//go:embed widget_settings.js
+var widgetSettings []byte
+
 func (s *Server) widgetPage(w http.ResponseWriter, r *http.Request) {
 	if !s.authorised(r) {
 		http.NotFound(w, r)
@@ -23,7 +26,8 @@ func (s *Server) widgetPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; frame-ancestors 'none'")
-	w.Write(bytes.ReplaceAll(widgetHTML, []byte("__TOKEN__"), []byte(s.token)))
+	page := bytes.ReplaceAll(widgetHTML, []byte("__SETTINGS_SCRIPT__"), widgetSettings)
+	w.Write(bytes.ReplaceAll(page, []byte("__TOKEN__"), []byte(s.token)))
 }
 
 var svgVariable = regexp.MustCompile(`\$\(([^)]+)\)`)
