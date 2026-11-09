@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime/pprof"
 	"time"
 
 	"gamebond.local/nativeedge/bond"
@@ -27,6 +28,8 @@ type config struct {
 	MTU          bool    // enable per-path MTU discovery
 	Rate         float64 // sender initial and maximum Mbit/s per uplink (default 10/20)
 	PolicyMbps   float64 // upload/download policy per uplink when Policy is set (default 50)
+	Profile      string  // write a CPU profile here (diagnostics)
+	AsyncWrite   bool    // hand frames to a per-uplink writer goroutine instead of writing inline
 	Spin         bool    // busy-poll instead of sleeping on a ticker (timer-granularity experiment)
 	Policy       bool    // send a primary link policy on every uplink (50 Mbit/s each way)
 }
@@ -55,6 +58,14 @@ func run() error {
 	var c config
 	if err = json.Unmarshal(line, &c); err != nil || c.Paths < 1 || c.Paths > 8 {
 		return fmt.Errorf("invalid test configuration")
+	}
+	if c.Profile != "" {
+		f, err := os.Create(c.Profile)
+		if err != nil {
+			return err
+		}
+		pprof.StartCPUProfile(f)
+		defer func() { pprof.StopCPUProfile(); f.Close() }()
 	}
 	key, err := hex.DecodeString(c.Key)
 	if err != nil {
@@ -110,9 +121,26 @@ func run() error {
 			}
 		}(i)
 	}
+	writers := make([]chan bond.Datagram, len(conns))
+	for i := range writers {
+		writers[i] = make(chan bond.Datagram, 8192)
+		go func(i int) {
+			for d := range writers[i] {
+				conns[i].WriteToUDPAddrPort(d.Frame, d.Endpoint)
+			}
+		}(i)
+	}
 	writer := func(d bond.Datagram) error {
 		if d.Local < 0 || d.Local >= len(conns) {
 			return fmt.Errorf("datagram for unknown local socket %d", d.Local)
+		}
+		if c.AsyncWrite {
+			select {
+			case writers[d.Local] <- d:
+				return nil
+			default:
+				return fmt.Errorf("uplink %d writer queue full", d.Local)
+			}
 		}
 		_, err := conns[d.Local].WriteToUDPAddrPort(d.Frame, d.Endpoint)
 		return err

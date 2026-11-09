@@ -38,6 +38,8 @@ def main():
     parser.add_argument('--mtu', action='store_true')
     parser.add_argument('--policy', action='store_true')
     parser.add_argument('--spin', action='store_true')
+    parser.add_argument('--async-write', action='store_true')
+    parser.add_argument('--profile', help='write a client CPU profile to this path')
     parser.add_argument('--policy-mbps', type=float, default=50)
     args = parser.parse_args()
     key, session = secrets.token_bytes(32), secrets.token_bytes(16)
@@ -48,7 +50,7 @@ def main():
         server.stdin.flush()
         address = json.loads(server.stdout.readline())['address']
         client = spawn('client-probe')
-        client.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), server=address, paths=args.paths, policymbps=args.policy_mbps, spin=args.spin,
+        client.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), server=address, paths=args.paths, policymbps=args.policy_mbps, spin=args.spin, asyncwrite=args.async_write, profile=args.profile or '',
                                            send=args.send, rate=args.rate, mtu=args.mtu, policy=args.policy)) + '\n')
         client.stdin.flush()
         assert json.loads(client.stdout.readline())['status'] == 'started'
