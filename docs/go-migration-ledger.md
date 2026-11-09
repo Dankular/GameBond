@@ -149,3 +149,5 @@ bonded Go gets 0.65 of the raw socket, paced real runs reach 0.67 of the virtual
 Python server gets 0.25 of the Go server's rate. Legs 6 and 7 have not been run: they need the VPS.
 Before deploying, run leg 6 against the VPS (start `leg-probe serve` there) to separate the network
 from the software.
+
+- 2026-11-09 (later): `gamebond-server-1` now runs `gamebond:native-17af65bdb4b8` (release `/opt/gamebond/releases/native-17af65bdb4b8`), the Go edge **with the Go admin portal** (the original `admin` block, same password hash and TLS cert, published on :9444; `tools/container-entrypoint.sh` no longer rejects `admin`). Verified: container up, log line `admin_portal ... tls:true`, `https://127.0.0.1:9444/` answers 200 on the host, and the local Go client's path went Ready/Healthy against it. NOT verified: login and each portal page in a browser. Rollback: `cd /opt/gamebond/releases/native-17af65bdb4b8 && docker compose --env-file deploy.env down; cd /opt/gamebond/releases/native-c1f1488d9194 && docker compose --env-file deploy.env up -d --no-build` (that release is Go without the portal; the Python release is still `git-41e6b3393e74-30c2e0`).

@@ -72,10 +72,6 @@ PY
         TUNNEL_PREFIX=24
         NAT_SOURCES="{ 10.77.0.2, ${LAN_IPS// /, } }"
     fi
-    # The native Go edge rejects unknown config keys, so it cannot run with the admin portal.
-    if [[ ${GAMEBOND_NATIVE_EDGE:-0} == 1 ]] && grep -q '"admin"' "$CONFIG"; then
-        echo 'The admin portal is Python-only; remove the "admin" block or unset GAMEBOND_NATIVE_EDGE' >&2; exit 1
-    fi
 
     NFT_TABLES=$(nft list tables)
     if grep -Fxq 'table ip gamebond' <<< "$NFT_TABLES"; then
