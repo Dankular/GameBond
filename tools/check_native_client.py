@@ -57,7 +57,7 @@ def main():
     SEND = args.send
     key, session = secrets.token_bytes(32), secrets.token_bytes(16)
     server = Node(key, 'server', session, [('127.0.0.1', 0)], bonding_mode=True, probe_interval=.025,
-                  path_timeout=.3, initial_rate_mbps=max(10, args.rate / 4), max_rate_mbps=args.rate, path_mtu_discovery=args.mtu).start()
+                  path_timeout=.3, initial_rate_mbps=max(10, args.rate / 4), max_rate_mbps=args.rate, path_mtu_discovery=args.mtu, failover_replay=args.failover).start()
     process = None
     try:
         host, port = server.addresses[0]
