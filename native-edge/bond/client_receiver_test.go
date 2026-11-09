@@ -233,3 +233,60 @@ func TestMTUDiscoveryFindsPerUplinkLimitAndSenderFitsPaths(t *testing.T) {
 		t.Fatalf("when nothing fits every path must stay usable, got %d (no_fit=%d)", len(fit), s.stats.MTUNoFit)
 	}
 }
+
+func TestClientLinkPolicyIsSentConfirmedAndGatesPayload(t *testing.T) {
+	p := newClientServerPair(t)
+	if err := p.client.SetClientLinkPolicies([]PathPolicy{{Role: Primary, UploadMbps: 50, DownloadMbps: 50}, {Role: Never}}, p.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.client.SetClientLinkPolicies([]PathPolicy{{Role: Primary}}, p.now); err == nil {
+		t.Fatal("policy list shorter than the uplink count accepted")
+	}
+	s := &Sender{r: p.client}
+	for i := 0; i < 12; i++ {
+		p.step()
+	}
+	c0, c1 := p.client.paths[PathKey{0, p.srv}], p.client.paths[PathKey{1, p.srv}]
+	if !c0.policyConfirmed || !c1.policyConfirmed {
+		t.Fatalf("policies not confirmed: %v %v", c0.policyConfirmed, c1.policyConfirmed)
+	}
+	if got := s.eligible(p.now, true); len(got) != 1 || got[0].local != 0 {
+		t.Fatalf("only the primary uplink may carry payload, got %d paths", len(got))
+	}
+	var server1 *receivePath
+	for _, sp := range p.server.paths {
+		if sp.policy != nil && sp.policy.Role == Never {
+			server1 = sp
+		}
+	}
+	if server1 == nil {
+		t.Fatal("server never learned the never-role policy")
+	}
+	// A new revision is unconfirmed until the server answers it, and the
+	// unconfirmed path may not carry payload in the meantime.
+	if err := p.client.SetClientLinkPolicies([]PathPolicy{{Role: Primary, UploadMbps: 50}, {Role: Secondary, UploadMbps: 50}}, p.now); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.eligible(p.now, true); len(got) != 0 {
+		t.Fatalf("unconfirmed revision still eligible: %d", len(got))
+	}
+	for i := 0; i < 12; i++ {
+		p.step()
+	}
+	if got := s.eligible(p.now, true); len(got) != 2 {
+		t.Fatalf("after confirmation want primary+secondary, got %d", len(got))
+	}
+	// Policy frames are server-bound only.
+	if _, err := NewReceiver(mustCodec(t, "server"), 1400); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustCodec(t *testing.T, role string) *Codec {
+	t.Helper()
+	c, err := NewCodec(bytes.Repeat([]byte{4}, 32), bytes.Repeat([]byte{5}, 16), role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}

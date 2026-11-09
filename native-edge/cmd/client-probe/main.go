@@ -25,6 +25,7 @@ type config struct {
 	Paths        int
 	Send         int  // payloads to send once every uplink is ready
 	MTU          bool // enable per-path MTU discovery
+	Policy       bool // send a primary link policy on every uplink (50 Mbit/s each way)
 }
 
 type datagram struct {
@@ -76,6 +77,7 @@ func run() error {
 		return err
 	}
 	sender, err := bond.NewSender(receiver, 10, 20)
+	_ = sender
 	if err != nil {
 		return err
 	}
@@ -115,6 +117,15 @@ func run() error {
 	encoder := json.NewEncoder(os.Stdout)
 	if err = encoder.Encode(map[string]any{"status": "started", "paths": c.Paths, "scope": "loopback client interoperability only"}); err != nil {
 		return err
+	}
+	if c.Policy {
+		policies := make([]bond.PathPolicy, c.Paths)
+		for i := range policies {
+			policies[i] = bond.PathPolicy{Role: bond.Primary, UploadMbps: 50, DownloadMbps: 50}
+		}
+		if err = receiver.SetClientLinkPolicies(policies, time.Now()); err != nil {
+			return err
+		}
 	}
 	quit := make(chan struct{})
 	go func() { input.ReadByte(); close(quit) }()

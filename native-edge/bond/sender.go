@@ -83,7 +83,7 @@ func (s *Sender) eligible(now time.Time, boost bool) []*receivePath {
 			all = append(all, p)
 			continue
 		}
-		if p.policy == nil || p.policy.Blocked || p.policy.Role == Never {
+		if p.policy == nil || (s.r.role == "client" && !p.policyConfirmed) || p.policy.Blocked || p.policy.Role == Never {
 			continue
 		}
 		switch p.policy.Role {
@@ -133,6 +133,9 @@ func (s *Sender) fitPaths(paths []*receivePath, size int) []*receivePath {
 }
 func (s *Sender) written(d Datagram, p *receivePath, now time.Time, writer DatagramWriter) bool {
 	timestamp := s.r.seconds(now)
+	if p != nil && p.policy != nil && s.r.role == "client" && isPayloadKind(d.Frame) && (!p.policyConfirmed || p.policy.Blocked || p.policy.Role == Never) {
+		return false
+	}
 	if p != nil && p.policy != nil && p.pacer.ReadyAt(len(d.Frame)+28, timestamp) > timestamp+.000001 {
 		s.stats.WireLimited++
 		s.cancelProbe(d)
@@ -447,6 +450,7 @@ type PathSnapshot struct {
 	Budget                                           map[string]any
 	MTU                                              *MTUStats
 	MTUAcks, MTUSkips                                uint64
+	PolicyConfirmed                                  bool
 }
 
 func (s *Sender) Paths(now time.Time) []PathSnapshot {
@@ -457,7 +461,7 @@ func (s *Sender) Paths(now time.Time) []PathSnapshot {
 			copy := *p.policy
 			policy = &copy
 		}
-		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats(), mtuStats(p), p.mtuAcks, p.mtuSkips})
+		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats(), mtuStats(p), p.mtuAcks, p.mtuSkips, p.policyConfirmed})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Endpoint.Compare(out[j].Endpoint) < 0 })
 	return out
@@ -469,4 +473,8 @@ func mtuStats(p *receivePath) *MTUStats {
 	}
 	st := p.mtu.Stats()
 	return &st
+}
+
+func isPayloadKind(frame []byte) bool {
+	return len(frame) > 36 && (frame[36] == Data || frame[36] == DataCopy || frame[36] == Striped)
 }

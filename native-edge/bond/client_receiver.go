@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"math"
 	"net/netip"
 	"time"
 )
@@ -80,6 +81,9 @@ func (r *Receiver) clientHandshake(p *receivePath, packet Packet, now time.Time)
 		}
 		p.ready = true
 		p.last = now
+		if p.policy != nil {
+			return out, r.sendPolicy(p, now, &out)
+		}
 	}
 	return out, nil
 }
@@ -107,7 +111,53 @@ func (r *Receiver) adoptClientPeer(peer [16]byte, sequence uint64, now time.Time
 			return err
 		}
 		fresh.hello = p.hello
+		if p.policy != nil { // keep the configured policy; it must be confirmed again
+			fresh.policy, fresh.policyRevision = p.policy, p.policyRevision
+			fresh.pacer = p.pacer
+		}
 		*p = *fresh // in place: callers and the sender keep valid path pointers
 	}
 	return nil
+}
+
+// SetClientLinkPolicies installs one policy per uplink (indexed by local socket)
+// and bumps the revision. Paths re-send their policy until the server acks it,
+// and carry no payload until then. Mirrors Node.set_link_states.
+func (r *Receiver) SetClientLinkPolicies(policies []PathPolicy, now time.Time) error {
+	if r.role != "client" {
+		return errNotClient
+	}
+	for _, p := range policies {
+		if p.Role > Never || !finite(p.UploadMbps) || !finite(p.DownloadMbps) || p.UploadMbps < 0 || p.DownloadMbps < 0 || p.UploadMbps > 10000 || p.DownloadMbps > 10000 {
+			return ErrFrame
+		}
+	}
+	for _, p := range r.paths {
+		if p.local >= len(policies) {
+			return ErrFrame
+		}
+	}
+	r.policyRevisionClient++
+	r.policyEnabled = true
+	timestamp := r.seconds(now)
+	for _, p := range r.paths {
+		policy := policies[p.local]
+		p.policy, p.policyRevision = &policy, r.policyRevisionClient
+		p.policyConfirmed, p.policySent = false, time.Time{}
+		p.pacer.SetRate(policy.UploadMbps, timestamp)
+	}
+	return nil
+}
+
+func (r *Receiver) sendPolicy(p *receivePath, now time.Time, out *ReceiveResult) error {
+	payload := make([]byte, 26)
+	binary.BigEndian.PutUint64(payload, p.policyRevision)
+	payload[8] = p.policy.Role
+	if p.policy.Blocked {
+		payload[9] = 1
+	}
+	binary.BigEndian.PutUint64(payload[10:], math.Float64bits(p.policy.UploadMbps))
+	binary.BigEndian.PutUint64(payload[18:], math.Float64bits(p.policy.DownloadMbps))
+	p.policySent = now
+	return r.write(LinkPolicy, payload, p.local, p.endpoint, out)
 }

@@ -46,6 +46,7 @@ def main():
     parser.add_argument('--paths', type=int, choices=range(1, 9), default=2)
     parser.add_argument('--mtu', action='store_true', help='enable path MTU discovery on both sides')
     parser.add_argument('--send', type=int, default=200, help='Go -> Python payload count (max 1000)')
+    parser.add_argument('--policy', action='store_true', help='Go client sends a primary link policy per uplink')
     parser.add_argument('--no-evidence', action='store_true')
     args = parser.parse_args()
     exe = ROOT / 'build' / ('gamebond-native-client-probe.exe' if sys.platform == 'win32' else 'gamebond-native-client-probe')
@@ -59,7 +60,7 @@ def main():
         process = subprocess.Popen([str(exe)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         process.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), server=f'{host}:{port}',
-                                            paths=args.paths, send=SEND, mtu=args.mtu)) + '\n')
+                                            paths=args.paths, send=SEND, mtu=args.mtu, policy=args.policy)) + '\n')
         process.stdin.flush()
         assert json.loads(process.stdout.readline())['status'] == 'started'
 
@@ -100,6 +101,9 @@ def main():
         assert report['sent_enqueued'] and report['transmit_queue']['Expired'] == 0
         assert report['sender']['StripedPackets'] >= SEND
         assert all(p['Budget']['sent_packets'] > 0 for p in report['paths']), 'a Go uplink carried no bulk'
+        if args.policy:
+            assert all(p['link_policy'] and p['link_policy']['role'] == 'primary' and p['link_policy']['upload_mbps'] == 50 for p in stats['paths']), stats['paths']
+            assert all(p['Policy'] and p['PolicyConfirmed'] for p in report['paths']), 'Go uplink never saw the policy confirmed'
         if args.mtu:
             assert stats.get('mtu_acks', 0) >= 0
             assert all(p['mtu'] and p['mtu']['acks'] > 0 for p in stats['paths']), 'Python never got an MTU ack from a Go uplink'

@@ -54,6 +54,8 @@ type receivePath struct {
 	pacer                            WirePacer
 	policy                           *PathPolicy
 	policyRevision                   uint64
+	policyConfirmed                  bool
+	policySent                       time.Time
 	bulkFinish                       float64
 	bulkFiltered                     bool
 	rtt, jitter                      float64
@@ -91,6 +93,7 @@ type Receiver struct {
 	probes               map[[24]byte]pendingProbe
 	reorderBase          time.Duration
 	mtuDiscovery         bool
+	policyRevisionClient uint64
 	repairUnavailable    uint64
 }
 
@@ -306,7 +309,7 @@ func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, n
 	case LinkPolicy:
 		valid = len(payload) == 26
 	case LinkPolicyAck:
-		valid = false
+		valid = r.role == "client" && len(payload) == 32
 	case MTUProbeKind:
 		valid = len(payload) >= 12
 	case MTUAck:
@@ -377,6 +380,10 @@ func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, n
 			r.stats.FeedbackRejected++
 		}
 	case LinkPolicy:
+		if r.role != "server" {
+			r.stats.Malformed++
+			break
+		}
 		revision, policy, decodeErr := decodePolicy(payload)
 		if decodeErr != nil || (revision == p.policyRevision && p.policy != nil && policy != *p.policy) {
 			r.stats.Malformed++
@@ -394,6 +401,18 @@ func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, n
 		binary.BigEndian.PutUint64(ack[16:], p.wireTX+Overhead+32+28)
 		binary.BigEndian.PutUint64(ack[24:], p.wireRX)
 		err = r.write(LinkPolicyAck, ack, local, endpoint, &out)
+	case LinkPolicyAck:
+		// Only a client with a policy of its own can be acknowledged.
+		revision, epoch := binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:])
+		if p.policy == nil {
+			r.stats.Malformed++
+			break
+		}
+		if revision != p.policyRevision || (p.hasEpoch && p.rxEpoch != epoch) {
+			break
+		}
+		p.rxEpoch, p.hasEpoch = epoch, true
+		p.policyConfirmed = true
 	case Repair:
 		out.Repairs = append(out.Repairs, MissingPacket{binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:])})
 	case Striped:
@@ -484,6 +503,14 @@ func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 					return out, err
 				}
 				continue
+			}
+			if r.role == "client" && p.policy != nil && p.ready {
+				disabled := p.policy.Blocked || p.policy.Role == Never
+				if !p.policyConfirmed || (!disabled && now.Sub(p.policySent) >= time.Second) {
+					if err := r.sendPolicy(p, now, &out); err != nil {
+						return out, err
+					}
+				}
 			}
 			if !p.ready || now.Sub(p.last) >= 3*time.Second || (p.policy != nil && (p.policy.Blocked || p.policy.Role == Never)) {
 				continue
