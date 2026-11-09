@@ -142,6 +142,9 @@ func run() error {
 	ttyPath := flag.String("tty", "", "start the read-only log relay with this metadata file and publish daemon logs to it (empty disables)")
 	appCaptureFlag := flag.Bool("app-capture", false, "the netstack runs with the owner-attribution capture extension: authorize and record per-application use (default: deny every request to the bulk profile)")
 	historyPath := flag.String("app-history", ".runtime/app-history.json", "first-use application history (empty disables)")
+	proxifyreFlag := flag.Bool("proxifyre", false, "stage and start ProxiFyre (WinDivert application capture) once the netstack is ready; verifies the attribution extension and enables app authorization when present. Diverts application traffic: never implicit")
+	rootFlag := flag.String("root", ".", "project root (build/ and .runtime/ live here) for -proxifyre")
+	proxifyreSource := flag.String("proxifyre-source", `C:\Program Files\ProxiFyre`, "installed ProxiFyre directory copied into .runtime/userspace-proxy")
 	statusPath := flag.String("status", ".runtime/userspace-status.json", "status file for the control tooling (empty disables)")
 	flag.Parse()
 	if *stackPath == "" {
@@ -221,7 +224,16 @@ func run() error {
 		return err
 	}
 	bridge := &stackio.Bridge{Classifier: classifier, GamePorts: gamePorts, Profiles: &bond.FlowProfiles{}, ClientIP: cfg.ClientTunnelIP, Out: stackio.NewWriter(stdin)}
-	capture, err := newAppCapture(*appCaptureFlag, *configPath, *historyPath, rawCfg, func(m map[string]any) error { return bridge.Respond(m) })
+	runtimeDir, extensionDir := defaultProxifyreDirs(*rootFlag)
+	proxy, err := newProxifyre(proxifyreFlags{enabled: *proxifyreFlag, root: *rootFlag, runtimeDir: runtimeDir,
+		extensionDir: extensionDir, source: *proxifyreSource}, *stackPath, rawCfg, logOut)
+	if err != nil {
+		return err
+	}
+	defer proxy.close()
+	stack.Env = proxy.environment(os.Environ())
+	proxyFail := make(chan error, 1)
+	capture, err := newAppCapture(*appCaptureFlag || proxy.attribution(), *configPath, *historyPath, rawCfg, func(m map[string]any) error { return bridge.Respond(m) })
 	if err != nil {
 		return err
 	}
@@ -312,7 +324,14 @@ func run() error {
 		}
 	}
 	created := time.Now()
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
+	go func() {
+		select {
+		case e := <-proxyFail:
+			errs <- e
+		case <-ctx.Done():
+		}
+	}()
 	go func() { errs <- c.Run(ctx) }()
 	slots := make([]adapterwatch.Slot, len(specs))
 	for i, sp := range specs {
