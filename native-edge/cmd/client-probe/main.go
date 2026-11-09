@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime/pprof"
+	"sync/atomic"
 	"time"
 
 	"gamebond.local/nativeedge/bond"
@@ -31,8 +32,10 @@ type config struct {
 	Profile      string  // write a CPU profile here (diagnostics)
 	AsyncWrite   bool    // hand frames to a per-uplink writer goroutine instead of writing inline
 	Spin         bool    // busy-poll instead of sleeping on a ticker (timer-granularity experiment)
-	Failover     bool    // enable suspect-path tracking and replay
-	Policy       bool    // send a primary link policy on every uplink (50 Mbit/s each way)
+	Blackhole    int     // uplink index to black-hole (1-based; 0 = none) BlackholeMS after the stream starts
+	BlackholeMS  int
+	Failover     bool // enable suspect-path tracking and replay
+	Policy       bool // send a primary link policy on every uplink (50 Mbit/s each way)
 }
 
 type datagram struct {
@@ -40,6 +43,8 @@ type datagram struct {
 	frame    []byte
 	endpoint netip.AddrPort
 }
+
+var blackholed atomic.Int64 // 1-based uplink currently black-holed, 0 none
 
 func payload(n int) []byte {
 	p := make([]byte, 1000)
@@ -118,6 +123,9 @@ func run() error {
 				if err != nil {
 					return
 				}
+				if blackholed.Load() == int64(i+1) {
+					continue
+				}
 				incoming <- datagram{i, append([]byte(nil), buffer[:n]...), from}
 			}
 		}(i)
@@ -142,6 +150,9 @@ func run() error {
 			default:
 				return fmt.Errorf("uplink %d writer queue full", d.Local)
 			}
+		}
+		if blackholed.Load() == int64(d.Local+1) {
+			return nil // silently lost, like a dead link
 		}
 		_, err := conns[d.Local].WriteToUDPAddrPort(d.Frame, d.Endpoint)
 		return err
@@ -227,6 +238,9 @@ loop:
 				sent = true
 				firstSend = now
 			}
+		}
+		if c.Blackhole > 0 && sent && blackholed.Load() == 0 && now.Sub(firstSend) >= time.Duration(c.BlackholeMS)*time.Millisecond {
+			blackholed.Store(int64(c.Blackhole))
 		}
 		if outbound.Stats().QueuedPackets > 0 && !time.Now().Before(nextBulk) {
 			if nextBulk, err = outbound.Pump(time.Now(), writer); err != nil {

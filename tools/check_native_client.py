@@ -49,6 +49,8 @@ def main():
     parser.add_argument('--policy', action='store_true', help='Go client sends a primary link policy per uplink')
     parser.add_argument('--rate', type=float, default=10, help='Mbit/s ceiling per uplink, both sides')
     parser.add_argument('--failover', action='store_true', help='Go client enables failover replay')
+    parser.add_argument('--blackhole', type=int, default=0, help='1-based uplink the Go client black-holes mid-stream')
+    parser.add_argument('--blackhole-ms', type=int, default=500)
     parser.add_argument('--no-evidence', action='store_true')
     args = parser.parse_args()
     exe = ROOT / 'build' / ('gamebond-native-client-probe.exe' if sys.platform == 'win32' else 'gamebond-native-client-probe')
@@ -62,7 +64,7 @@ def main():
         process = subprocess.Popen([str(exe)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         process.stdin.write(json.dumps(dict(key=key.hex(), session=session.hex(), server=f'{host}:{port}',
-                                            paths=args.paths, send=SEND, mtu=args.mtu, policy=args.policy, failover=args.failover, rate=args.rate)) + '\n')
+                                            paths=args.paths, send=SEND, mtu=args.mtu, policy=args.policy, failover=args.failover, blackhole=args.blackhole, blackhole_ms=args.blackhole_ms, rate=args.rate)) + '\n')
         process.stdin.flush()
         assert json.loads(process.stdout.readline())['status'] == 'started'
 
@@ -75,7 +77,7 @@ def main():
                 try:
                     received.append(server.recv(5))
                 except queue.Empty:
-                    errors.append('server receive timed out')
+                    errors.append(f'server receive timed out after {len(received)}/{SEND}')
                     return
         thread = threading.Thread(target=drain, daemon=True)
         started = time.monotonic()
@@ -87,6 +89,11 @@ def main():
             time.sleep(.05)
         thread.join(15)
         elapsed = time.monotonic() - started
+        if errors:   # show what the Go side saw before failing
+            process.stdin.write('x')
+            process.stdin.flush()
+            report = json.loads(process.stdout.readline())
+            print(json.dumps(dict(sender=report['sender'], queue=report['transmit_queue'])), file=sys.stderr)
         assert not errors, errors
         assert len(received) == SEND == len(set(received)), (len(received), len(set(received)))
         assert set(received) == {payload(n) for n in range(SEND)}, 'payload corruption or loss Go -> Python'
