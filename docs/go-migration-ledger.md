@@ -124,6 +124,10 @@ The proposals, as written before the decision:
 4. A physical multi-uplink soak (not loopback) has been run. **Nothing in this
    repository has been validated that way yet**, for Python or for Go.
 
+## Flaky-test follow-up (2026-11-09)
+
+`status` TestWriteJSONReplacesAtomicallyAndLeavesNoTemp failed 2 of 5 runs on this Windows host with the daemon running: 20 concurrent `WriteJSON` calls on one path made `ReplaceFileW` fail with "Unable to move the replacement file" and, once, stranded a `~RF*.TMP` backup. Cause: concurrent in-process writers. Fix: `status.WriteJSON` takes a package mutex (cross-process writers are still only protected by the ReplaceFile retry). After the fix: 30 consecutive runs pass. `client` TestPacedThroughput passed 5 of 5 (9 s) with the daemon running, so it was not reproduced as flaky; it is timing-based and was not stress-tested under CPU load.
+
 ## Loopback throughput findings (one machine; not a link benchmark)
 
 Same 1000-byte payload stream, `tools/check_native_client.py` / `check_go_to_go.py`:

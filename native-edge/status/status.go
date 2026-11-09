@@ -6,7 +6,12 @@ package status
 import (
 	"encoding/json"
 	"gamebond.local/nativeedge/atomicio"
+	"sync"
 )
+
+// writeMu serialises writers inside this process: two concurrent ReplaceFileW calls on
+// the same target can fail with ERROR_UNABLE_TO_MOVE_REPLACEMENT and strand a ~RF backup.
+var writeMu sync.Mutex
 
 // WriteJSON atomically replaces path with the JSON encoding of v.
 func WriteJSON(path string, v any) error {
@@ -14,6 +19,8 @@ func WriteJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
+	writeMu.Lock()
+	defer writeMu.Unlock()
 	// ReplaceFile retries while Windows readers hold the target.
 	return atomicio.WriteFileAtomic(path, raw, 0o600)
 }
