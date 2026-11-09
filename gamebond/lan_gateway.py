@@ -276,6 +276,7 @@ class _Counters:
     dhcp_offers: int = 0
     dhcp_acks: int = 0
     dhcp_naks: int = 0
+    dns_overridden: int = 0
     arp_replies: int = 0
     foreign_mac_dropped: int = 0
     spoofed_source_dropped: int = 0
@@ -297,8 +298,9 @@ class LanGateway:
 
     def __init__(self, device: LanDevice, io, on_packet, *, client_tunnel_ip: str, gateway_ip: str = "",
                  tunnel_mtu: int = 1280, lease_seconds: int = DEFAULT_LEASE_SECONDS,
-                 stale_seconds: float = 120.0, clock=time.monotonic):
+                 stale_seconds: float = 120.0, clock=time.monotonic, dns_override=None):
         self.device, self.io, self.on_packet, self.clock = device, io, on_packet, clock
+        self.dns_override = dns_override  # callable(query bytes) -> response bytes | None
         self.subnet = tunnel_subnet(client_tunnel_ip)
         # Default gateway is the VPS tunnel address; the workstation answers ARP for it.
         self.gateway_ip = ipaddress.IPv4Address(gateway_ip or (self.subnet.network_address + 1))
@@ -436,6 +438,8 @@ class LanGateway:
                 or destination == self.device_ip):
             c.local_only_dropped += 1
             return
+        if self.dns_override is not None and self._answer_dns(packet, header, protocol, src, dst):
+            return
         forwarded = decrement_ttl(packet)
         if forwarded is None:
             c.ttl_expired += 1
@@ -452,6 +456,25 @@ class LanGateway:
         for piece in pieces:
             c.packets_to_tunnel += 1
             self.on_packet(piece)
+
+    def _answer_dns(self, packet: bytes, header: int, protocol: int, src: bytes, dst: bytes) -> bool:
+        """Answer a configured name locally, whichever resolver the device asked. UDP only, unfragmented."""
+        if protocol != 17 or struct.unpack_from("!H", packet, 6)[0] & 0x3FFF or len(packet) < header + 8:
+            return False
+        sport, dport, length = struct.unpack_from("!HHH", packet, header)
+        if dport != 53 or not 8 < length <= len(packet) - header:
+            return False
+        try:
+            response = self.dns_override(packet[header + 8:header + length])
+        except Exception:  # a resolver bug must never take the device offline: fall through to the network
+            return False
+        if not response:
+            return False
+        reply = build_ipv4(dst, src, 17, build_udp(dst, src, 53, sport, response), ident=self._next_ident())
+        if self._send_frame(self.device_mac, ETH_IPV4, reply):
+            self.counters.dns_overridden += 1
+            return True
+        return False
 
     # DHCP
     def _dhcp(self, src_mac: bytes, payload: bytes) -> None:

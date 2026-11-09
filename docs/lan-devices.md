@@ -58,6 +58,13 @@ a bonded uplink and a device adapter. Up to four devices are supported.
   "fragmentation needed". The DHCP lease advertises MTU 1280.
 - Device traffic is classified like workstation traffic, so `game_udp_ports`
   and the DSCP queues apply to it too.
+- **Custom DNS** (the dashboard DNS tab) now applies to connected devices. A
+  UDP/53 query from a device for a configured name is answered on the
+  workstation, whichever resolver the device was told to use, and never
+  leaves it; the answer follows the existing override rules (no fall-through,
+  empty answer for other record types). Every other query goes through the
+  tunnel untouched. Not covered: apps on the workstation itself, TCP DNS and
+  encrypted DNS (DoH/DoT). Changes apply on reconnect.
 - Multicast, broadcast and spoofed-source traffic from the device are not
   forwarded. IPv6 is not supported.
 - Unplugging the adapter does not stop the tunnel. GameBond retries every five

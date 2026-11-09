@@ -37,6 +37,7 @@ from .adaptive_qos import AdaptiveQoS,QoSSettings,profile_policies,mark_dscp
 from .atomic_io import replace_file,read_json_shared
 from .lan_gateway import LanGateway,load_lan_devices
 from .frame_io import open_frame_io
+from .dns import load_dns_config,override_response
 
 ROOT=Path(__file__).resolve().parents[1]
 RUNTIME=ROOT/'.runtime'
@@ -235,7 +236,7 @@ class Runtime:
             application_traffic={key:value for key,value in app_traffic.items() if key!='rows'} if app_traffic else None,
             app_authorization=self.authorization_snapshot(),
             application_policy=self.application_policy_state,
-            link_usage=self.link_usage,lan_devices=self.lan_status(),
+            link_usage=self.link_usage,lan_devices=self.lan_status(),dns=self.dns_status(),
             qos=self.qos.stats(),transport=self.last_transport,packets=dict(self.counts)))
 
     def meter_links(self):
@@ -284,6 +285,18 @@ class Runtime:
             if initial:raise
             self.link_inventory_error=str(exc)
 
+    def dns_override(self):
+        """In-line answers for configured DNS names on connected devices; None when custom DNS is off."""
+        if '_dns_override' not in self.__dict__:
+            dns=load_dns_config(self.config.get('dns'))
+            self.__dict__['_dns_override']=None if dns is None or not dns.enabled else (lambda query:override_response(dns,query))
+        return self.__dict__['_dns_override']
+
+    def dns_status(self):
+        """Live DNS counters, only while custom DNS is actually being applied to a connected device."""
+        if self.dns_override() is None or not any(g.alive for g in self.lan_gateways.values()):return None
+        return dict(scope='connected_devices',overrides=sum(g.counters.dns_overridden for g in self.lan_gateways.values()))
+
     def lan_status(self):
         rows=[]
         for device in self.lan_devices:
@@ -309,7 +322,7 @@ class Runtime:
                 io=self.lan_opener(device)
                 try:
                     gateway=LanGateway(device,io,self.send_outbound,client_tunnel_ip=self.config['client_tunnel_ip'],
-                                       tunnel_mtu=self.config.get('mtu',1280)).start()
+                                       tunnel_mtu=self.config.get('mtu',1280),dns_override=self.dns_override()).start()
                 except BaseException:
                     io.close();raise
             except (OSError,ValueError,RuntimeError) as exc:
