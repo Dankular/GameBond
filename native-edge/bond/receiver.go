@@ -35,6 +35,7 @@ type ReceiverStats struct {
 	PolicyDrops                                                                               uint64
 }
 type receivePath struct {
+	hello                            ClientHandshake
 	local                            int
 	endpoint                         netip.AddrPort
 	ready                            bool
@@ -68,6 +69,7 @@ type pendingProbe struct {
 // implement transmit congestion control, link quotas, or TUN routing; callers
 // must not use it as a production edge server on its own.
 type Receiver struct {
+	role                 string
 	codec                *Codec
 	handshake            *ServerHandshake
 	replay               ReplayWindow
@@ -86,11 +88,11 @@ type Receiver struct {
 }
 
 func NewReceiver(codec *Codec, mtu int) (*Receiver, error) {
-	if codec == nil || codec.role != "server" || mtu < Overhead+24 || mtu > 65507 {
+	if codec == nil || (codec.role != "server" && codec.role != "client") || mtu < Overhead+24 || mtu > 65507 {
 		return nil, ErrFrame
 	}
 	r, _ := NewReorder(DefaultReorderConfig())
-	return &Receiver{codec: codec, handshake: NewServerHandshake(), paths: make(map[PathKey]*receivePath), reorder: r, mtu: mtu, initialRate: 1, maxRate: 100, probes: make(map[[24]byte]pendingProbe), reorderBase: 30 * time.Millisecond}, nil
+	return &Receiver{role: codec.role, codec: codec, handshake: NewServerHandshake(), paths: make(map[PathKey]*receivePath), reorder: r, mtu: mtu, initialRate: 1, maxRate: 100, probes: make(map[[24]byte]pendingProbe), reorderBase: 30 * time.Millisecond}, nil
 }
 func (r *Receiver) SetReorderTimeout(timeout time.Duration) error {
 	if len(r.paths) > 0 || timeout < time.Millisecond || timeout > 200*time.Millisecond {
@@ -141,6 +143,10 @@ func (r *Receiver) Sent(d Datagram, err error) {
 	}
 }
 func (r *Receiver) newPath(local int, endpoint netip.AddrPort, now time.Time) (*receivePath, error) {
+	p, err := r.freshPath(local, endpoint, now)
+	if err != nil {
+		return nil, err
+	}
 	if len(r.paths) >= 8 {
 		var oldest *receivePath
 		for _, p := range r.paths {
@@ -150,12 +156,6 @@ func (r *Receiver) newPath(local int, endpoint netip.AddrPort, now time.Time) (*
 		}
 		delete(r.paths, oldest.key())
 	}
-	var epoch [8]byte
-	if _, err := rand.Read(epoch[:]); err != nil {
-		return nil, err
-	}
-	p := &receivePath{local: local, endpoint: endpoint, txEpoch: binary.BigEndian.Uint64(epoch[:]), last: now}
-	p.budget, _ = NewBudget(r.initialRate, r.maxRate)
 	r.paths[p.key()] = p
 	return p, nil
 }
@@ -185,6 +185,10 @@ func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, n
 	}
 	h := packet.Header
 	payload := packet.Payload
+	if r.role == "client" && r.paths[key] == nil {
+		r.stats.Malformed++ // configured peer only, as in the Python client
+		return out, nil
+	}
 	r.stats.Authenticated++
 	r.stats.WireRX += uint64(len(frame) + 28)
 	p := r.paths[key]
@@ -192,6 +196,9 @@ func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, n
 		p.wireRX += uint64(len(frame) + 28)
 	}
 	if h.Kind >= Hello && h.Kind <= Ready {
+		if r.role == "client" {
+			return r.clientHandshake(p, packet, now)
+		}
 		if h.Kind == Reset && h.Sequence == math.MaxUint64 {
 			r.stats.HandshakeRejected++
 			return out, nil
@@ -249,7 +256,7 @@ func (r *Receiver) ReceiveOn(local int, frame []byte, endpoint netip.AddrPort, n
 		hasEpoch = true
 	}
 	var migrated *receivePath
-	if hasEpoch {
+	if hasEpoch && r.role == "server" {
 		for _, candidate := range r.paths {
 			if candidate.ready && candidate.hasEpoch && candidate.rxEpoch == epoch && candidate.key() != key {
 				migrated = candidate
@@ -432,6 +439,12 @@ func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 			}
 		}
 		for _, p := range r.paths {
+			if r.role == "client" && (!p.ready || now.Sub(p.last) >= 3*time.Second) {
+				if err := r.clientPoll(p, now, &out); err != nil {
+					return out, err
+				}
+				continue
+			}
 			if !p.ready || now.Sub(p.last) >= 3*time.Second || (p.policy != nil && (p.policy.Blocked || p.policy.Role == Never)) {
 				continue
 			}
