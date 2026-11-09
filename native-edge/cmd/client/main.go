@@ -245,6 +245,18 @@ func run() error {
 		}
 		_ = capture.onEvent(m)
 	}
+	onReady := bridge.OnEvent
+	bridge.OnEvent = func(m map[string]any) {
+		onReady(m)
+		if s, ok := m["socks"].(string); ok {
+			proxy.onStackReady(ctx, s, func(e error) {
+				select {
+				case proxyFail <- e:
+				default:
+				}
+			})
+		}
+	}
 	mtu := cfg.MTU
 	if mtu == 0 {
 		mtu = 1280

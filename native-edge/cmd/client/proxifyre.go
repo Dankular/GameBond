@@ -47,6 +47,12 @@ func newProxifyre(f proxifyreFlags, stack string, rawConfig []byte, log io.Write
 	if !f.enabled {
 		return p, nil
 	}
+	// ProxiFyre is started with its own working directory, so every path must be absolute.
+	for _, v := range []*string{&f.root, &f.runtimeDir, &f.extensionDir, &f.source, &stack} {
+		if abs, err := filepath.Abs(*v); err == nil {
+			*v = abs
+		}
+	}
 	ext, err := capture.VerifyExtension(f.extensionDir)
 	if err != nil {
 		return nil, err
