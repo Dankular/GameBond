@@ -1,0 +1,14 @@
+# GameBond server beside OpenMPTCProuter on one VPS.
+# Install as /etc/nftables/custom.d/gamebond.nft (OMR includes custom.d last and never touches it).
+# Assumes compose.override.yaml in this directory: Docker bridge gbr0, container 172.30.77.2.
+# Rules live in OMR's own ruleset, not in Docker's tables, because OMR's nftables.conf
+# starts with `flush ruleset`, which deletes Docker's NAT/forward rules on every reload.
+
+# Keep OMR's bulk "redirect 1-64999 to the router" toggle from stealing the GameBond port,
+# and publish UDP 4433 to the container. dnat is terminal, so user_dnat is never reached.
+add rule inet omr custom_dnat_bypass iifname $NET_IFACE meta nfproto ipv4 udp dport 4433 dnat ip to 172.30.77.2:4433
+
+# OMR's forward chain ends in `reject`; these must come before it, hence insert, not add.
+insert rule inet omr forward iifname "gbr0" oifname $NET_IFACE accept
+insert rule inet omr forward iifname $NET_IFACE oifname "gbr0" ip daddr 172.30.77.2 udp dport 4433 ct status dnat accept
+# Container egress is masqueraded by OMR's own nat_postrouting (it covers 172.16.0.0/12).

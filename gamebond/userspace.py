@@ -38,6 +38,8 @@ from .atomic_io import replace_file,read_json_shared
 from .lan_gateway import LanGateway,load_lan_devices
 from .frame_io import open_frame_io
 from .dns import load_dns_config,override_response
+from .transport_router import TransportRouter
+from .omr_settings import load_server_mode
 
 ROOT=Path(__file__).resolve().parents[1]
 RUNTIME=ROOT/'.runtime'
@@ -192,6 +194,7 @@ class Runtime:
         self.policy_lock=threading.Lock();self.policy_stamp=None;self.application_policy=PolicyEvaluator(config)
         self.application_policy_state=self.policy_snapshot()
         self.last_transport={}
+        self.server_type,self.omr_settings=load_server_mode(config);self.omr_error=None;self.omr_retry_at=0;self.omr_blocked=False
         self.lan_devices=load_lan_devices(config);self.lan_gateways={};self.lan_by_ip={};self.lan_errors={}
         self.lan_retry_at={};self.lan_opener=open_frame_io
         self.application_bytes=None
@@ -236,7 +239,7 @@ class Runtime:
             application_traffic={key:value for key,value in app_traffic.items() if key!='rows'} if app_traffic else None,
             app_authorization=self.authorization_snapshot(),
             application_policy=self.application_policy_state,
-            link_usage=self.link_usage,lan_devices=self.lan_status(),dns=self.dns_status(),
+            link_usage=self.link_usage,lan_devices=self.lan_status(),dns=self.dns_status(),omr=self.omr_status(),
             qos=self.qos.stats(),transport=self.last_transport,packets=dict(self.counts)))
 
     def meter_links(self):
@@ -416,15 +419,73 @@ class Runtime:
             self.counts['direct_priority_packets']=self.counts.get('direct_priority_packets',0)+1
             urgent,replicate=self.qos.transmission(classification,len(packet))
             urgent=urgent or is_tcp_control(packet)
-            self.node.send(packet,replicate=replicate,flow_id=classification.info.flow,urgent=urgent)
+            self.transmit(packet,classification,replicate,urgent)
         elif self.scheduler.push(packet,classification):self.counts['bulk_enqueued']+=1
+
+    def omr_credentials(self,settings,parse_key):
+        """The Glorytun key (and our tunnel address) from a key file, or from the server's admin API with a pinned certificate."""
+        def resolve(name):
+            path=Path(name)
+            return path if path.is_absolute() else ROOT/path
+        if not settings.admin:
+            return parse_key(resolve(settings.key_file).read_text()),settings.tunnel_ip
+        from .omr_admin import OmrAdmin,tunnel_settings
+        admin=settings.admin
+        password=resolve(admin['password_file']).read_text(encoding='utf-8').strip()
+        client=OmrAdmin(admin['host'],admin['port'],pin=admin['pin'])
+        client.login(admin['username'],password)       # one attempt: a refused login is never retried automatically
+        info=tunnel_settings(client.get_config())
+        return info['key'],(settings.tunnel_ip if settings.tunnel_ip_set or not info['tunnel_ip'] else info['tunnel_ip'])
+
+    def maintain_omr(self):
+        """Bring the OMR leg up without ever endangering the main tunnel; retry quietly, but never retry a refused login."""
+        if getattr(self,'server_type','gamebond')!='both' or isinstance(self.node,TransportRouter) or getattr(self,'omr_blocked',False):return
+        if time.monotonic()<getattr(self,'omr_retry_at',0):return
+        self.omr_retry_at=time.monotonic()+30
+        from .omr_admin import OmrAuthError
+        try:router=self.build_router(self.node,self.config)
+        except OmrAuthError as exc:
+            self.omr_blocked=True;error=f'{exc}. Not retrying; fix the login and reconnect.'
+        except Exception as exc:error=str(exc) or exc.__class__.__name__
+        else:
+            self.omr_error=None;self.node=router
+            print(json.dumps(dict(status='omr_leg_up',server=list(self.omr_settings.server))),flush=True);return
+        if error!=getattr(self,'omr_error',None):print(json.dumps(dict(status='omr_leg_unavailable',error=error)),flush=True)
+        self.omr_error=error
+
+    def omr_status(self):
+        if getattr(self,'server_type','gamebond')!='both':return None
+        return dict(mode='both',active=isinstance(getattr(self,'node',None),TransportRouter),error=getattr(self,'omr_error',None),
+                    blocked=getattr(self,'omr_blocked',False))
+
+    def build_router(self,gamebond,config):
+        """GameBond tunnel plus an OMR (Glorytun UDP) tunnel over the same uplinks, behind one Node-like object."""
+        from .omr_glorytun import MudClient,parse_key   # needs PyNaCl: pip install 'gamebond[omr]'
+        from .nat import Nat
+        settings=self.omr_settings
+        key,tunnel_ip=self.omr_credentials(settings,parse_key)
+        live=config.get('path_availability') or [True]*len(config['bind'])
+        if not any(bool(up) and bind[0]!='0.0.0.0' for bind,up in zip(config['bind'],live)):raise RuntimeError('No available uplink address for the OMR tunnel')
+        indices=config.get('interface_indices')
+        omr=MudClient(key,settings.server,[bind[0] for bind in config['bind']],rate_mbps=settings.rate_mbps,beat_ms=settings.beat_ms,
+                      interface_indices=indices if os.name=='nt' and indices else None,
+                      available=[bool(up) and bind[0]!='0.0.0.0' for bind,up in zip(config['bind'],live)]).start()
+        try:return TransportRouter(gamebond,omr,Nat(tunnel_ip),gamebond_dscp=settings.gamebond_dscp).start()
+        except BaseException:
+            omr.close();raise
+
+    def transmit(self,packet,classification,replicate,urgent):
+        """Hand a classified packet to the transport; with two transports the DSCP class picks which."""
+        if isinstance(self.node,TransportRouter):
+            return self.node.send(packet,replicate=replicate,flow_id=classification.info.flow,urgent=urgent,dscp=classification.dscp)
+        return self.node.send(packet,replicate=replicate,flow_id=classification.info.flow,urgent=urgent)
 
     def send_bulk(self):
         while not self.stop.is_set():
             item=self.scheduler.pop(.1)
             if item:
                 urgent,replicate=self.qos.transmission(item.classification,len(item.packet))
-                self.node.send(item.packet,replicate=replicate,flow_id=item.classification.info.flow,urgent=urgent)
+                self.transmit(item.packet,item.classification,replicate,urgent)
 
     def receive(self):
         while not self.stop.is_set():
@@ -540,6 +601,7 @@ class Runtime:
                 link_states=([operational_state(self.link_policies[str(index)],self.usage_ledger.usage(str(index),self.link_policies[str(index)]))
                              for index in self.policy_keys] if 'link_policies' in config else None),
                 path_availability=config.get('path_availability'),outer_transport=config.get('outer_transport')).start()
+            self.maintain_omr()     # a failing OMR leg is reported and retried; it never stops the GameBond tunnel
             self.state='connecting';self.publish()
             deadline=time.monotonic()+12
             heartbeat=0
@@ -569,7 +631,7 @@ class Runtime:
             self.stage_proxy(address)
             self.state='running';self.publish()
             while not self.stop.wait(1):
-                self.refresh_links();self.maintain_lan()
+                self.refresh_links();self.maintain_lan();self.maintain_omr()
                 if self.stack.poll() is not None or self.proxy.poll() is not None:raise RuntimeError('Network stack or application capture stopped unexpectedly')
                 self.publish()
             if not self.errors.empty():raise RuntimeError(self.errors.get())

@@ -1,0 +1,17 @@
+# Use with the repository compose.yaml:
+#   docker compose -f compose.yaml -f deploy/omr-coexist/compose.override.yaml up -d
+# Pins the bridge name and container address that gamebond.nft refers to.
+services:
+  server:
+    networks:
+      tunnel:
+        ipv4_address: 172.30.77.2
+networks:
+  tunnel:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: gbr0
+    ipam:
+      config:
+        - subnet: 172.30.77.0/24
+          gateway: 172.30.77.1

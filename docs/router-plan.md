@@ -1,5 +1,11 @@
 # Router behavior in GameBond: plan
 
+> Superseded in direction: the server side is now real OpenMPTCProuter, run beside the
+> GameBond Python server on one VPS ([omr-server.md](omr-server.md)), with the GameBond
+> client choosing between them. The client transport for OMR is started in
+> [omr-client.md](omr-client.md). The phases below describe the GameBond-protocol router
+> and still apply to the connected-device features.
+
 Direction: GameBond's userspace becomes the router environment for the
 workstation and the devices behind it, on GameBond's own protocol. It does not
 interoperate with OpenMPTCProuter's data plane (MPTCP kernel stack with

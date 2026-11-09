@@ -130,6 +130,45 @@ def save_lan_devices(devices, config_path=CONFIG):
     return config
 
 
+def write_omr_password(password, path=None):
+    """Store the admin password in a file the config refers to; the config itself never holds a password."""
+    target = Path(path) if path else ROOT/'secrets/omr-admin.pass'
+    if not isinstance(password, str) or not password.strip() or '\n' in password or len(password) > 512:
+        raise ValueError('Enter the admin password on one line')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name+'.tmp-'+secrets.token_hex(4))
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # owner-only where the platform honors it
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:handle.write(password.strip()+'\n')
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():temporary.unlink()
+    return str(target)
+
+
+def save_omr_settings(server_type, omr, config_path=CONFIG):
+    """Validate and atomically store server_type and the omr block. Switching back to GameBond-only keeps the
+    block as `omr_draft` so nothing typed is lost."""
+    from .omr_settings import load_server_mode
+    path = Path(config_path);original = path.read_bytes();config = json.loads(original)
+    config.pop('omr_draft', None)
+    if server_type == 'gamebond':
+        if omr:config['omr_draft'] = omr
+        config.pop('omr', None);config['server_type'] = 'gamebond'
+    else:
+        config['server_type'] = server_type;config['omr'] = omr
+    load_server_mode(config)
+    if path.read_bytes() != original:raise RuntimeError('Configuration changed; try saving again')
+    temporary = path.with_name(path.name+'.omr-'+secrets.token_hex(4))
+    try:
+        temporary.write_text(json.dumps(config, indent=2)+'\n', encoding='utf-8')
+        from .atomic_io import replace_file
+        replace_file(temporary, path)
+    finally:
+        if temporary.exists():temporary.unlink()
+    return config
+
+
 class RateSampler:
     """Counter deltas over actual elapsed time; resets never invent traffic."""
     def __init__(self):

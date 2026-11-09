@@ -89,7 +89,7 @@ class DashboardTests(unittest.TestCase):
         links=[dict(index=25,id='',name='Starlink',up=True,addresses=['192.168.1.93'],gateway='192.168.1.1'),dict(index=16,id='',name='iPhone',up=False,addresses=[],gateway='')]
         self.window.config=dict(interface_indices=[25,16]);self.window.resize(860,560);self.window.show()
         self.controller.stateChanged.emit(None,dict(links=links,rates={}));self.app.processEvents()
-        self.assertTrue(self.window.network_button.isVisible());self.assertTrue(self.window.link_limits_button.isVisible())
+        self.assertTrue(self.window.network_button.isVisible());self.assertTrue(self.window.link_limits_button.isVisible());self.assertTrue(self.window.omr_button.isVisible());self.assertTrue(self.window.devices_button.isVisible())
         self.assertEqual(self.window.nav[-1].text(),'DNS')
         self.assertEqual(self.window.network_labels[1][0].text(),'iPhone');self.assertIn('Offline',self.window.network_labels[1][1].text())
         self.assertLess(self.window.network_button.mapTo(self.window,self.window.network_button.rect().bottomRight()).y(),self.window.height())
