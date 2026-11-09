@@ -124,7 +124,7 @@ func Start(cfg *Config) (*Responder, error) {
 	var err error
 	attempts := 1
 	if cfg.Bind.Port() == 0 {
-		attempts = 32
+		attempts = 1024 // Windows hands out TCP ports sequentially, so a UDP-excluded range can be hundreds wide
 	}
 	for i := 0; i < attempts; i++ {
 		r.tcp, err = net.ListenTCP("tcp4", net.TCPAddrFromAddrPort(cfg.Bind))

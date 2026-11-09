@@ -180,6 +180,20 @@ func run() error {
 		}
 		defer relay.Close()
 		logOut, relayOnly = io.MultiWriter(os.Stderr, relay), relay
+		// Register as the control owner so `ttyrelay control stop` ends the daemon.
+		// Restart needs a supervisor that relaunches the process; the Go daemon has none.
+		go func() {
+			err := ttyrelay.ServeOwner(ctx, *ttyPath, func(command string) (string, error) {
+				if command == "stop" {
+					stop()
+					return "stopping", nil
+				}
+				return "running", fmt.Errorf("%s is not supported: the Go daemon has no supervisor to relaunch it", command)
+			})
+			if err != nil && ctx.Err() == nil {
+				fmt.Fprintln(logOut, "log relay owner ended:", err)
+			}
+		}()
 	}
 
 	qosSettings, err := qosFromConfig(cfg.AdaptiveQoS)
