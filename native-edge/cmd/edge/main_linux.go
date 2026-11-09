@@ -6,9 +6,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"gamebond.local/nativeedge/adminportal"
 	"os"
 	"os/signal"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"gamebond.local/nativeedge/edge"
 )
@@ -51,11 +55,62 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	return edge.Run(ctx, c, options, address, session, key, os.Stdout)
+	var observers []func(map[string]any)
+	var restart atomic.Bool
+	if len(c.Admin) > 0 && string(c.Admin) != "null" {
+		settings, err := adminportal.ParseSettings(c.Admin)
+		if err != nil {
+			return err
+		}
+		if settings.Enabled {
+			var mu sync.Mutex
+			var latest map[string]any
+			observers = append(observers, func(stats map[string]any) {
+				mu.Lock()
+				latest = stats
+				mu.Unlock()
+			})
+			portal := adminportal.New(adminportal.Options{Settings: settings, ConfigPath: *configPath,
+				Snapshot: func() any {
+					mu.Lock()
+					defer mu.Unlock()
+					return edge.AdminSnapshot(c, latest, time.Now())
+				},
+				Validate: func(path string) error {
+					raw, err := os.ReadFile(path)
+					if err != nil {
+						return err
+					}
+					_, _, _, _, err = edge.DecodeConfig(raw)
+					return err
+				},
+				RequestRestart: func() { restart.Store(true); stop() }})
+			if err := portal.Start(); err != nil {
+				return fmt.Errorf("admin portal: %w", err)
+			}
+			defer portal.Close()
+			portal.Note("admin portal started")
+			fmt.Fprintf(os.Stdout, "{\"status\":\"admin_portal\",\"bind\":[%q,%d],\"tls\":%t}\n", settings.Host, portal.Port, settings.TLSCert != "")
+		}
+	}
+	err = edge.Run(ctx, c, options, address, session, key, os.Stdout, observers...)
+	if restart.Load() {
+		// The container entrypoint relaunches on exit status 75.
+		return restartRequested{}
+	}
+	return err
 }
+
+// restartRequested ends the process with the admin portal's restart status.
+type restartRequested struct{}
+
+func (restartRequested) Error() string { return "restart requested from the admin portal" }
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		if _, ok := err.(restartRequested); ok {
+			os.Exit(adminportal.RestartExitCode)
+		}
 		os.Exit(1)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"gamebond.local/nativeedge/adminportal"
 	"gamebond.local/nativeedge/bond"
 )
 
@@ -30,6 +31,7 @@ type Config struct {
 	GamePorts      []uint16                    `json:"game_udp_ports"`
 	Queues         map[string]bond.QueuePolicy `json:"queues"`
 	QoS            bond.QoSSettings            `json:"adaptive_qos"`
+	Admin          json.RawMessage             `json:"admin"`
 }
 
 func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []byte, error) {
@@ -60,6 +62,11 @@ func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []b
 	var port int
 	if json.Unmarshal(c.Bind[0][0], &address) != nil || json.Unmarshal(c.Bind[0][1], &port) != nil || address != "0.0.0.0" || port != 4433 {
 		return fail(fmt.Errorf("native container bind must be 0.0.0.0:4433"))
+	}
+	if len(c.Admin) > 0 && string(bytes.TrimSpace(c.Admin)) != "null" {
+		if _, err := adminportal.ParseSettings(c.Admin); err != nil {
+			return fail(err)
+		}
 	}
 	session, err := hex.DecodeString(c.Session)
 	if err != nil || len(session) != 16 {

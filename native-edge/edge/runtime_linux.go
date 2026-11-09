@@ -40,7 +40,7 @@ func openTun(name string) (int, error) {
 // Run owns the packet state on one epoll actor. All UDP/TUN I/O is nonblocking;
 // neither a bulk pacing wait nor device backpressure can stop control/priority.
 // Address, link-up and NAT setup belong to the container's existing entrypoint.
-func Run(ctx context.Context, c Config, options bond.SessionOptions, address netip.AddrPort, session, key []byte, output io.Writer) error {
+func Run(ctx context.Context, c Config, options bond.SessionOptions, address netip.AddrPort, session, key []byte, output io.Writer, observers ...func(map[string]any)) error {
 	engine, err := bond.NewSession(key, session, options)
 	if err != nil {
 		return err
@@ -171,6 +171,9 @@ func Run(ctx context.Context, c Config, options bond.SessionOptions, address net
 		if !now.Before(reportAt) {
 			stats := engine.Stats(now)
 			stats["observed_at"] = now.UTC().Format(time.RFC3339Nano)
+			for _, observe := range observers {
+				observe(stats)
+			}
 			if err = encoder.Encode(stats); err != nil {
 				return err
 			}

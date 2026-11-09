@@ -30,3 +30,22 @@ func TestUnsupportedOrUnsafeTopologyFailsBeforeOpeningDevices(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminBlockIsValidatedAtLoad(t *testing.T) {
+	good := map[string]any{"enabled": true, "bind": []any{"127.0.0.1", 8443}, "password_hash": "scrypt$32768$c2FsdA==$ZGlnZXN0"}
+	for name, c := range map[string]struct {
+		admin any
+		ok    bool
+	}{"valid": {good, true}, "absent-ok": {nil, true}, "bad port": {map[string]any{"enabled": true, "bind": []any{"127.0.0.1", 0}, "password_hash": good["password_hash"]}, false},
+		"bad hash": {map[string]any{"enabled": true, "bind": []any{"127.0.0.1", 8443}, "password_hash": "x"}, false}} {
+		input := configFixture()
+		if c.admin != nil {
+			input["admin"] = c.admin
+		}
+		data, _ := json.Marshal(input)
+		_, _, _, _, err := DecodeConfig(data)
+		if (err == nil) != c.ok {
+			t.Fatal(name, "ok =", c.ok, "err =", err)
+		}
+	}
+}
