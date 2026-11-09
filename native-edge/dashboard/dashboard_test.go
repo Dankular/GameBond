@@ -1,0 +1,149 @@
+package dashboard
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func start(t *testing.T) (*Server, string, string, *[]string) {
+	dir := t.TempDir()
+	status := filepath.Join(dir, "status.json")
+	config := filepath.Join(dir, "client.json")
+	os.WriteFile(status, []byte(`{"state":"running","peer":["1.2.3.4",4433],"transport":{"paths":[{"slot":0,"healthy":true}]}}`), 0o600)
+	os.WriteFile(config, []byte(`{"role":"client","bind":[["10.0.0.2",0]],"link_policies":{"22":{"role":"primary"}}}`), 0o600)
+	var calls []string
+	s, url, err := Start(Options{StatusPath: status, ConfigPath: config, Control: func(c string) (map[string]any, error) {
+		calls = append(calls, c)
+		return map[string]any{"state": "ok"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	return s, url, config, &calls
+}
+
+func do(t *testing.T, method, url, token, body string) (int, string) {
+	req, _ := http.NewRequest(method, url, strings.NewReader(body))
+	if token != "" {
+		req.Header.Set("X-Token", token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+func TestTokenRequiredEverywhere(t *testing.T) {
+	s, url, _, _ := start(t)
+	base := url[:strings.Index(url, "/?t=")]
+	for _, p := range []string{"/", "/api/status", "/api/links"} {
+		if code, _ := do(t, "GET", base+p, "", ""); code == 200 {
+			t.Fatalf("%s served without a token", p)
+		}
+		if code, _ := do(t, "GET", base+p, "wrong", ""); code == 200 {
+			t.Fatalf("%s served with a wrong token", p)
+		}
+	}
+	if code, body := do(t, "GET", url, "", ""); code != 200 || !strings.Contains(body, s.token) || strings.Contains(body, "__TOKEN__") {
+		t.Fatal("page must embed the token", code)
+	}
+	if code, _ := do(t, "GET", base+"/api/status", s.token, ""); code != 200 {
+		t.Fatal("status refused with the token")
+	}
+}
+
+func TestRebindingHostRefused(t *testing.T) {
+	s, url, _, _ := start(t)
+	base := url[:strings.Index(url, "/?t=")]
+	req, _ := http.NewRequest("GET", base+"/api/status", nil)
+	req.Host = "evil.example"
+	req.Header.Set("X-Token", s.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == 200 {
+		t.Fatal("foreign Host header accepted")
+	}
+}
+
+func TestStatusPassesThroughAndMissingFileIsUnavailable(t *testing.T) {
+	s, url, _, _ := start(t)
+	base := url[:strings.Index(url, "/?t=")]
+	_, body := do(t, "GET", base+"/api/status", s.token, "")
+	var d map[string]any
+	json.Unmarshal([]byte(body), &d)
+	if d["state"] != "running" {
+		t.Fatal(body)
+	}
+	os.Remove(s.o.StatusPath)
+	_, body = do(t, "GET", base+"/api/status", s.token, "")
+	json.Unmarshal([]byte(body), &d)
+	if d["state"] != "unavailable" {
+		t.Fatal(body)
+	}
+}
+
+func TestControlOnlyStopAndRestart(t *testing.T) {
+	s, url, _, calls := start(t)
+	base := url[:strings.Index(url, "/?t=")]
+	for _, c := range []string{"stop", "restart"} {
+		if code, _ := do(t, "POST", base+"/api/control", s.token, `{"command":"`+c+`"}`); code != 200 {
+			t.Fatal(c, code)
+		}
+	}
+	for _, c := range []string{`{"command":"status"}`, `{"command":"rm -rf"}`, `{}`, `nope`} {
+		if code, _ := do(t, "POST", base+"/api/control", s.token, c); code != 400 {
+			t.Fatalf("%s: %d", c, code)
+		}
+	}
+	if code, _ := do(t, "GET", base+"/api/control", s.token, ""); code != 405 {
+		t.Fatal("GET control", code)
+	}
+	if len(*calls) != 2 || (*calls)[0] != "stop" || (*calls)[1] != "restart" {
+		t.Fatal(*calls)
+	}
+}
+
+func TestLinkPolicyEditValidatesAndKeepsPrevious(t *testing.T) {
+	s, url, config, _ := start(t)
+	base := url[:strings.Index(url, "/?t=")]
+	good := `{"22":{"role":"secondary","upload_mbps":50,"download_mbps":100,"daily_bytes":0,"monthly_bytes":0,"reset_day":5,"overlimit":"throttle","overlimit_mbps":1}}`
+	if code, body := do(t, "PUT", base+"/api/links", s.token, good); code != 200 || !strings.Contains(body, "restart_required") {
+		t.Fatal(code, body)
+	}
+	raw, _ := os.ReadFile(config)
+	if !strings.Contains(string(raw), `"secondary"`) || !strings.Contains(string(raw), `"bind"`) {
+		t.Fatal("edit lost data", string(raw))
+	}
+	prev, err := os.ReadFile(config + ".previous")
+	if err != nil || !strings.Contains(string(prev), `"primary"`) {
+		t.Fatal("previous copy missing", err)
+	}
+	for name, bad := range map[string]string{
+		"role":       `{"22":{"role":"fastest"}}`,
+		"unknown":    `{"22":{"role":"primary","turbo":true}}`,
+		"negative":   `{"22":{"role":"primary","upload_mbps":-1}}`,
+		"not object": `[1]`,
+		"reset day":  `{"22":{"role":"primary","reset_day":40}}`,
+		"overlimit":  `{"22":{"role":"primary","overlimit":"explode"}}`,
+	} {
+		if code, _ := do(t, "PUT", base+"/api/links", s.token, bad); code != 422 && code != 400 {
+			t.Fatalf("%s accepted: %d", name, code)
+		}
+	}
+	after, _ := os.ReadFile(config)
+	if string(after) != string(raw) {
+		t.Fatal("a rejected edit changed the config")
+	}
+}

@@ -71,7 +71,11 @@ a product decision before work starts.
 Go has no equivalent toolkit in the repo. Retiring Python means choosing one of:
 a local web UI served by the Go client (same model as the admin portal),
 a Wails/WebView2 shell, or Fyne. This is a product decision and the largest
-single item after the data plane. It is **not decided**.
+single item after the data plane.
+
+**Decision 2026-11-09: PORT** (the user, asked why the tray was not ported: "why would you not port it ?"). Chosen shape: a native Windows notification-area agent plus a local web dashboard served by Go (the model suggested above, no Qt). **Built:** `native-edge/tray` (`Model` replays the real `TrayAgent.update` icon colour/tooltip/Connect-Disconnect label on 400 random sequences / 2,948 steps via `tools/generate_native_tray_vectors.py`, mutation-checked; single-instance `Lease` with the Show signal, tested; Win32 shell: hidden window, `Shell_NotifyIcon`, drawn 32 px icons, popup menu, 1 s tick) and `cmd/tray` (`build/gamebond-tray.exe`: the same menu as Python - Show, Connect/Disconnect, Manage apps, Network settings, Link roles & limits, Quit-stops-tunnel), and `native-edge/dashboard` (loopback-only, token + Host check; live status, links table, per-app traffic, connect/disconnect through the supervisor relay, link roles & limits editor validated against `linkpolicy` and Python's unknown-key rule, previous config kept; tested). Run on this machine: the agent started, a second launch exited and signalled Show, the dashboard returned the live daemon status, and Disconnect/Connect round-tripped through the relay (restart returned `running`). **NOT ported yet** (so this row is PART, not DONE): the Qt glass UI's traffic graphs, DNS panel, log viewer, toasts, widget, hardware/GPU readouts (`hwmon.Sampler` exists but is not shown), the application-policy (Manage apps) and network-selection editors (those menu entries just open the dashboard), balloon notifications, autostart. The icon pixels and the right-click menu were not inspected by eye - no screenshot tool in this session.
+
+Row status: `tray.py` PART (above); the glass/widget files remain TODO.
 
 ## 5. Tests
 
@@ -97,7 +101,7 @@ The proposals, as written before the decision:
   calls.
 - **Admin web portal**: ported (see the table row); not yet verified in a browser or
   on the VPS, so no drop is proposed.
-- **Tray / GUI** (`tray.py`, the GUI section): needs a UI decision.
+- **Tray / GUI** (`tray.py`, the GUI section): decided PORT on 2026-11-09 (section 4); partly built.
 - **Elevated launcher** (`windows_launcher.py`, `windows_packet_filter.py`): needed
   only for TUN mode and Windows LAN frame I/O; without it Go LAN gateways stay
   Linux-only.
