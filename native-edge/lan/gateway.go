@@ -1,0 +1,471 @@
+package lan
+
+import (
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"net/netip"
+	"sync"
+	"time"
+)
+
+const (
+	ethIPv4        = 0x0800
+	ethARP         = 0x0806
+	DeviceMTU      = 1500
+	DefaultLease   = 86400
+	DefaultStale   = 120 * time.Second
+	DefaultTunnelM = 1280
+)
+
+var broadcastMAC = [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+
+// IO is raw Ethernet frame access for one adapter.
+type IO interface {
+	MAC() [6]byte
+	Write(frame []byte) error
+}
+
+// Device is one device-facing adapter and the tunnel address its device receives.
+type Device struct {
+	Name      string
+	TunnelIP  netip.Addr
+	PinnedMAC *[6]byte
+	DNS       []netip.Addr
+}
+
+// Config are the gateway parameters (client_tunnel_ip etc. in Python).
+type Config struct {
+	Device       Device
+	ClientIP     netip.Addr
+	GatewayIP    netip.Addr // zero: network address + 1
+	TunnelMTU    int
+	LeaseSeconds int
+	StaleAfter   time.Duration
+	Now          func() time.Time
+	OnPacket     func([]byte)
+	DNSOverride  func([]byte) []byte
+}
+
+// Counters mirror the Python counter names.
+type Counters struct {
+	FramesIn, FramesOut, PacketsToTunnel, PacketsFromTunnel, DHCPOffers, DHCPAcks, DHCPNaks, DNSOverridden uint64
+	ARPReplies, ForeignMACDropped, SpoofedSourceDropped, LocalOnlyDropped, TTLExpired, Fragmented          uint64
+	FragNeededSent, WrongDestination, NoDeviceMAC, Malformed, WriteErrors                                  uint64
+}
+
+// Gateway serves one device on one adapter. Methods are safe for concurrent
+// use; HandleFrame calls are serialised.
+type Gateway struct {
+	mu        sync.Mutex
+	cfg       Config
+	io        IO
+	mac       [6]byte
+	prefix    netip.Prefix
+	gateway   [4]byte
+	device    [4]byte
+	deviceMAC *[6]byte
+	lastSeen  time.Time
+	hasSeen   bool
+	mssLimit  int
+	ident     uint16
+	Leased    bool
+	c         Counters
+}
+
+func subnetOf(ip netip.Addr) netip.Prefix { p, _ := ip.Prefix(24); return p }
+
+// NewGateway validates the device against the client tunnel /24 like
+// LanDevice.validate and builds the gateway.
+func NewGateway(cfg Config, io IO) (*Gateway, error) {
+	if !cfg.ClientIP.Is4() || !cfg.Device.TunnelIP.Is4() {
+		return nil, errors.New("tunnel addresses must be IPv4")
+	}
+	subnet := subnetOf(cfg.ClientIP)
+	ip := cfg.Device.TunnelIP
+	base := subnet.Addr().As4()
+	b := ip.As4()
+	if !subnet.Contains(ip) || b[3] == 0 || b[3] == 1 || b[3] == 255 || ip == cfg.ClientIP {
+		return nil, fmt.Errorf("%s is not a usable device address in %s (not .0, .1, .255 or the client address)", ip, subnet)
+	}
+	_ = base
+	if len(cfg.Device.DNS) == 0 {
+		cfg.Device.DNS = []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}
+	}
+	if len(cfg.Device.DNS) > 3 {
+		return nil, errors.New("LAN device dns must list one to three unicast IPv4 addresses")
+	}
+	for _, d := range cfg.Device.DNS {
+		if !d.Is4() || d.IsUnspecified() || d.IsLoopback() || d.IsMulticast() || d.IsLinkLocalUnicast() || d == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+			return nil, errors.New("LAN device dns must list one to three unicast IPv4 addresses")
+		}
+	}
+	if cfg.TunnelMTU == 0 {
+		cfg.TunnelMTU = DefaultTunnelM
+	}
+	if cfg.LeaseSeconds == 0 {
+		cfg.LeaseSeconds = DefaultLease
+	}
+	if cfg.StaleAfter == 0 {
+		cfg.StaleAfter = DefaultStale
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	gw := cfg.GatewayIP
+	if !gw.IsValid() {
+		a := subnet.Addr().As4()
+		a[3]++
+		gw = netip.AddrFrom4(a)
+	}
+	g := &Gateway{cfg: cfg, io: io, mac: io.MAC(), prefix: subnet, gateway: gw.As4(), device: ip.As4(), mssLimit: cfg.TunnelMTU - 40}
+	if cfg.Device.PinnedMAC != nil {
+		m := *cfg.Device.PinnedMAC
+		g.deviceMAC = &m
+		g.lastSeen, g.hasSeen = cfg.Now(), true
+	}
+	return g, nil
+}
+
+func (g *Gateway) Stats() Counters {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.c
+}
+
+// DeviceMAC returns the learned or pinned device MAC.
+func (g *Gateway) DeviceMAC() (mac [6]byte, ok bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.deviceMAC == nil {
+		return mac, false
+	}
+	return *g.deviceMAC, true
+}
+
+func (g *Gateway) stale() bool {
+	return g.cfg.Device.PinnedMAC == nil && g.hasSeen && g.cfg.Now().Sub(g.lastSeen) >= g.cfg.StaleAfter
+}
+
+func (g *Gateway) mayClaim(src [6]byte) bool {
+	if g.deviceMAC != nil && src == *g.deviceMAC {
+		return true
+	}
+	return g.cfg.Device.PinnedMAC == nil && (g.deviceMAC == nil || g.stale())
+}
+
+func (g *Gateway) touch(src [6]byte) {
+	m := src
+	g.deviceMAC, g.lastSeen, g.hasSeen = &m, g.cfg.Now(), true
+}
+
+// HandleFrame processes one Ethernet frame from the device-facing adapter.
+func (g *Gateway) HandleFrame(frame []byte) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.c.FramesIn++
+	if len(frame) < 14 {
+		g.c.Malformed++
+		return
+	}
+	var dst, src [6]byte
+	copy(dst[:], frame[0:6])
+	copy(src[:], frame[6:12])
+	et := binary.BigEndian.Uint16(frame[12:])
+	if src == g.mac || (dst != g.mac && dst != broadcastMAC) {
+		return
+	}
+	switch et {
+	case ethARP:
+		g.arp(src, frame[14:])
+	case ethIPv4:
+		g.ipv4(src, frame[14:])
+	}
+}
+
+func (g *Gateway) arp(srcMAC [6]byte, body []byte) {
+	if len(body) < 28 || !bytes.Equal(body[:6], []byte{0, 1, 8, 0, 6, 4}) {
+		g.c.Malformed++
+		return
+	}
+	op := binary.BigEndian.Uint16(body[6:])
+	var senderMAC [6]byte
+	var senderIP, targetIP [4]byte
+	copy(senderMAC[:], body[8:14])
+	copy(senderIP[:], body[14:18])
+	copy(targetIP[:], body[24:28])
+	if senderMAC != srcMAC || (op != 1 && op != 2) {
+		g.c.Malformed++
+		return
+	}
+	switch senderIP {
+	case g.device:
+		if !g.mayClaim(srcMAC) {
+			g.c.ForeignMACDropped++
+			return
+		}
+		g.touch(srcMAC)
+	case [4]byte{}:
+		if g.deviceMAC != nil && srcMAC != *g.deviceMAC && !g.stale() {
+			g.c.ForeignMACDropped++
+			return
+		}
+	default:
+		g.c.SpoofedSourceDropped++
+		return
+	}
+	if op != 1 {
+		return
+	}
+	target := netip.AddrFrom4(targetIP)
+	broadcast := g.prefix.Addr().As4()
+	broadcast[3] = 255
+	if targetIP == g.device || !g.prefix.Contains(target) || targetIP == broadcast {
+		return
+	}
+	reply := append([]byte{0, 1, 8, 0, 6, 4, 0, 2}, g.mac[:]...)
+	reply = append(append(append(reply, targetIP[:]...), senderMAC[:]...), senderIP[:]...)
+	g.sendFrame(srcMAC, ethARP, reply)
+	g.c.ARPReplies++
+}
+
+func (g *Gateway) ipv4(srcMAC [6]byte, packet []byte) {
+	header, protocol, src, dst, total, ok := parseIPv4(packet)
+	if !ok {
+		g.c.Malformed++
+		return
+	}
+	packet = packet[:total]
+	if protocol == 17 && total >= header+8 && binary.BigEndian.Uint16(packet[header+2:]) == 67 {
+		g.dhcp(srcMAC, packet[header+8:])
+		return
+	}
+	if !g.mayClaim(srcMAC) {
+		g.c.ForeignMACDropped++
+		return
+	}
+	if src != g.device {
+		g.c.SpoofedSourceDropped++
+		return
+	}
+	g.touch(srcMAC)
+	d := netip.AddrFrom4(dst)
+	broadcast := g.prefix.Addr().As4()
+	broadcast[3] = 255
+	if d.IsMulticast() || d.IsUnspecified() || d.IsLoopback() || dst == [4]byte{255, 255, 255, 255} || dst == broadcast || dst == g.device {
+		g.c.LocalOnlyDropped++
+		return
+	}
+	if g.cfg.DNSOverride != nil && g.answerDNS(packet, header, protocol, src, dst) {
+		return
+	}
+	fwd := decrementTTL(packet)
+	if fwd == nil {
+		g.c.TTLExpired++
+		return
+	}
+	fwd = clampTCPMSS(fwd, g.mssLimit)
+	var pieces [][]byte
+	if len(fwd) > g.cfg.TunnelMTU {
+		if binary.BigEndian.Uint16(fwd[6:])&0x4000 != 0 {
+			g.fragNeeded(fwd)
+			return
+		}
+		pieces = fragmentIPv4(fwd, g.cfg.TunnelMTU)
+		g.c.Fragmented++
+	} else {
+		pieces = [][]byte{fwd}
+	}
+	for _, p := range pieces {
+		g.c.PacketsToTunnel++
+		g.cfg.OnPacket(p)
+	}
+}
+
+func (g *Gateway) answerDNS(packet []byte, header int, protocol byte, src, dst [4]byte) bool {
+	if protocol != 17 || binary.BigEndian.Uint16(packet[6:])&0x3FFF != 0 || len(packet) < header+8 {
+		return false
+	}
+	sport := binary.BigEndian.Uint16(packet[header:])
+	dport := binary.BigEndian.Uint16(packet[header+2:])
+	length := int(binary.BigEndian.Uint16(packet[header+4:]))
+	if dport != 53 || !(8 < length && length <= len(packet)-header) {
+		return false
+	}
+	resp := g.cfg.DNSOverride(packet[header+8 : header+length])
+	if len(resp) == 0 {
+		return false
+	}
+	reply := buildIPv4(dst, src, 17, buildUDP(dst, src, 53, sport, resp), g.nextIdent())
+	if g.sendFrame(*g.deviceMAC, ethIPv4, reply) {
+		g.c.DNSOverridden++
+		return true
+	}
+	return false
+}
+
+func (g *Gateway) dhcp(srcMAC [6]byte, p []byte) {
+	if len(p) < 240 || p[0] != 1 || p[1] != 1 || p[2] != 6 || !bytes.Equal(p[236:240], []byte{0x63, 0x82, 0x53, 0x63}) {
+		g.c.Malformed++
+		return
+	}
+	var chaddr [6]byte
+	copy(chaddr[:], p[28:34])
+	if chaddr != srcMAC {
+		g.c.Malformed++
+		return
+	}
+	opts := map[byte][]byte{}
+	for i := 240; i < len(p); {
+		kind := p[i]
+		if kind == 255 {
+			break
+		}
+		if kind == 0 {
+			i++
+			continue
+		}
+		if i+1 >= len(p) || i+2+int(p[i+1]) > len(p) {
+			break
+		}
+		opts[kind] = p[i+2 : i+2+int(p[i+1])]
+		i += 2 + int(p[i+1])
+	}
+	kind := byte(0) // Python raises IndexError on an empty option 53; here it is ignored
+	if v := opts[53]; len(v) > 0 {
+		kind = v[0]
+	}
+	if kind != 1 && kind != 3 {
+		return
+	}
+	if g.cfg.Device.PinnedMAC != nil {
+		if srcMAC != *g.cfg.Device.PinnedMAC {
+			g.c.ForeignMACDropped++
+			return
+		}
+	} else if g.deviceMAC != nil && srcMAC != *g.deviceMAC && !g.stale() {
+		g.c.ForeignMACDropped++
+		return
+	}
+	g.touch(srcMAC)
+	xid, flags := p[4:8], p[10:12]
+	if kind == 1 {
+		g.dhcpReply(2, xid, flags, chaddr, g.device)
+		g.c.DHCPOffers++
+		return
+	}
+	if server, ok := opts[54]; ok && !bytes.Equal(server, g.gateway[:]) {
+		return
+	}
+	requested := opts[50]
+	if len(requested) == 0 && !bytes.Equal(p[12:16], []byte{0, 0, 0, 0}) {
+		requested = p[12:16]
+	}
+	if bytes.Equal(requested, g.device[:]) {
+		g.dhcpReply(5, xid, flags, chaddr, g.device)
+		g.c.DHCPAcks++
+		g.Leased = true
+	} else {
+		g.dhcpReply(6, xid, flags, chaddr, [4]byte{})
+		g.c.DHCPNaks++
+	}
+}
+
+func be32(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
+
+func (g *Gateway) dhcpReply(message byte, xid, flags []byte, chaddr [6]byte, yiaddr [4]byte) {
+	body := make([]byte, 0, 300)
+	body = append(body, 2, 1, 6, 0)
+	body = append(body, xid...)
+	body = append(body, 0, 0)
+	body = append(body, flags...)
+	body = append(body, 0, 0, 0, 0)
+	body = append(body, yiaddr[:]...)
+	body = append(body, g.gateway[:]...)
+	body = append(body, 0, 0, 0, 0)
+	body = append(body, chaddr[:]...)
+	body = append(body, make([]byte, 10+64+128)...)
+	body = append(body, 0x63, 0x82, 0x53, 0x63)
+	opt := []byte{53, 1, message, 54, 4}
+	opt = append(opt, g.gateway[:]...)
+	if message != 6 {
+		l := uint32(g.cfg.LeaseSeconds)
+		opt = append(append(opt, 51, 4), be32(l)...)
+		opt = append(append(opt, 58, 4), be32(l/2)...)
+		opt = append(append(opt, 59, 4), be32(l*7/8)...)
+		opt = append(opt, 1, 4, 255, 255, 255, 0)
+		opt = append(append(opt, 3, 4), g.gateway[:]...)
+		dns := []byte{}
+		for _, d := range g.cfg.Device.DNS {
+			a := d.As4()
+			dns = append(dns, a[:]...)
+		}
+		opt = append(append(opt, 6, byte(len(dns))), dns...)
+		opt = append(opt, 26, 2, byte(g.cfg.TunnelMTU>>8), byte(g.cfg.TunnelMTU))
+		bc := g.prefix.Addr().As4()
+		bc[3] = 255
+		opt = append(append(opt, 28, 4), bc[:]...)
+	}
+	opt = append(opt, 255)
+	udp := buildUDP(g.gateway, [4]byte{255, 255, 255, 255}, 67, 68, append(body, opt...))
+	g.sendFrame(broadcastMAC, ethIPv4, buildIPv4(g.gateway, [4]byte{255, 255, 255, 255}, 17, udp, g.nextIdent()))
+}
+
+// Deliver sends a packet received from the VPS to the device.
+func (g *Gateway) Deliver(packet []byte) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, _, _, dst, total, ok := parseIPv4(packet)
+	if !ok {
+		g.c.Malformed++
+		return false
+	}
+	if dst != g.device {
+		g.c.WrongDestination++
+		return false
+	}
+	if g.deviceMAC == nil {
+		g.c.NoDeviceMAC++
+		return false
+	}
+	p := decrementTTL(packet[:total])
+	if p == nil {
+		g.c.TTLExpired++
+		return false
+	}
+	p = clampTCPMSS(p, g.mssLimit)
+	if len(p) > DeviceMTU {
+		g.c.Malformed++
+		return false
+	}
+	g.c.PacketsFromTunnel++
+	return g.sendFrame(*g.deviceMAC, ethIPv4, p)
+}
+
+func (g *Gateway) fragNeeded(original []byte) {
+	header := int(original[0]&15) * 4
+	quoted := original[:min(len(original), header+8)]
+	icmp := append([]byte{3, 4, 0, 0, 0, 0, byte(g.cfg.TunnelMTU >> 8), byte(g.cfg.TunnelMTU)}, quoted...)
+	binary.BigEndian.PutUint16(icmp[2:], checksum(icmp, 0))
+	if g.deviceMAC != nil {
+		g.sendFrame(*g.deviceMAC, ethIPv4, buildIPv4(g.gateway, g.device, 1, icmp, g.nextIdent()))
+		g.c.FragNeededSent++
+	}
+}
+
+func (g *Gateway) nextIdent() uint16 { g.ident++; return g.ident }
+
+func (g *Gateway) sendFrame(dst [6]byte, ethertype uint16, payload []byte) bool {
+	frame := append(append(append([]byte{}, dst[:]...), g.mac[:]...), byte(ethertype>>8), byte(ethertype))
+	frame = append(frame, payload...)
+	if len(frame) < 60 {
+		frame = append(frame, make([]byte, 60-len(frame))...)
+	}
+	if err := g.io.Write(frame); err != nil {
+		g.c.WriteErrors++
+		return false
+	}
+	g.c.FramesOut++
+	return true
+}

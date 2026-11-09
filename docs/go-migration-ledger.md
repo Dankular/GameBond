@@ -55,7 +55,7 @@ a product decision before work starts.
 |---|---:|---|---|
 | `dns.py`, `dns_management.py` | 541 | `native-edge/dns` | PART | config validation, query parsing, override/refuse answers, UDP+TCP responder with upstream forward; byte-identical to Python on 3116 seeded/mutated queries (`tools/generate_native_dns_vectors.py`). Not done: IDNA (non-ASCII names rejected), upstream forwarding unverified against a real resolver, `dns_management` CLI, daemon wiring, `windows_dns` |
 | `nat.py` | 281 | `native-edge/nat` | PART | Outbound/inbound/ICMP-error translation, timeouts, eviction and counters byte-identical to Python on 7,640 generated steps with scripted port allocation (`tools/generate_native_nat_vectors.py`); no consumer yet (LAN gateway/OMR path not ported), no race/soak test |
-| `lan_gateway.py`, `network_scanner.py` | 879 | none | TODO |
+| `lan_gateway.py`, `network_scanner.py` | 879 | `native-edge/lan` (gateway only) | PART | ARP/DHCP/IPv4 forwarding, MAC pinning/stale takeover, TTL, MSS clamp, fragmentation, frag-needed, in-line DNS override (via `dns.Config.Override`) and counters match Python on 3,840 generated steps (`tools/generate_native_lan_vectors.py`). Not done: `lan_devices` config loading/uniqueness checks, `frame_io` (real adapter I/O via Npcap/raw), reader loop/lifecycle, `network_scanner.py`, daemon wiring |
 | `admin/` (HTTPS portal, auth, cert, system) | 440 | none | TODO (documented unsupported on the Go edge) |
 | `omr_glorytun.py`, `omr_admin.py`, `omr_settings.py` | 999 | none | TODO |
 | `tty_server.py` | 439 | none | TODO |
