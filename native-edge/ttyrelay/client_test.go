@@ -129,3 +129,24 @@ func TestControlStatusViaClient(t *testing.T) {
 		}
 	}
 }
+
+func TestRelayIsAnIOWriter(t *testing.T) {
+	r, path := startWithMeta(t)
+	if n, err := r.Write([]byte("daemon line 1\n")); n != 14 || err != nil {
+		t.Fatal(n, err)
+	}
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- Attach(path, 10, time.Second, &out) }()
+	time.Sleep(300 * time.Millisecond)
+	r.Write([]byte("daemon line 2\n"))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "daemon line 1\ndaemon line 2\n" {
+		t.Fatalf("%q", got)
+	}
+	if r.Counts().PublishedBytes != 28 {
+		t.Fatalf("%+v", r.Counts())
+	}
+}

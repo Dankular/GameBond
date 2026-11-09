@@ -465,6 +465,15 @@ func (r *Relay) publishLocked(data []byte) {
 	}
 }
 
+// Write publishes data to the ring and every attached reader, so the relay can
+// be used as an io.Writer for the daemon's own log output.
+func (r *Relay) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.publishLocked(append([]byte(nil), p...))
+	return len(p), nil
+}
+
 // tail is bytes.splitlines(keepends=True)[-lines:] joined.
 func tail(ring []byte, lines int) []byte {
 	if lines == 0 {

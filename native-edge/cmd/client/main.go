@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -27,6 +28,7 @@ import (
 	"gamebond.local/nativeedge/omr"
 	"gamebond.local/nativeedge/stackio"
 	"gamebond.local/nativeedge/status"
+	"gamebond.local/nativeedge/ttyrelay"
 	"gamebond.local/nativeedge/uplink"
 )
 
@@ -135,6 +137,7 @@ func run() error {
 	keyPath := flag.String("key", "secrets/gamebond.key", "shared key file")
 	stackPath := flag.String("netstack", "", "path to the netstack executable (required)")
 	usagePath := flag.String("usage", ".runtime/link-usage.json", "link usage ledger shared with the Python runtime")
+	ttyPath := flag.String("tty", "", "start the read-only log relay with this metadata file and publish daemon logs to it (empty disables)")
 	statusPath := flag.String("status", ".runtime/userspace-status.json", "status file for the control tooling (empty disables)")
 	flag.Parse()
 	if *stackPath == "" {
@@ -167,6 +170,16 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	var logOut, relayOnly io.Writer = os.Stderr, io.Discard
+	if *ttyPath != "" {
+		relay, err := ttyrelay.Start(ttyrelay.Options{Metadata: *ttyPath})
+		if err != nil {
+			return fmt.Errorf("log relay: %w", err)
+		}
+		defer relay.Close()
+		logOut, relayOnly = io.MultiWriter(os.Stderr, relay), relay
+	}
+
 	qosSettings, err := qosFromConfig(cfg.AdaptiveQoS)
 	if err != nil {
 		return err
@@ -180,7 +193,7 @@ func run() error {
 		gamePorts[p] = true
 	}
 	stack := exec.CommandContext(ctx, *stackPath, "--proxy-stdio")
-	stack.Stderr = os.Stderr
+	stack.Stderr = logOut
 	stdin, err := stack.StdinPipe()
 	if err != nil {
 		return err
@@ -307,19 +320,23 @@ func run() error {
 					}
 				}
 				if policies, changed, err := meter.Update(wire); err != nil {
-					fmt.Fprintln(os.Stderr, "usage metering failed:", err)
+					fmt.Fprintln(logOut, "usage metering failed:", err)
 				} else if changed {
 					if err := c.SetPolicies(policies); err != nil {
-						fmt.Fprintln(os.Stderr, "policy update failed:", err)
+						fmt.Fprintln(logOut, "policy update failed:", err)
 					}
 				}
 			}
 			if *statusPath != "" {
 				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr)); err != nil {
-					fmt.Fprintln(os.Stderr, "status write failed:", err)
+					fmt.Fprintln(logOut, "status write failed:", err)
 				}
 			}
-			fmt.Printf("{\"status\":\"running\",\"ready\":%d,\"uplinks\":%d,\"outbound\":%d,\"injected\":%d}\n", s.Ready, s.Uplinks, bridge.Outbound.Load(), bridge.Injected.Load())
+			line := fmt.Sprintf("{\"status\":\"running\",\"ready\":%d,\"uplinks\":%d,\"outbound\":%d,\"injected\":%d}\n", s.Ready, s.Uplinks, bridge.Outbound.Load(), bridge.Injected.Load())
+			fmt.Print(line)
+			if *ttyPath != "" {
+				io.WriteString(relayOnly, line)
+			}
 		}
 	}()
 	err = <-errs
