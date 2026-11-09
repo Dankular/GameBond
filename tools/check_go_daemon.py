@@ -61,6 +61,7 @@ def main():
         (tmp / 'key').write_bytes(key)
         (tmp / 'config.json').write_text(json.dumps(dict(session=session.hex(), bind=[['127.0.0.1', 0], ['127.0.0.1', 0]],
                                                          peer=[host, port], mtu=1280, game_udp_ports=[27015],
+                                                         link_policies={'0': dict(role='primary', daily_bytes=30000), '1': dict(role='primary')},
                                                          bonding_initial_rate_mbps=10, bonding_max_rate_mbps=100)))
         (tmp / 'stack.py').write_text(FAKE_STACK)
         launcher = tmp / ('stack.cmd' if sys.platform == 'win32' else 'stack.sh')
@@ -69,7 +70,7 @@ def main():
         launcher.write_text(('@echo off\r\n' + script) if sys.platform == 'win32' else script)
         launcher.chmod(0o755)
         try:
-            process = subprocess.Popen([str(exe), '-config', str(tmp / 'config.json'), '-key', str(tmp / 'key'), '-netstack', str(launcher), '-status', str(tmp / 'status.json')],
+            process = subprocess.Popen([str(exe), '-config', str(tmp / 'config.json'), '-key', str(tmp / 'key'), '-netstack', str(launcher), '-status', str(tmp / 'status.json'), '-usage', str(tmp / 'usage.json')],
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             received = []
@@ -100,6 +101,17 @@ def main():
             assert injected >= 50, injected
             stats = server.stats()
             assert stats['auth_failures'] == 0
+            # Uplink 0 has a 30 kB daily cap and must be blocked once metered; uplink 1 stays open.
+            deadline = time.monotonic() + 8
+            blocked = []
+            while time.monotonic() < deadline:
+                blocked = sorted(bool(p.get('link_policy') and p['link_policy']['blocked']) for p in server.stats()['paths'])
+                if blocked == [False, True]:
+                    break
+                time.sleep(.2)
+            assert blocked == [False, True], f'cap not enforced on the server view: {blocked}'
+            ledger = json.loads((tmp / 'usage.json').read_text())
+            assert ledger['version'] == 1 and sum(sum(d.values()) for d in ledger['links']['0'].values()) >= 30000, ledger
             status = None
             for _ in range(60):    # the daemon rewrites its status once a second
                 time.sleep(.1)

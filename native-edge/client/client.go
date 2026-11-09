@@ -49,6 +49,7 @@ type Client struct {
 	conns    []*net.UDPConn
 	incoming chan inbound
 	submit   chan bond.QueuedPacket
+	policies chan []bond.PathPolicy
 	once     sync.Once
 	mu       sync.Mutex
 	snapshot Snapshot
@@ -111,7 +112,7 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096)}
+	c := &Client{cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4)}
 	now := time.Now()
 	for i, spec := range cfg.Uplinks {
 		conn, err := uplink.Open(spec)
@@ -215,6 +216,10 @@ func (c *Client) Run(ctx context.Context) error {
 			handle(res, time.Now())
 		case p := <-c.submit:
 			c.queue.Enqueue(p)
+		case policies := <-c.policies:
+			if err := c.recv.SetClientLinkPolicies(policies, time.Now()); err != nil {
+				return err
+			}
 		case <-tick.C:
 		}
 		now := time.Now()
@@ -239,5 +244,20 @@ func (c *Client) Run(ctx context.Context) error {
 			c.snapshot.Queue, c.snapshot.Paths = c.queue.Stats(), c.sender.Paths(now)
 			c.mu.Unlock()
 		}
+	}
+}
+
+// SetPolicies installs a new per-uplink policy set (one entry per uplink, by
+// index). The server must acknowledge it before an uplink carries payload
+// again, exactly as at start-up.
+func (c *Client) SetPolicies(policies []bond.PathPolicy) error {
+	if len(policies) != len(c.conns) {
+		return ErrConfig
+	}
+	select {
+	case c.policies <- append([]bond.PathPolicy(nil), policies...):
+		return nil
+	default:
+		return errors.New("client: policy update queue full")
 	}
 }

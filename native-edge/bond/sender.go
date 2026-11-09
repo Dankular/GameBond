@@ -468,6 +468,7 @@ type PathSnapshot struct {
 	MTUAcks, MTUSkips                                uint64
 	PolicyConfirmed                                  bool
 	Suspect                                          bool
+	Local                                            int // client uplink index (socket slot)
 }
 
 func (s *Sender) Paths(now time.Time) []PathSnapshot {
@@ -478,9 +479,14 @@ func (s *Sender) Paths(now time.Time) []PathSnapshot {
 			copy := *p.policy
 			policy = &copy
 		}
-		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats(), mtuStats(p), p.mtuAcks, p.mtuSkips, p.policyConfirmed, p.suspect})
+		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats(), mtuStats(p), p.mtuAcks, p.mtuSkips, p.policyConfirmed, p.suspect, p.local})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Endpoint.Compare(out[j].Endpoint) < 0 })
+	sort.Slice(out, func(i, j int) bool {
+		if c := out[i].Endpoint.Compare(out[j].Endpoint); c != 0 {
+			return c < 0
+		}
+		return out[i].Local < out[j].Local
+	})
 	return out
 }
 

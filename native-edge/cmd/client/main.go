@@ -15,10 +15,12 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"time"
 
 	"gamebond.local/nativeedge/bond"
 	"gamebond.local/nativeedge/client"
+	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/stackio"
 	"gamebond.local/nativeedge/status"
 	"gamebond.local/nativeedge/uplink"
@@ -26,16 +28,17 @@ import (
 
 // fileConfig is the subset of configs/local-client.json this daemon reads.
 type fileConfig struct {
-	Session        string   `json:"session"`
-	Bind           [][]any  `json:"bind"` // [[ip, port], ...] one per uplink; port is ignored (ephemeral)
-	Peer           []any    `json:"peer"`
-	MTU            int      `json:"mtu"`
-	InitialMbps    float64  `json:"bonding_initial_rate_mbps"`
-	MaxMbps        float64  `json:"bonding_max_rate_mbps"`
-	FailoverReplay bool     `json:"failover_replay"`
-	GameUDPPorts   []uint16 `json:"game_udp_ports"`
-	PathMTU        bool     `json:"path_mtu_discovery"`
-	InterfaceIndex []int    `json:"interface_indices"` // pin uplink i to this adapter index
+	Session        string                       `json:"session"`
+	Bind           [][]any                      `json:"bind"` // [[ip, port], ...] one per uplink; port is ignored (ephemeral)
+	Peer           []any                        `json:"peer"`
+	MTU            int                          `json:"mtu"`
+	InitialMbps    float64                      `json:"bonding_initial_rate_mbps"`
+	MaxMbps        float64                      `json:"bonding_max_rate_mbps"`
+	FailoverReplay bool                         `json:"failover_replay"`
+	LinkPolicies   map[string]linkpolicy.Policy `json:"link_policies"` // keyed by interface index, as in Python
+	GameUDPPorts   []uint16                     `json:"game_udp_ports"`
+	PathMTU        bool                         `json:"path_mtu_discovery"`
+	InterfaceIndex []int                        `json:"interface_indices"` // pin uplink i to this adapter index
 }
 
 func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
@@ -79,6 +82,7 @@ func run() error {
 	configPath := flag.String("config", "configs/local-client.json", "client config")
 	keyPath := flag.String("key", "secrets/gamebond.key", "shared key file")
 	stackPath := flag.String("netstack", "", "path to the netstack executable (required)")
+	usagePath := flag.String("usage", ".runtime/link-usage.json", "link usage ledger shared with the Python runtime")
 	statusPath := flag.String("status", ".runtime/userspace-status.json", "status file for the control tooling (empty disables)")
 	flag.Parse()
 	if *stackPath == "" {
@@ -142,6 +146,30 @@ func run() error {
 		return err
 	}
 	bridge.Uplink = c
+	var meter *linkpolicy.Meter
+	if len(cfg.LinkPolicies) > 0 {
+		keys := make([]string, len(specs))
+		policies := make([]linkpolicy.Policy, len(specs))
+		for i := range specs {
+			keys[i] = strconv.Itoa(i) // no adapter index configured: key by uplink slot
+			if specs[i].InterfaceIndex != 0 {
+				keys[i] = strconv.Itoa(specs[i].InterfaceIndex) // as in the Python config
+			}
+			p, ok := cfg.LinkPolicies[keys[i]]
+			if !ok {
+				return fmt.Errorf("link_policies has no entry for uplink %d (key %q)", i, keys[i])
+			}
+			if err := p.Validate(); err != nil {
+				return fmt.Errorf("link policy %q: %w", keys[i], err)
+			}
+			policies[i] = p
+		}
+		ledger, err := linkpolicy.OpenLedger(*usagePath)
+		if err != nil {
+			return err
+		}
+		meter = linkpolicy.NewMeter(ledger, keys, policies)
+	}
 	if err = stack.Start(); err != nil {
 		return err
 	}
@@ -153,6 +181,21 @@ func run() error {
 		for ctx.Err() == nil {
 			time.Sleep(time.Second)
 			s := c.Snapshot()
+			if meter != nil {
+				wire := make([][2]uint64, len(specs))
+				for _, p := range s.Paths {
+					if p.Local < len(wire) {
+						wire[p.Local] = [2]uint64{p.WireTX, p.WireRX}
+					}
+				}
+				if policies, changed, err := meter.Update(wire); err != nil {
+					fmt.Fprintln(os.Stderr, "usage metering failed:", err)
+				} else if changed {
+					if err := c.SetPolicies(policies); err != nil {
+						fmt.Fprintln(os.Stderr, "policy update failed:", err)
+					}
+				}
+			}
 			if *statusPath != "" {
 				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge)); err != nil {
 					fmt.Fprintln(os.Stderr, "status write failed:", err)
@@ -182,8 +225,8 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 		state = "running"
 	}
 	paths := make([]map[string]any, 0, len(s.Paths))
-	for i, p := range s.Paths {
-		paths = append(paths, map[string]any{"slot": i, "ready": p.Ready, "healthy": p.Healthy, "suspect": p.Suspect,
+	for _, p := range s.Paths {
+		paths = append(paths, map[string]any{"slot": p.Local, "ready": p.Ready, "healthy": p.Healthy, "suspect": p.Suspect,
 			"rtt_ms": p.RTTMilliseconds, "rtt_jitter_ms": p.JitterMilliseconds, "wire_tx_bytes": p.WireTX, "wire_rx_bytes": p.WireRX,
 			"policy_confirmed": p.PolicyConfirmed, "remote": p.Endpoint.String()})
 	}
