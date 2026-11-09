@@ -178,3 +178,20 @@ func TestPacedThroughputIsNotCappedByTimerGranularity(t *testing.T) {
 		t.Fatalf("throughput %.1f Mbit/s is at the old ~60 Mbit/s timer-granularity ceiling", mbit)
 	}
 }
+
+func TestDFEnforcedFollowsPathMTUDiscovery(t *testing.T) {
+	key, session := bytes.Repeat([]byte{9}, 32), bytes.Repeat([]byte{8}, 16)
+	server := netip.MustParseAddrPort("127.0.0.1:9")
+	lo := netip.MustParseAddr("127.0.0.1")
+	for _, discover := range []bool{false, true} {
+		c, err := New(Config{Key: key, Session: session, Server: server, Uplinks: []uplink.Spec{{Addr: lo}},
+			Policies: []bond.PathPolicy{{Role: bond.Primary, UploadMbps: 50, DownloadMbps: 50}}, Discover: discover, Deliver: func([]byte) {}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := c.DFEnforced(); len(got) != 1 || got[0] != discover {
+			t.Errorf("discover=%v: %v", discover, got)
+		}
+		c.closeConns()
+	}
+}

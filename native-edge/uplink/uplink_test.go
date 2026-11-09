@@ -70,3 +70,23 @@ func TestInterfaceForFindsTheOwningAdapter(t *testing.T) {
 		t.Fatal("an address no adapter owns was resolved")
 	}
 }
+
+func TestDontFragmentIsAppliedAndReported(t *testing.T) {
+	lo := netip.MustParseAddr("127.0.0.1")
+	plain, err := Open(Spec{Addr: lo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	if DFEnforced(plain) {
+		t.Error("don't-fragment reported on a socket that did not ask for it")
+	}
+	df, err := Open(Spec{Addr: lo, DontFragment: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer df.Close()
+	if !DFEnforced(df) {
+		t.Error("don't-fragment not set")
+	}
+}

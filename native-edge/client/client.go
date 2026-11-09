@@ -153,6 +153,7 @@ func New(cfg Config) (*Client, error) {
 	c := &Client{qos: qos, cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4), rebind: make(chan rebindRequest), done: make(chan struct{}), specs: append([]uplink.Spec(nil), cfg.Uplinks...)}
 	now := hrclock.Now()
 	for i, spec := range cfg.Uplinks {
+		spec.DontFragment = cfg.Discover
 		conn, err := uplink.Open(spec)
 		if err != nil {
 			c.closeConns()
@@ -476,7 +477,9 @@ func (c *Client) doRebind(req rebindRequest) rebindResult {
 		var sock *carrier.Socket
 		if live {
 			var err error
-			if conn, err = uplink.Open(spec); err != nil {
+			dfSpec := spec
+			dfSpec.DontFragment = c.cfg.Discover
+			if conn, err = uplink.Open(dfSpec); err != nil {
 				res.errs = append(res.errs, RebindError{i, err.Error()})
 				live = false
 			} else if c.cfg.Outer != nil && spec.Addr.IsValid() && !spec.Addr.IsUnspecified() {
@@ -513,4 +516,16 @@ func (c *Client) doRebind(req rebindRequest) rebindResult {
 		c.mu.Unlock()
 	}
 	return res
+}
+
+// DFEnforced reports, per uplink, whether don't-fragment is set (Python's
+// mtu.df_enforced). False for an unavailable uplink or when discovery is off.
+func (c *Client) DFEnforced() []bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]bool, len(c.conns))
+	for i, conn := range c.conns {
+		out[i] = conn != nil && c.cfg.Discover && uplink.DFEnforced(conn)
+	}
+	return out
 }

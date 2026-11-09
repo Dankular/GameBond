@@ -25,6 +25,10 @@ type Spec struct {
 	InterfaceIndex int
 	// Buffer is the socket send and receive buffer in bytes (0 keeps the default).
 	Buffer int
+	// DontFragment sets the don't-fragment option (path MTU discovery), best
+	// effort like Python's _enable_df: a platform that refuses it still opens;
+	// DFEnforced reports whether it took effect.
+	DontFragment bool
 }
 
 var ErrUnsupported = errors.New("uplink: adapter pinning is not supported on this platform")
@@ -50,6 +54,9 @@ func Open(s Spec) (*net.UDPConn, error) {
 			}
 			if inner == nil && s.Buffer > 0 {
 				inner = setBuffers(fd, s.Buffer)
+			}
+			if inner == nil && s.DontFragment {
+				_ = setDF(fd)
 			}
 		}); err != nil {
 			return err
@@ -87,4 +94,17 @@ func Control(s Spec) func(network, address string, c syscall.RawConn) error {
 		}
 		return inner
 	}
+}
+
+// DFEnforced reports whether the socket has the don't-fragment option set.
+func DFEnforced(c *net.UDPConn) bool {
+	raw, err := c.SyscallConn()
+	if err != nil {
+		return false
+	}
+	on := false
+	if raw.Control(func(fd uintptr) { on = getDF(fd) }) != nil {
+		return false
+	}
+	return on
 }
