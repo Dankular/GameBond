@@ -165,3 +165,43 @@ func (r *Receiver) sendPolicy(p *receivePath, now time.Time, out *ReceiveResult)
 	p.policySent = now
 	return r.write(LinkPolicy, payload, p.local, p.endpoint, out)
 }
+
+// RebindClientPath restarts one uplink after its socket was replaced (adapter
+// or address change): the path gets fresh budget, MTU and handshake state and
+// must handshake again, in-flight probes and a pending UDP recovery are
+// dropped, wire usage counters carry over, and an installed link policy is
+// re-applied unconfirmed. A parked path (adapter unavailable) is not polled. The peer session and other paths are untouched.
+func (r *Receiver) RebindClientPath(local int, now time.Time, parked bool) error {
+	if r.role != "client" {
+		return errNotClient
+	}
+	var old *receivePath
+	for _, p := range r.paths {
+		if p.local == local {
+			old = p
+			break
+		}
+	}
+	if old == nil {
+		return ErrFrame
+	}
+	fresh, err := r.freshPath(local, old.endpoint, now)
+	if err != nil {
+		return err
+	}
+	fresh.wireRX, fresh.wireTX = old.wireRX, old.wireTX
+	fresh.parked = parked
+	if old.policy != nil {
+		policy := *old.policy
+		fresh.policy, fresh.policyRevision = &policy, r.policyRevisionClient
+		fresh.pacer.SetRate(policy.UploadMbps, r.seconds(now))
+	}
+	for token, probe := range r.probes {
+		if probe.path == old {
+			delete(r.probes, token)
+		}
+	}
+	delete(r.recovery, local)
+	r.paths[old.key()] = fresh
+	return nil
+}

@@ -71,6 +71,12 @@ type Client struct {
 	once     sync.Once
 	mu       sync.Mutex
 	snapshot Snapshot
+	specs    []uplink.Spec
+	avail    []bool
+	rebind   chan rebindRequest
+	runCtx   context.Context
+	done     chan struct{}
+	rebinds  uint64
 }
 
 // Snapshot is a copy of the loop's counters, safe to read from any goroutine.
@@ -82,6 +88,8 @@ type Snapshot struct {
 	Queue    bond.TransmitQueueStats
 	Paths    []bond.PathSnapshot
 	Rejected uint64
+	// Rebinds counts uplinks rebound by UpdateUplinks (Python path_rebinds).
+	Rebinds uint64
 	// Carrier has one entry per uplink; Mode is empty for a plain UDP uplink.
 	Carrier []carrier.Stats
 	// QoS is AdaptiveQoS.Stats; nil when adaptive QoS is not configured.
@@ -142,7 +150,7 @@ func New(cfg Config) (*Client, error) {
 		}
 		q.SetQoS(qos)
 	}
-	c := &Client{qos: qos, cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4)}
+	c := &Client{qos: qos, cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4), rebind: make(chan rebindRequest), done: make(chan struct{}), specs: append([]uplink.Spec(nil), cfg.Uplinks...)}
 	now := hrclock.Now()
 	for i, spec := range cfg.Uplinks {
 		conn, err := uplink.Open(spec)
@@ -160,6 +168,7 @@ func New(cfg Config) (*Client, error) {
 			}
 		}
 		c.socks = append(c.socks, sock)
+		c.avail = append(c.avail, true)
 		c.lastRec = append(c.lastRec, time.Time{})
 		if err = r.AddClientPath(i, cfg.Server, now); err != nil {
 			c.closeConns()
@@ -235,41 +244,10 @@ func (c *Client) write(d bond.Datagram) error {
 // Run drives the protocol until ctx ends, then closes the sockets.
 func (c *Client) Run(ctx context.Context) error {
 	defer c.closeConns()
+	c.runCtx = ctx
+	defer close(c.done)
 	for i := range c.conns {
-		if c.socks[i] != nil {
-			go func(i int) {
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case r, ok := <-c.socks[i].Recv():
-						if !ok {
-							return
-						}
-						select {
-						case c.incoming <- inbound{i, r.Packet, c.cfg.Server, &r}:
-						case <-ctx.Done():
-							return
-						}
-					}
-				}
-			}(i)
-			continue
-		}
-		go func(i int) {
-			buf := make([]byte, 65536)
-			for {
-				n, from, err := c.conns[i].ReadFromUDPAddrPort(buf)
-				if err != nil {
-					return
-				}
-				select {
-				case c.incoming <- inbound{i, append([]byte(nil), buf[:n]...), from, nil}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}(i)
+		c.startReader(ctx, i, c.conns[i], c.socks[i])
 	}
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
@@ -315,6 +293,8 @@ func (c *Client) Run(ctx context.Context) error {
 			if err := c.recv.SetClientLinkPolicies(policies, hrclock.Now()); err != nil {
 				return err
 			}
+		case req := <-c.rebind:
+			req.reply <- c.doRebind(req)
 		case <-idle:
 		}
 		now := hrclock.Now()
@@ -394,4 +374,143 @@ func (c *Client) SetPolicies(policies []bond.PathPolicy) error {
 	default:
 		return errors.New("client: policy update queue full")
 	}
+}
+
+// startReader forwards what one uplink receives into the loop. It ends when
+// its socket is closed (including when the slot is rebound).
+func (c *Client) startReader(ctx context.Context, i int, conn *net.UDPConn, sock *carrier.Socket) {
+	if sock != nil {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case r, ok := <-sock.Recv():
+					if !ok {
+						return
+					}
+					select {
+					case c.incoming <- inbound{i, r.Packet, c.cfg.Server, &r}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}()
+		return
+	}
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, from, err := conn.ReadFromUDPAddrPort(buf)
+			if err != nil {
+				return
+			}
+			select {
+			case c.incoming <- inbound{i, append([]byte(nil), buf[:n]...), from, nil}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// RebindError reports an uplink that could not be bound by UpdateUplinks.
+type RebindError struct {
+	Slot  int
+	Error string
+}
+
+type rebindRequest struct {
+	specs []uplink.Spec
+	avail []bool
+	reply chan rebindResult
+}
+
+type rebindResult struct {
+	errs []RebindError
+	err  error
+}
+
+// ErrNotRunning is returned by UpdateUplinks when Run is not active.
+var ErrNotRunning = errors.New("client: not running")
+
+// UpdateUplinks follows adapter changes (update_client_paths): only uplinks
+// whose spec or availability changed get a new socket and a restarted path;
+// the peer session and the other uplinks keep running. An unavailable or
+// unbindable uplink is parked on a loopback socket, so it never handshakes,
+// and a bind failure is reported per slot. available may be nil (all up).
+// The slot count must not change.
+func (c *Client) UpdateUplinks(specs []uplink.Spec, available []bool) ([]RebindError, error) {
+	if len(specs) != len(c.specs) || (available != nil && len(available) != len(specs)) {
+		return nil, fmt.Errorf("%w: client path slots must remain stable", ErrConfig)
+	}
+	if available == nil {
+		available = make([]bool, len(specs))
+		for i := range available {
+			available[i] = true
+		}
+	}
+	req := rebindRequest{append([]uplink.Spec(nil), specs...), append([]bool(nil), available...), make(chan rebindResult, 1)}
+	select {
+	case c.rebind <- req:
+	case <-c.done:
+		return nil, ErrNotRunning
+	case <-time.After(5 * time.Second):
+		return nil, ErrNotRunning
+	}
+	r := <-req.reply
+	return r.errs, r.err
+}
+
+// doRebind runs on the loop goroutine, which owns the socket slices.
+func (c *Client) doRebind(req rebindRequest) rebindResult {
+	var res rebindResult
+	now := hrclock.Now()
+	for i, spec := range req.specs {
+		if spec == c.specs[i] && req.avail[i] == c.avail[i] {
+			continue
+		}
+		live := req.avail[i]
+		var conn *net.UDPConn
+		var sock *carrier.Socket
+		if live {
+			var err error
+			if conn, err = uplink.Open(spec); err != nil {
+				res.errs = append(res.errs, RebindError{i, err.Error()})
+				live = false
+			} else if c.cfg.Outer != nil && spec.Addr.IsValid() && !spec.Addr.IsUnspecified() {
+				if sock, err = carrier.NewSocket(conn, net.UDPAddrFromAddrPort(c.cfg.Server), c.cfg.Key, c.cfg.Session, *c.cfg.Outer, uplink.Control(spec)); err != nil {
+					conn.Close()
+					res.errs = append(res.errs, RebindError{i, err.Error()})
+					live = false
+				}
+			}
+		}
+		if !live {
+			var err error
+			if conn, err = uplink.Open(uplink.Spec{Addr: netip.MustParseAddr("127.0.0.1")}); err != nil {
+				res.err = err
+				return res
+			}
+			sock = nil
+		}
+		oldConn, oldSock := c.conns[i], c.socks[i]
+		c.conns[i], c.socks[i], c.specs[i], c.avail[i] = conn, sock, spec, live
+		c.lastRec[i] = time.Time{}
+		if err := c.recv.RebindClientPath(i, now, !live); err != nil {
+			res.err = err
+			return res
+		}
+		if oldSock != nil {
+			oldSock.Close()
+		}
+		oldConn.Close()
+		c.startReader(c.runCtx, i, conn, sock)
+		c.mu.Lock()
+		c.rebinds++
+		c.snapshot.Rebinds = c.rebinds
+		c.mu.Unlock()
+	}
+	return res
 }

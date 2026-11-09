@@ -82,6 +82,8 @@ type receivePath struct {
 	mtuAcks, mtuSkips                uint64
 	suspect                          bool
 	peerCopy                         [3]uint64
+	// parked: the adapter is gone; never polled, never ready.
+	parked bool
 }
 type pendingProbe struct {
 	at   time.Time
@@ -551,6 +553,9 @@ func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 			}
 		}
 		for _, p := range r.paths {
+			if p.parked {
+				continue
+			}
 			if r.role == "client" && (!p.ready || now.Sub(p.last) >= 3*time.Second) {
 				if err := r.clientPoll(p, now, &out); err != nil {
 					return out, err
@@ -637,7 +642,7 @@ func (r *Receiver) StartRecovery(local int, now time.Time) (Datagram, error) {
 			break
 		}
 	}
-	if path == nil {
+	if path == nil || path.parked {
 		return Datagram{}, ErrFrame
 	}
 	var nonce [16]byte
