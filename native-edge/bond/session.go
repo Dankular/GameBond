@@ -73,7 +73,7 @@ func (s *Session) syncPeer() {
 		s.Transmit.syncPeer()
 		s.Inject.Reset()
 		s.classifier.Reset()
-		s.qos.previous = make(map[*receivePath]qualityCounters)
+		s.qos.previous = make(map[qosKey]qualityCounters)
 		s.qos.quality = nil
 		s.qos.last = time.Time{}
 		clear(s.qos.until)

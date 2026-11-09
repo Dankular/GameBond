@@ -3,6 +3,8 @@ package bond
 import (
 	"container/list"
 	"math"
+	"sort"
+	"strconv"
 	"time"
 )
 
@@ -189,11 +191,34 @@ func (c *Classifier) Classify(info IPv4Info, now time.Time) Classification {
 type PathQuality struct {
 	Endpoint                                                     string
 	Loss, FeedbackTimeoutRatio, ProbeLoss, JitterMS, PredictedMS float64
+	CopyLoss                                                     float64
+	CopySamples                                                  uint64
 }
-type qualityCounters struct{ expired, acked, probeLost, probeAcked, delivered uint64 }
+
+// QoSPath is one path's counters and timings, the Go form of an entry in the
+// Python transport snapshot AdaptiveQoS.observe consumes.
+type QoSPath struct {
+	Slot                                  int
+	Local, Remote                         string
+	Available, Enabled, Healthy           bool
+	RTTMS                                 *float64
+	JitterMS, QueueDelayMS, SettledLoss   float64
+	Expired, Acked, ProbeLost, ProbeAcked uint64
+	DeliveredBytes                        uint64
+	CopySeen, CopyMissed                  uint64
+}
+
+// MinCopySamples is the fewest replica comparisons treated as a rate.
+const MinCopySamples = 8
+
+type qosKey struct {
+	slot          int
+	local, remote string
+}
+type qualityCounters struct{ expired, acked, probeLost, probeAcked, delivered, copySeen, copyMissed uint64 }
 type AdaptiveQoS struct {
 	settings                                   QoSSettings
-	previous                                   map[*receivePath]qualityCounters
+	previous                                   map[qosKey]qualityCounters
 	last                                       time.Time
 	quality                                    []PathQuality
 	until                                      map[byte]time.Time
@@ -207,7 +232,7 @@ func NewAdaptiveQoS(settings QoSSettings) (*AdaptiveQoS, error) {
 	if err := settings.Validate(); err != nil {
 		return nil, err
 	}
-	return &AdaptiveQoS{settings: settings, previous: make(map[*receivePath]qualityCounters), until: make(map[byte]time.Time), reasons: make(map[byte][]string), tokens: 2800}, nil
+	return &AdaptiveQoS{settings: settings, previous: make(map[qosKey]qualityCounters), until: make(map[byte]time.Time), reasons: make(map[byte][]string), tokens: 2800}, nil
 }
 func delta(now, before uint64) float64 {
 	if now < before {
@@ -215,45 +240,79 @@ func delta(now, before uint64) float64 {
 	}
 	return float64(now - before)
 }
+
+// Observe samples the sender's paths at most every 500 ms.
 func (q *AdaptiveQoS) Observe(sender *Sender, now time.Time) {
 	if !q.last.IsZero() && now.Sub(q.last) < 500*time.Millisecond {
 		return
 	}
 	q.last = now
-	q.samples++
-	q.quality = nil
-	previous := make(map[*receivePath]qualityCounters)
 	eligible := make(map[*receivePath]bool)
 	for _, p := range sender.eligible(now, true) {
 		eligible[p] = true
 	}
-	for _, p := range sender.r.paths {
+	var paths []QoSPath
+	for k, p := range sender.r.paths {
 		b := p.budget
-		totals := qualityCounters{b.expiredPackets, b.ackedPackets, p.probeLost, p.probeAcked, b.deliveryCounter}
-		old, ok := q.previous[p]
+		qp := QoSPath{Slot: k.Local, Local: strconv.Itoa(k.Local), Remote: p.endpoint.String(), Available: true, Enabled: true, Healthy: eligible[p],
+			JitterMS: p.jitter * 1000, Expired: b.expiredPackets, Acked: b.ackedPackets, ProbeLost: p.probeLost, ProbeAcked: p.probeAcked,
+			DeliveredBytes: b.deliveryCounter, SettledLoss: b.lossRatio}
+		if p.hasRTT {
+			rtt := p.rtt * 1000
+			qp.RTTMS = &rtt
+		}
+		if b.hasMin {
+			qp.QueueDelayMS = math.Max(0, b.srtt-b.minRTT) * 1000
+		}
+		paths = append(paths, qp)
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		if paths[i].Slot != paths[j].Slot {
+			return paths[i].Slot < paths[j].Slot
+		}
+		return paths[i].Remote < paths[j].Remote
+	})
+	q.ObservePaths(paths, now)
+}
+
+// ObservePaths is AdaptiveQoS.observe: one quality sample from a snapshot.
+func (q *AdaptiveQoS) ObservePaths(paths []QoSPath, now time.Time) {
+	q.samples++
+	q.quality = nil
+	previous := make(map[qosKey]qualityCounters)
+	if len(paths) > 64 {
+		paths = paths[:64]
+	}
+	for _, p := range paths {
+		key := qosKey{p.Slot, p.Local, p.Remote}
+		totals := qualityCounters{p.Expired, p.Acked, p.ProbeLost, p.ProbeAcked, p.DeliveredBytes, p.CopySeen, p.CopyMissed}
+		old, ok := q.previous[key]
 		if !ok {
 			old = totals
 		}
-		previous[p] = totals
-		if !eligible[p] {
-			continue
-		}
+		previous[key] = totals
 		expired, acked := delta(totals.expired, old.expired), delta(totals.acked, old.acked)
 		lost, probeAcked := delta(totals.probeLost, old.probeLost), delta(totals.probeAcked, old.probeAcked)
 		txLoss := 0.
 		if totals.delivered > old.delivered {
-			txLoss = math.Max(0, math.Min(1, b.lossRatio))
+			txLoss = math.Max(0, math.Min(1, p.SettledLoss))
 		}
 		probeLoss := lost / math.Max(1, lost+probeAcked)
-		predicted := 1.
-		if p.hasRTT {
-			predicted = p.rtt / 2
+		seen, missed := delta(totals.copySeen, old.copySeen), delta(totals.copyMissed, old.copyMissed)
+		copyLoss := 0.
+		if seen+missed >= MinCopySamples {
+			copyLoss = missed / (seen + missed)
 		}
-		queueDelay := 0.
-		if b.hasMin {
-			queueDelay = math.Max(0, b.srtt-b.minRTT)
+		if !(p.Available && p.Enabled && p.Healthy) {
+			continue
 		}
-		q.quality = append(q.quality, PathQuality{p.endpoint.String(), math.Max(txLoss, probeLoss), expired / math.Max(1, expired+acked), probeLoss, p.jitter * 1000, (predicted + 2*p.jitter + queueDelay) * 1000})
+		predicted := 1000.
+		if p.RTTMS != nil {
+			predicted = *p.RTTMS / 2
+		}
+		predicted += 2*p.JitterMS + math.Max(0, p.QueueDelayMS)
+		q.quality = append(q.quality, PathQuality{Endpoint: p.Remote, Loss: math.Max(txLoss, math.Max(probeLoss, copyLoss)), FeedbackTimeoutRatio: expired / math.Max(1, expired+acked),
+			ProbeLoss: probeLoss, JitterMS: p.JitterMS, PredictedMS: predicted, CopyLoss: copyLoss, CopySamples: uint64(seen + missed)})
 	}
 	q.previous = previous
 	for tag, deadline := range map[byte]float64{26: q.settings.CallDeadlineMS, 18: q.settings.StreamDeadlineMS} {
@@ -267,6 +326,9 @@ func (q *AdaptiveQoS) Observe(sender *Sender, now time.Time) {
 			}
 			if best.Loss >= q.settings.LossThreshold {
 				reasons = append(reasons, "measured_loss")
+			}
+			if best.CopyLoss >= q.settings.LossThreshold {
+				reasons = append(reasons, "copy_loss")
 			}
 			if best.FeedbackTimeoutRatio >= q.settings.LossThreshold {
 				reasons = append(reasons, "feedback_timeout")
