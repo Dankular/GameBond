@@ -4,7 +4,7 @@ const NAV = [
   ["Network", [["interfaces", "Interfaces"], ["devices", "Connected Devices"], ["routes", "Routing"]]],
   ["System", [["config", "Configuration"], ["admin", "Administration"], ["restart", "Restart Service"]]],
 ];
-let csrf = null, timer = null, history = [];
+let csrf = null, timer = null, routeVersion = 0;
 const $ = (id) => document.getElementById(id);
 function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -43,9 +43,9 @@ async function login() {
 }
 
 const pages = {
-  async overview() {
+  async overview(active = () => true) {
     const s = (await api("status")).data, t = s.transport, paths = t.paths || [], up = paths.filter((p) => p.healthy).length;
-    $("notice").replaceChildren(...(up < paths.length ? [h("div", { class: "notice" }, h("b", {}, up ? "Degraded" : "No client connected"), `${up} of ${paths.length} uplinks healthy.`)] : []));
+    if (active()) $("notice").replaceChildren(...(up < paths.length ? [h("div", { class: "notice" }, h("b", {}, up ? "Degraded" : "No client connected"), `${up} of ${paths.length} uplinks healthy.`)] : []));
     return [h("h2", {}, "Status"), h("h3", {}, "System"), kv([["Version", s.version], ["Process ID", s.pid], ["Observed", s.observed_at], ["Bonding mode", s.config.bonding_mode ? "enabled" : "disabled"], ["Tunnel MTU", s.config.mtu]]),
       h("h3", {}, "Tunnel"), kv([["Uplinks healthy", `${up} / ${paths.length}`], ["Client tunnel address", s.config.client_tunnel_ip], ["Listening", s.config.bind.map((b) => b.join(":")).join(", ")],
         ["Dropped (wrong address)", s.packets.wrong_tunnel_address], ["Dropped (no path)", s.packets.no_path_drops], ["Malformed", s.packets.malformed]])];
@@ -60,9 +60,9 @@ const pages = {
       h("h3", {}, "Per DSCP"), grid(["DSCP", "Enqueued", "Dequeued", "Stale drops", "Full drops", "Queued"], Object.entries(stats).map(([d, v]) => [d, v.enqueued, v.dequeued, v.dropped_stale, v.dropped_full, v.queued])),
       h("h3", {}, "Configured queues"), h("pre", {}, JSON.stringify(s.config.queues, null, 2)), h("p", { class: "muted" }, "Game UDP ports: " + (s.config.game_udp_ports.join(", ") || "none"))];
   },
-  async bandwidth() {
+  async bandwidth(active = () => true) {
     const cv = h("canvas", { width: 900, height: 200 }), info = h("p", { class: "muted" }, "Sampling…");
-    drawBw(cv, info);
+    drawBw(cv, info, active);
     return [h("h2", {}, "Realtime Graphs"), h("h3", {}, "Bandwidth (all uplinks, wire bytes)"), cv, info];
   },
   async firewall() { const r = (await api("nat")).data; return [h("h2", {}, "Firewall (NAT)"), r.error ? err(r) : h("pre", {}, r.text)]; },
@@ -97,35 +97,56 @@ function waitBack() {
   const tick = async () => { try { const r = await fetch("/api/session"); if (r.ok) return location.reload(); } catch (_) {} setTimeout(tick, 2000); };
   setTimeout(tick, 3000);
 }
-function drawBw(cv, info) {
-  history = [];
-  const ctx = cv.getContext("2d"); let last = null;
+function drawBw(cv, info, active = () => true) {
+  const history = [];
+  const ctx = cv.getContext("2d"); let last = null, sampling = false;
   const sample = async () => {
-    if (!cv.isConnected) return;
-    const t = (await api("status")).data.transport, tx = t.paths.reduce((a, p) => a + p.wire_tx_bytes, 0), rx = t.paths.reduce((a, p) => a + p.wire_rx_bytes, 0), now = performance.now();
-    if (last) { const dt = (now - last.now) / 1000; history.push([(tx - last.tx) * 8 / dt / 1e6, (rx - last.rx) * 8 / dt / 1e6]); if (history.length > 120) history.shift(); }
-    last = { tx, rx, now };
-    const max = Math.max(1, ...history.flat()), css = getComputedStyle(document.body);
-    ctx.clearRect(0, 0, cv.width, cv.height);
-    [[0, "#d9534f"], [1, "#0069d6"]].forEach(([i, color]) => { ctx.strokeStyle = color; ctx.beginPath(); history.forEach((p, x) => { const px = x * cv.width / 120, py = cv.height - 4 - p[i] / max * (cv.height - 12); x ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }); ctx.stroke(); });
-    ctx.fillStyle = css.color; ctx.fillText(max.toFixed(2) + " Mbit/s", 4, 12);
-    const p = history[history.length - 1] || [0, 0]; info.textContent = `Upload ${p[0].toFixed(2)} Mbit/s (red) · Download ${p[1].toFixed(2)} Mbit/s (blue) — from the server's view: TX is toward the client.`;
+    if (!active() || !cv.isConnected || sampling) return;
+    sampling = true;
+    try {
+      const response = await api("status");
+      if (!active() || !cv.isConnected) return;
+      const t = response.data.transport, tx = t.paths.reduce((a, p) => a + p.wire_tx_bytes, 0), rx = t.paths.reduce((a, p) => a + p.wire_rx_bytes, 0), now = performance.now();
+      if (last) { const dt = (now - last.now) / 1000; history.push([(tx - last.tx) * 8 / dt / 1e6, (rx - last.rx) * 8 / dt / 1e6]); if (history.length > 120) history.shift(); }
+      last = { tx, rx, now };
+      const max = Math.max(1, ...history.flat()), css = getComputedStyle(document.body);
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      [[0, "#d9534f"], [1, "#0069d6"]].forEach(([i, color]) => { ctx.strokeStyle = color; ctx.beginPath(); history.forEach((p, x) => { const px = x * cv.width / 120, py = cv.height - 4 - p[i] / max * (cv.height - 12); x ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }); ctx.stroke(); });
+      ctx.fillStyle = css.color; ctx.fillText(max.toFixed(2) + " Mbit/s", 4, 12);
+      const p = history[history.length - 1] || [0, 0]; info.textContent = `Upload ${p[0].toFixed(2)} Mbit/s (red) · Download ${p[1].toFixed(2)} Mbit/s (blue) — from the server's view: TX is toward the client.`;
+    } catch (error) {
+      if (active() && cv.isConnected && error.message !== "login required") info.textContent = "Unavailable: " + error.message;
+    } finally { sampling = false; }
   };
   sample(); cv._t = setInterval(sample, 2000); const stop = () => clearInterval(cv._t); window.addEventListener("hashchange", stop, { once: true });
 }
 
 async function route() {
-  clearInterval(timer);
+  const version = ++routeVersion, hash = location.hash;
+  clearInterval(timer); timer = null;
   if (!csrf) return login();
-  const [, , id = "overview"] = location.hash.split("/");
-  if (location.hash === "#/logout") { await api("logout", {}); csrf = null; location.hash = ""; return boot(); }
+  const active = () => version === routeVersion && hash === location.hash && csrf !== null;
+  const [, , id = "overview"] = hash.split("/");
+  if (hash === "#/logout") { await api("logout", {}); csrf = null; location.hash = ""; return boot(); }
   $("notice").replaceChildren(); renderNav(id);
   const page = pages[id] || pages.overview, view = $("view");
-  const draw = async () => { try { view.replaceChildren(...(await page())); } catch (e) { if (String(e.message) !== "login required") view.replaceChildren(err(e.message)); } };
+  let drawing = false;
+  const draw = async () => {
+    if (!active() || drawing) return;
+    drawing = true;
+    try {
+      const content = await page(active);
+      if (active()) view.replaceChildren(...content);
+    } catch (error) {
+      if (active() && error.message !== "login required") view.replaceChildren(err(error.message));
+    } finally { drawing = false; }
+  };
   await draw();
+  if (!active()) return;
   const live = ["overview", "uplinks", "queues", "devices"].includes(id); $("refresh").hidden = !live;
   if (live) timer = setInterval(draw, 5000);
 }
+
 async function boot() {
   const s = (await api("session")).data; csrf = s.authenticated ? s.csrf : null;
   $("refresh").hidden = true; renderNav(); route();
