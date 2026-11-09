@@ -117,3 +117,37 @@ func normalizedFlow(protocol byte, source, destination [4]byte, sport, dport uin
 	copy(key[7:], b[:])
 	return string(key)
 }
+
+// MarkGameUDP sets DSCP 46 on a UDP packet whose source or destination port is
+// in ports, preserving ECN and recomputing the IPv4 header checksum. It mirrors
+// userspace.mark_game_udp, including reading ports from any fragment. A packet
+// that does not qualify is returned unchanged.
+func MarkGameUDP(packet []byte, ports map[uint16]bool) ([]byte, error) {
+	if len(packet) < 20 || packet[0]>>4 != 4 || packet[9] != 17 {
+		return packet, nil
+	}
+	header := int(packet[0]&15) * 4
+	if header < 20 || header > len(packet) {
+		return nil, ErrFrame
+	}
+	if ports != nil {
+		if len(packet) < header+8 {
+			return packet, nil
+		}
+		if !ports[binary.BigEndian.Uint16(packet[header:])] && !ports[binary.BigEndian.Uint16(packet[header+2:])] {
+			return packet, nil
+		}
+	}
+	out := append([]byte(nil), packet...)
+	out[1] = 46<<2 | out[1]&3
+	out[10], out[11] = 0, 0
+	sum := uint32(0)
+	for i := 0; i+1 < header; i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(out[i:]))
+	}
+	for sum>>16 != 0 {
+		sum = sum&0xFFFF + sum>>16
+	}
+	binary.BigEndian.PutUint16(out[10:], ^uint16(sum))
+	return out, nil
+}

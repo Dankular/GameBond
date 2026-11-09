@@ -168,6 +168,8 @@ func (c *Classifier) Classify(info IPv4Info, now time.Time) Classification {
 				tag = cached.tag
 				reason = "fragment_cache"
 			}
+		} else if tag == 0 {
+			reason = "fragment_orphan" // never guess the policy of an unassociated fragment
 		}
 	}
 	policy := c.policy(tag)
