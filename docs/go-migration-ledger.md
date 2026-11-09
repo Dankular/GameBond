@@ -54,7 +54,7 @@ a product decision before work starts.
 | Python | Lines | Go | Status |
 |---|---:|---|---|
 | `dns.py`, `dns_management.py` | 541 | `native-edge/dns` | PART | config validation, query parsing, override/refuse answers, UDP+TCP responder with upstream forward; byte-identical to Python on 3116 seeded/mutated queries (`tools/generate_native_dns_vectors.py`). Not done: IDNA (non-ASCII names rejected), upstream forwarding unverified against a real resolver, `dns_management` CLI, daemon wiring, `windows_dns` |
-| `nat.py` | 281 | none (relies on container entrypoint) | TODO |
+| `nat.py` | 281 | `native-edge/nat` | PART | Outbound/inbound/ICMP-error translation, timeouts, eviction and counters byte-identical to Python on 7,640 generated steps with scripted port allocation (`tools/generate_native_nat_vectors.py`); no consumer yet (LAN gateway/OMR path not ported), no race/soak test |
 | `lan_gateway.py`, `network_scanner.py` | 879 | none | TODO |
 | `admin/` (HTTPS portal, auth, cert, system) | 440 | none | TODO (documented unsupported on the Go edge) |
 | `omr_glorytun.py`, `omr_admin.py`, `omr_settings.py` | 999 | none | TODO |
