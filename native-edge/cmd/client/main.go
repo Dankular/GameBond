@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"time"
 
+	"gamebond.local/nativeedge/adapterwatch"
 	"gamebond.local/nativeedge/bond"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/client"
@@ -289,6 +290,19 @@ func run() error {
 	created := time.Now()
 	errs := make(chan error, 2)
 	go func() { errs <- c.Run(ctx) }()
+	slots := make([]adapterwatch.Slot, len(specs))
+	for i, sp := range specs {
+		slots[i] = adapterwatch.Slot{Spec: sp, Pinned: i < len(cfg.InterfaceIndex) && cfg.InterfaceIndex[i] != 0}
+	}
+	go adapterwatch.Run(ctx, 2*time.Second, slots, uplink.InterfaceFor,
+		func(sp []uplink.Spec, avail []bool) error {
+			failed, err := c.UpdateUplinks(sp, avail)
+			for _, f := range failed {
+				fmt.Fprintln(logOut, "uplink rebind failed:", f)
+			}
+			return err
+		},
+		func(err error) { fmt.Fprintln(logOut, "adapter update failed:", err) })
 	if lanMgr != nil {
 		go func() {
 			for ctx.Err() == nil {
