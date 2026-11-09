@@ -40,7 +40,7 @@ func TestAdapterSelectionPersistsDiscoveredSettings(t *testing.T) {
 	if string(prev) != string(before) {
 		t.Fatal("backup missing")
 	}
-	for _, bad := range []string{`null`, `[22]`, `[22,22]`, `[22,99]`, `[22,33.5]`, `[true,33]`, `[22,33] {}`, `[1,2,3,4,5,6,7,8,9]`} {
+	for _, bad := range []string{`null`, `[]`, `[22,22]`, `[22,99]`, `[22,33.5]`, `[true,33]`, `[22,33] {}`, `[1,2,3,4,5,6,7,8,9]`} {
 		if c, b := do(t, "PUT", endpoint, s.token, bad); c != 422 {
 			t.Fatalf("%s: %d %s", bad, c, b)
 		}
@@ -56,5 +56,27 @@ func TestAdapterSelectionPersistsDiscoveredSettings(t *testing.T) {
 	after, _ := os.ReadFile(config)
 	if string(after) != string(saved) {
 		t.Fatal("rejected edit changed config")
+	}
+}
+
+func TestSingleAdapterSelection(t *testing.T) {
+	s, url, config, _ := start(t)
+	s.o.Adapters = func() ([]Adapter, error) {
+		return []Adapter{{Index: 22, Name: "Ethernet", Up: true, Addresses: []string{"192.168.1.93"}, Gateway: "192.168.1.1"}}, nil
+	}
+	endpoint := url[:strings.Index(url, "/?t=")] + "/api/networks"
+	if c, b := do(t, "PUT", endpoint, s.token, `[22]`); c != 200 {
+		t.Fatal(c, b)
+	}
+	raw, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	json.Unmarshal(raw, &cfg)
+	indices, _ := json.Marshal(cfg["interface_indices"])
+	bind, _ := json.Marshal(cfg["bind"])
+	if string(indices) != `[22]` || string(bind) != `[["192.168.1.93",0]]` {
+		t.Fatal(string(raw))
 	}
 }

@@ -3,19 +3,15 @@ package dashboard
 import (
 	"encoding/json"
 	"errors"
+	"gamebond.local/nativeedge/uplink"
 	"net"
 	"strings"
 )
 
 // Adapter is a read-only OS snapshot. Selection never alters system routes.
-type Adapter struct {
-	Index     int      `json:"index"`
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Up        bool     `json:"up"`
-	Addresses []string `json:"addresses"`
-	Gateway   string   `json:"gateway"`
-}
+type Adapter = uplink.Adapter
+
+func discoverAdapters() ([]Adapter, error) { return uplink.Adapters() }
 
 func stableID(id string) bool {
 	return len(id) == 38 && strings.HasPrefix(id, "{") && strings.HasSuffix(id, "}")
@@ -23,8 +19,8 @@ func stableID(id string) bool {
 
 func selectAdapters(raw []byte, adapters []Adapter) (map[string]any, error) {
 	var indices []int
-	if err := json.Unmarshal(raw, &indices); err != nil || len(indices) < 2 || len(indices) > 8 {
-		return nil, errors.New("choose 2 to 8 different adapters")
+	if err := json.Unmarshal(raw, &indices); err != nil || len(indices) < 1 || len(indices) > 8 {
+		return nil, errors.New("choose 1 to 8 different adapters")
 	}
 	bind, ids, names, gateways := []any{}, []string{}, []string{}, []string{}
 	seen, seenIDs, sources := map[int]bool{}, map[string]bool{}, map[string]bool{}

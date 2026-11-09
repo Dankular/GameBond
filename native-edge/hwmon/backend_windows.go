@@ -222,7 +222,8 @@ func (WindowsBackend) DiskUsage(mount string) (DiskUsage, error) {
 
 func ifRow(index int) (windows.MibIfRow2, error) {
 	row := windows.MibIfRow2{InterfaceIndex: uint32(index)}
-	return row, windows.GetIfEntry2Ex(0, &row)
+	err := windows.GetIfEntry2Ex(0, &row)
+	return row, err
 }
 
 func (WindowsBackend) NetIfStats() (map[string]IfStat, error) {

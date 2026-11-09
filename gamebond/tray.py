@@ -66,7 +66,7 @@ class TrayAgent:
         healthy=sum(bool(p.get('healthy')) for p in paths)
         state=runtime.get('state','idle') if runtime else 'idle'
         issue=bool(problem) or state=='failed' or (state=='running' and (not paths or healthy<len(paths)))
-        snapshot=(state,busy or state in ('starting','connecting','stopping'),healthy,len(paths),issue)
+        snapshot=(state,busy or state in ('starting','connecting','restarting','stopping'),healthy,len(paths),issue)
         if snapshot==self.state and not issue:return
         self.state=snapshot
         if issue:

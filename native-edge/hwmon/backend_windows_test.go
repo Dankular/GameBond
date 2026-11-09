@@ -3,6 +3,7 @@
 package hwmon
 
 import (
+	"net"
 	"os"
 	"testing"
 	"time"
@@ -55,4 +56,33 @@ func TestWindowsBackendSmoke(t *testing.T) {
 	t.Logf("cpu=%v mem%%=%v swap=%v disks=%d diskio=%d adapters=%d procs=%d coverage=%v",
 		out["cpu"], mem["percent"], out["swap"], len(out["disks"].([]map[string]any)), len(out["disk_io"].(map[string]any)),
 		len(out["adapters"].([]map[string]any)), len(out["processes"].([]map[string]any)), out["process_coverage"])
+}
+
+func TestWindowsNetworkCountersHaveNamesAndBytes(t *testing.T) {
+	rows, err := (WindowsBackend{}).NetIO()
+	if err != nil {
+		t.Fatal(err)
+	}
+	positive := false
+	for _, row := range rows {
+		if row.Name == "" {
+			t.Fatal("Windows counter row was returned before GetIfEntry2Ex filled it")
+		}
+		if row.BytesRecv > 0 || row.BytesSent > 0 {
+			positive = true
+		}
+	}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range ifs {
+		row, err := ifRow(i.Index)
+		if err == nil && row.InterfaceIndex != uint32(i.Index) {
+			t.Fatal("wrong returned interface index")
+		}
+	}
+	if !positive {
+		t.Fatal("all adapters reported zero cumulative byte counters")
+	}
 }

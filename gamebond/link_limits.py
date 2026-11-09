@@ -1,5 +1,5 @@
 """Shared limits for selectable physical uplinks and the GB03 path table."""
-MIN_LINKS = 2
+MIN_LINKS = 1
 MAX_LINKS = 8
 
 

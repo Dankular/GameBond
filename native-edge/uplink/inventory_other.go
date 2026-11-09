@@ -1,9 +1,9 @@
 //go:build !windows
 
-package dashboard
+package uplink
 
 import "errors"
 
-func discoverAdapters() ([]Adapter, error) {
+func Adapters() ([]Adapter, error) {
 	return nil, errors.New("adapter selection requires Windows")
 }

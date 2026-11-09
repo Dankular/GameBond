@@ -26,6 +26,8 @@ type Config struct {
 	Key, Session []byte
 	Server       netip.AddrPort
 	Uplinks      []uplink.Spec
+	// Available parks initially offline slots; nil means all are available.
+	Available []bool
 	// Policies has one entry per uplink; nil means no LINK_POLICY is sent.
 	Policies []bond.PathPolicy
 	MTU      int  // 0 means 1400
@@ -107,6 +109,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Policies != nil && len(cfg.Policies) != len(cfg.Uplinks) {
 		return nil, fmt.Errorf("%w: %d policies for %d uplinks", ErrConfig, len(cfg.Policies), len(cfg.Uplinks))
 	}
+	if cfg.Available != nil && len(cfg.Available) != len(cfg.Uplinks) {
+		return nil, ErrConfig
+	}
 	if cfg.MTU == 0 {
 		cfg.MTU = 1400
 	}
@@ -153,7 +158,11 @@ func New(cfg Config) (*Client, error) {
 	c := &Client{qos: qos, cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4), rebind: make(chan rebindRequest), done: make(chan struct{}), specs: append([]uplink.Spec(nil), cfg.Uplinks...)}
 	now := hrclock.Now()
 	for i, spec := range cfg.Uplinks {
+		live := cfg.Available == nil || cfg.Available[i]
 		spec.DontFragment = cfg.Discover
+		if !live {
+			spec = uplink.Spec{Addr: netip.MustParseAddr("127.0.0.1")}
+		}
 		conn, err := uplink.Open(spec)
 		if err != nil {
 			c.closeConns()
@@ -161,7 +170,7 @@ func New(cfg Config) (*Client, error) {
 		}
 		c.conns = append(c.conns, conn)
 		var sock *carrier.Socket
-		if cfg.Outer != nil && spec.Addr.IsValid() && !spec.Addr.IsUnspecified() {
+		if live && cfg.Outer != nil && spec.Addr.IsValid() && !spec.Addr.IsUnspecified() {
 			sock, err = carrier.NewSocket(conn, net.UDPAddrFromAddrPort(cfg.Server), cfg.Key, cfg.Session, *cfg.Outer, uplink.Control(spec))
 			if err != nil {
 				c.closeConns()
@@ -169,11 +178,17 @@ func New(cfg Config) (*Client, error) {
 			}
 		}
 		c.socks = append(c.socks, sock)
-		c.avail = append(c.avail, true)
+		c.avail = append(c.avail, live)
 		c.lastRec = append(c.lastRec, time.Time{})
 		if err = r.AddClientPath(i, cfg.Server, now); err != nil {
 			c.closeConns()
 			return nil, err
+		}
+		if !live {
+			if err = r.RebindClientPath(i, now, true); err != nil {
+				c.closeConns()
+				return nil, err
+			}
 		}
 	}
 	if cfg.Policies != nil {

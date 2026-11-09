@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	MinLinks = 2
+	MinLinks = 1
 	MaxLinks = 8
 )
 

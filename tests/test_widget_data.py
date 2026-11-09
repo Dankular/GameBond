@@ -82,7 +82,7 @@ class WidgetDataTests(unittest.TestCase):
             self.assertEqual(selected['bind'],[['172.20.10.2',0],['192.168.1.93',0]])
             for name,value in original.items():self.assertEqual(selected[name],value)
             before=path.read_bytes()
-            for indices in ([16],[25,25],[16,99]):
+            for indices in ([],[25,25],[16,99]):
                 with self.assertRaises(ValueError):save_selection(indices,path,links)
                 self.assertEqual(path.read_bytes(),before)
             links[0]['up']=False

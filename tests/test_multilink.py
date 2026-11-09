@@ -37,12 +37,12 @@ class MultiLinkConfigTests(unittest.TestCase):
             with patch.object(app,'os',types.SimpleNamespace(name=platform)):
                 return app.load_config(path,allow_unavailable_links=offline)
 
-    def test_two_three_four_and_eight_link_configs(self):
-        for count in (2,3,4,8):
+    def test_one_two_three_four_and_eight_link_configs(self):
+        for count in (1,2,3,4,8):
             with self.subTest(count=count):self.assertEqual(len(self.validate(config(count))['bind']),count)
 
     def test_count_and_identity_errors_are_rejected(self):
-        for count in (0,1,9):
+        for count in (0,9):
             with self.subTest(count=count),self.assertRaises(ValueError):self.validate(config(count))
         c=config(3);c['interface_indices'][2]=c['interface_indices'][0]
         with self.assertRaises(ValueError):self.validate(c)

@@ -1,4 +1,4 @@
-package dashboard
+package uplink
 
 import (
 	"errors"
@@ -8,7 +8,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func discoverAdapters() ([]Adapter, error) {
+func Adapters() ([]Adapter, error) {
 	size := uint32(15000)
 	for attempt := 0; attempt < 5; attempt++ {
 		buf := make([]byte, size)

@@ -99,7 +99,7 @@ func (m *Model) Update(rt map[string]any, busy bool, problem string) bool {
 		}
 	}
 	issue := problem != "" || state == "failed" || (state == "running" && (len(paths) == 0 || healthy < len(paths)))
-	snap := snapshot{state, busy || state == "starting" || state == "connecting" || state == "stopping", healthy, len(paths), issue}
+	snap := snapshot{state, busy || state == "starting" || state == "connecting" || state == "restarting" || state == "stopping", healthy, len(paths), issue}
 	if snap == m.state && !issue {
 		return false
 	}

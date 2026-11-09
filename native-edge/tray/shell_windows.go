@@ -45,6 +45,7 @@ const (
 	wmTimer         = 0x113
 	wmDestroy       = 0x2
 	wmLButtonDblClk = 0x203
+	wmLButtonUp     = 0x202
 	wmRButtonUp     = 0x205
 	wmContextMenu   = 0x7b
 	wmNull          = 0
@@ -130,6 +131,8 @@ type Shell struct {
 	OnDefault func()
 	// OnTick runs once a second on the UI thread.
 	OnTick func()
+	// OnReady creates any visible windows on this message-loop thread.
+	OnReady func()
 
 	hwnd  uintptr
 	icons map[string]uintptr
@@ -145,7 +148,7 @@ func wndProc(hwnd, message, wparam, lparam uintptr) uintptr {
 		switch uint32(message) {
 		case wmTray:
 			switch uint32(lparam) {
-			case wmLButtonDblClk:
+			case wmLButtonUp, wmLButtonDblClk:
 				if s.OnDefault != nil {
 					s.OnDefault()
 				}
@@ -196,6 +199,9 @@ func (s *Shell) Run(color, tip string) error {
 		return errors.New("Shell_NotifyIcon add failed")
 	}
 	procSetTimer.Call(hwnd, timerID, 1000, 0)
+	if s.OnReady != nil {
+		s.OnReady()
+	}
 	var m msg
 	for {
 		r, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)

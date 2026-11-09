@@ -461,7 +461,7 @@ class Widget:
         window.geometry('510x430');window.resizable(False,False);window.transient(self.root)
         window.grab_set()
         label(window,'Select your networks',18,bold=True).pack(anchor='w',padx=24,pady=(22,4))
-        label(window,'Choose 2 to 8 physical links for the next connection.',10,MUTED).pack(anchor='w',padx=24)
+        label(window,'Choose 1 to 8 links. One link runs the VPN; more links enable bonding.',10,MUTED).pack(anchor='w',padx=24)
         options=tk.Frame(window,bg=BG);options.pack(fill='both',expand=True,padx=24,pady=15)
         links=self.monitor.snapshot()['links'];variables=[]
         for link in links:
@@ -480,7 +480,7 @@ class Widget:
             # Preserve the existing path order when the same links are selected.
             if set(selected)==set(self.config.get('interface_indices',[])):selected=self.config['interface_indices']
             if not MIN_LINKS<=len(selected)<=MAX_LINKS:
-                feedback.config(text='Choose 2 to 8 different networks.',fg=AMBER);return
+                feedback.config(text='Choose 1 to 8 different networks.',fg=AMBER);return
             apply.config(state='disabled',text='Saving…')
             def work():
                 try:self.events.put(('selection',save_selection(selected)))

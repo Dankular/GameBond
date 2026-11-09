@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -51,6 +52,7 @@ type fileConfig struct {
 	LossTracking   bool                         `json:"loss_tracking"`
 	PathMTU        bool                         `json:"path_mtu_discovery"`
 	InterfaceIndex []int                        `json:"interface_indices"` // pin uplink i to this adapter index
+	InterfaceIDs   []string                     `json:"interface_ids"`     // stable adapter identities across reconnects
 	AdaptiveQoS    json.RawMessage              `json:"adaptive_qos"`
 	ClientTunnelIP string                       `json:"client_tunnel_ip"`
 	LANDevices     json.RawMessage              `json:"lan_devices"`
@@ -274,7 +276,24 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			bridge.Deliver(p)
 		}
 	}}
-	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs,
+	slots := make([]adapterwatch.Slot, len(specs))
+	useInventory := false
+	for i, sp := range specs {
+		slots[i] = adapterwatch.Slot{Spec: sp, Pinned: i < len(cfg.InterfaceIndex) && cfg.InterfaceIndex[i] != 0}
+		if runtime.GOOS == "windows" && i < len(cfg.InterfaceIDs) && cfg.InterfaceIDs[i] != "" {
+			slots[i].Identity = cfg.InterfaceIDs[i]
+			useInventory = true
+		}
+	}
+	var available []bool
+	if useInventory {
+		rows, err := uplink.Adapters()
+		if err != nil {
+			return fmt.Errorf("adapter discovery: %w", err)
+		}
+		specs, available = adapterwatch.PlanInventory(slots, rows, uplink.InterfaceFor)
+	}
+	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs, Available: available,
 		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay,
 		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking})
 	if err != nil {
@@ -331,19 +350,22 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		}
 	}()
 	go func() { errs <- c.Run(ctx) }()
-	slots := make([]adapterwatch.Slot, len(specs))
-	for i, sp := range specs {
-		slots[i] = adapterwatch.Slot{Spec: sp, Pinned: i < len(cfg.InterfaceIndex) && cfg.InterfaceIndex[i] != 0}
+	updateAdapters := func(sp []uplink.Spec, avail []bool) error {
+		failed, err := c.UpdateUplinks(sp, avail)
+		for _, f := range failed {
+			fmt.Fprintln(logOut, "uplink rebind failed:", f)
+		}
+		if err == nil && len(failed) > 0 {
+			return fmt.Errorf("%d uplinks could not bind; retrying", len(failed))
+		}
+		return err
 	}
-	go adapterwatch.Run(ctx, 2*time.Second, slots, uplink.InterfaceFor,
-		func(sp []uplink.Spec, avail []bool) error {
-			failed, err := c.UpdateUplinks(sp, avail)
-			for _, f := range failed {
-				fmt.Fprintln(logOut, "uplink rebind failed:", f)
-			}
-			return err
-		},
-		func(err error) { fmt.Fprintln(logOut, "adapter update failed:", err) })
+	onAdapterError := func(err error) { fmt.Fprintln(logOut, "adapter update failed:", err) }
+	if useInventory {
+		go adapterwatch.RunInventory(ctx, 2*time.Second, slots, uplink.Adapters, uplink.InterfaceFor, updateAdapters, onAdapterError)
+	} else {
+		go adapterwatch.Run(ctx, 2*time.Second, slots, uplink.InterfaceFor, updateAdapters, onAdapterError)
+	}
 	if lanMgr != nil {
 		go func() {
 			for ctx.Err() == nil {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/netip"
 	"reflect"
+	"strings"
 	"time"
 
 	"gamebond.local/nativeedge/uplink"
@@ -21,6 +22,70 @@ type Slot struct {
 	// Pinned is true when the configuration fixed the adapter index; the slot
 	// is then only available while that adapter still owns the address.
 	Pinned bool
+	// Identity follows the selected Windows adapter across DHCP/index changes.
+	Identity string
+}
+
+// PlanInventory resolves stable identities first; address-only configs retain
+// their existing pinning behavior. Missing/offline slots never use a wildcard.
+func PlanInventory(slots []Slot, adapters []uplink.Adapter, lookup Lookup) ([]uplink.Spec, []bool) {
+	specs, available := Plan(slots, lookup)
+	for i, slot := range slots {
+		if slot.Identity == "" {
+			continue
+		}
+		available[i] = false
+		var found *uplink.Adapter
+		matches := 0
+		for j := range adapters {
+			if strings.EqualFold(adapters[j].ID, slot.Identity) {
+				found = &adapters[j]
+				matches++
+			}
+		}
+		if matches != 1 || !found.Up || found.Gateway == "" || found.Index <= 0 {
+			continue
+		}
+		for _, address := range found.Addresses {
+			ip, err := netip.ParseAddr(address)
+			if err != nil || !ip.Is4() || ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+				continue
+			}
+			specs[i].Addr, specs[i].InterfaceIndex, specs[i].Interface = ip, found.Index, ""
+			available[i] = true
+			break
+		}
+	}
+	return specs, available
+}
+
+// RunInventory applies the initial inventory and then follows selected stable
+// identities. Discovery errors leave the current paths alone and are retried.
+func RunInventory(ctx context.Context, interval time.Duration, slots []Slot, inventory func() ([]uplink.Adapter, error), lookup Lookup, update Updater, onError func(error)) {
+	var lastSpecs []uplink.Spec
+	var lastAvail []bool
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		rows, err := inventory()
+		if err == nil {
+			specs, avail := PlanInventory(slots, rows, lookup)
+			if !reflect.DeepEqual(specs, lastSpecs) || !reflect.DeepEqual(avail, lastAvail) {
+				err = update(specs, avail)
+				if err == nil {
+					lastSpecs, lastAvail = specs, avail
+				}
+			}
+		}
+		if err != nil && onError != nil {
+			onError(err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // Plan computes the specs and availability for the current adapter state.

@@ -60,7 +60,7 @@ class ApplicationsDialog(SettingsDialog):
 class NetworksDialog(SettingsDialog):
     def __init__(self,links,parent=None):
         super().__init__('Select networks',parent);self.links=[];self.choices=[]
-        note=QLabel('Choose 2 to 8 adapters. Offline adapters can stay selected; their addresses are discovered automatically when they return.');note.setWordWrap(True);self.body.addWidget(note)
+        note=QLabel('Choose 1 to 8 adapters. One active link runs the VPN; multiple active links enable bonding. Offline adapters can stay selected; their addresses are discovered automatically when they return.');note.setWordWrap(True);self.body.addWidget(note)
         row=QHBoxLayout();self.selection_status=QLabel();self.refresh_button=QPushButton('Refresh adapters');self.refresh_button.clicked.connect(self.refresh)
         row.addWidget(self.selection_status,1);row.addWidget(self.refresh_button);self.body.addLayout(row)
         scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setFrameShape(QScrollArea.NoFrame)

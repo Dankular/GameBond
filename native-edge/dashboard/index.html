@@ -65,7 +65,7 @@
     <div class="row"><button id="addrule" class="secondary">Add rule</button><button id="saveapppolicy" disabled>Save policy</button><span id="apppolicymsg" role="status"></span></div></section>
   <section><h2>Network adapters</h2>
     <table><thead><tr><th>Use</th><th>Index</th><th>Name</th><th>Addresses</th><th>Gateway</th></tr></thead><tbody id="nets"></tbody></table>
-    <p>Choose 2 to 8 adapters. Offline adapters can stay selected using their stable Windows identities. Saving updates the client configuration; restart the tunnel to apply.</p>
+    <p>Choose 1 to 8 adapters. One active link runs the VPN; multiple active links enable bonding. Offline adapters can stay selected using their stable Windows identities. Restart the tunnel after saving to apply.</p>
     <div class="row"><button id="savenets" disabled>Save adapters</button><button id="refreshnets" class="secondary">Refresh</button><span id="netsmsg" role="status"></span></div></section>
   <section><h2>DNS overrides</h2>
     <p style="margin-top:0;color:var(--mute)">The <code>dns</code> block (records, bind, ttl, upstream). Checked with the daemon's own loader.</p>

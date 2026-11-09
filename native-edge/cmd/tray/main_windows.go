@@ -12,14 +12,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"gamebond.local/nativeedge/atomicio"
 	"gamebond.local/nativeedge/dashboard"
 	"gamebond.local/nativeedge/hwmon"
 	"gamebond.local/nativeedge/tray"
 	"gamebond.local/nativeedge/ttyrelay"
+	"gamebond.local/nativeedge/uplink"
 )
 
 const (
@@ -30,6 +31,7 @@ const (
 	cmdLinks
 	cmdAutostart
 	cmdQuit
+	cmdDashboard
 )
 
 func main() {
@@ -37,7 +39,9 @@ func main() {
 	statusPath := flag.String("status", filepath.Join(".runtime", "userspace-status.json"), "daemon status file")
 	relayPath := flag.String("relay", filepath.Join(".runtime", "go-relay.json"), "daemon relay metadata (supervisor control)")
 	configPath := flag.String("config", "", "client config the link roles & limits editor changes")
+	assetsPath := flag.String("assets", filepath.Join("assets", "glasswire"), "desktop theme and icon assets")
 	printURL := flag.Bool("print-url", false, "print the dashboard URL (contains the access token) to stdout")
+	trayOnly := flag.Bool("tray", false, "start with the desktop widget hidden")
 	flag.Parse()
 	absRoot, err := filepath.Abs(*root)
 	if err != nil {
@@ -49,6 +53,15 @@ func main() {
 		}
 		return filepath.Join(absRoot, p)
 	}
+	if *configPath == "" {
+		*configPath = filepath.Join("configs", "local-client.json")
+		if raw, err := os.ReadFile(abs(filepath.Join(".runtime", "widget-config-path.txt"))); err == nil {
+			candidate := strings.TrimSpace(string(raw))
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				*configPath = candidate
+			}
+		}
+	}
 	lease, err := tray.AcquireLease(absRoot)
 	if err != nil {
 		fail(err)
@@ -58,10 +71,26 @@ func main() {
 		return // the running agent was asked to show itself
 	}
 	var busy atomic.Bool
+	var latest atomic.Value
+	var refreshMu sync.Mutex
+	latest.Store(map[string]any{"state": "starting"})
+	refresh := func() {
+		refreshMu.Lock()
+		defer refreshMu.Unlock()
+		doc := dashboard.ReadStatus(abs(*statusPath), func() (map[string]any, error) {
+			return ttyrelay.Control(abs(*relayPath), "status", 2*time.Second, io.Discard)
+		})
+		doc["adapter_activity"] = latest.Load().(map[string]any)["adapter_activity"]
+		latest.Store(doc)
+	}
 	control := func(command string) (map[string]any, error) {
-		busy.Store(true)
+		if !busy.CompareAndSwap(false, true) {
+			return nil, fmt.Errorf("a connection action is already in progress")
+		}
 		defer busy.Store(false)
-		return ttyrelay.Control(abs(*relayPath), command, 60*time.Second, io.Discard)
+		result, err := ttyrelay.Control(abs(*relayPath), command, 60*time.Second, io.Discard)
+		refresh()
+		return result, err
 	}
 	var hardware func() map[string]any
 	if sampler, err := hwmon.New(hwmon.WindowsBackend{}, hwmon.Options{GPU: hwmon.NewGPUSampler(5, nil, nil, nil)}); err == nil {
@@ -74,7 +103,30 @@ func main() {
 		}
 		return strings.Split(strings.TrimRight(strings.ReplaceAll(buf.String(), "\r\n", "\n"), "\n"), "\n")
 	}
-	server, url, err := dashboard.Start(dashboard.Options{StatusPath: abs(*statusPath), ConfigPath: abs(*configPath), Control: control, Hardware: hardware, Log: logLines})
+	sample := func() map[string]any { return latest.Load().(map[string]any) }
+	go func() {
+		activity := &dashboard.ActivitySampler{}
+		network := hwmon.WindowsBackend{}
+		for {
+			refresh()
+			counters, err := network.NetIO()
+			adapters, inventoryErr := uplink.Adapters()
+			if err == nil && inventoryErr == nil {
+				rows := activity.Sample(counters, adapters, time.Now())
+				refreshMu.Lock()
+				doc := sample()
+				withActivity := make(map[string]any, len(doc)+1)
+				for k, v := range doc {
+					withActivity[k] = v
+				}
+				withActivity["adapter_activity"] = rows
+				latest.Store(withActivity)
+				refreshMu.Unlock()
+			}
+			time.Sleep(time.Second)
+		}
+	}()
+	server, url, err := dashboard.Start(dashboard.Options{StatusPath: abs(*statusPath), ConfigPath: abs(*configPath), AssetsPath: abs(*assetsPath), Snapshot: sample, Control: control, Hardware: hardware, Log: logLines})
 	if err != nil {
 		fail(err)
 	}
@@ -85,21 +137,13 @@ func main() {
 
 	var lastColor string
 	model := tray.NewModel()
+	widget := &tray.Widget{URL: strings.Replace(url, "/?t=", "/widget?t=", 1), ProfilePath: abs(filepath.Join(".runtime", "widget-profile"))}
+	defer widget.Close()
 	shell := &tray.Shell{}
-	sample := func() map[string]any {
-		var doc map[string]any
-		if atomicio.ReadJSONShared(abs(*statusPath), 4<<20, &doc) != nil {
-			return nil
-		}
-		// A status file the daemon stopped refreshing means it is gone.
-		if at, ok := doc["updated_at"].(float64); ok && time.Since(time.Unix(int64(at), 0)) > 15*time.Second {
-			return nil
-		}
-		return doc
-	}
 	shell.Menu = func() []tray.MenuItem {
 		return []tray.MenuItem{
 			{ID: cmdShow, Label: "Show GameBond", Enabled: true},
+			{ID: cmdDashboard, Label: "Open web dashboard", Enabled: true},
 			{ID: cmdToggle, Label: model.ToggleLabel, Enabled: model.ToggleEnabled && !busy.Load()},
 			{},
 			{ID: cmdApps, Label: "Manage apps", Enabled: true},
@@ -111,17 +155,36 @@ func main() {
 		}
 	}
 	open := func() { _ = tray.Open(url) }
-	shell.OnDefault = open
+	show := func() {
+		if err := widget.Show(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	}
+	toggle := func() {
+		command := "restart"
+		if sample()["state"] == "running" {
+			command = "stop"
+		}
+		go func() {
+			if _, err := control(command); err != nil {
+				fmt.Fprintln(os.Stderr, "connection action:", err)
+			}
+		}()
+	}
+	shell.OnDefault = show
+	shell.OnReady = func() {
+		if !*trayOnly {
+			show()
+		}
+	}
 	shell.OnCommand = func(id int) {
 		switch id {
-		case cmdShow, cmdApps, cmdNetworks, cmdLinks:
+		case cmdShow:
+			show()
+		case cmdDashboard, cmdApps, cmdNetworks, cmdLinks:
 			open()
 		case cmdToggle:
-			command := "restart"
-			if model.ToggleLabel == "Disconnect" {
-				command = "stop"
-			}
-			go control(command)
+			toggle()
 		case cmdAutostart:
 			_ = setAutostart(!autostartEnabled(), autostartValue(absRoot, *configPath))
 		case cmdQuit:
@@ -133,7 +196,7 @@ func main() {
 	}
 	shell.OnTick = func() {
 		if lease.ShowRequested() {
-			open()
+			show()
 		}
 		if model.Update(sample(), busy.Load(), "") {
 			shell.SetIcon(model.Color, model.Title)

@@ -342,7 +342,7 @@ class WindowsNetwork:
                 not isinstance(indices, list) or len(indices) != len(bind) or
                 any(type(i) is not int or i <= 0 for i in indices) or len(set(indices)) != len(bind) or
                 not isinstance(gateways, list) or len(gateways) != len(bind)):
-            raise ValueError("2 to 8 binds with matching distinct interface_indices and gateways are required")
+            raise ValueError("1 to 8 binds with matching distinct interface_indices and gateways are required")
         source_ips = []
         for source, gateway in zip(bind, gateways):
             if not isinstance(source, (list, tuple)) or len(source) != 2:

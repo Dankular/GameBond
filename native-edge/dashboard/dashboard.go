@@ -36,6 +36,9 @@ const maxBody = 64 << 10
 type Options struct {
 	StatusPath string
 	ConfigPath string
+	AssetsPath string // original desktop fonts, icons and themes
+	// Snapshot supplies a shared live view including supervisor lifecycle state.
+	Snapshot func() map[string]any
 	// Control runs "stop" or "restart" against the daemon's supervisor relay.
 	Control func(command string) (map[string]any, error)
 	// Hardware returns the resource sample (hwmon); nil hides the panel.
@@ -68,6 +71,8 @@ func Start(o Options) (*Server, string, error) {
 	s := &Server{o: o, token: hex.EncodeToString(raw), l: l}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.page)
+	mux.HandleFunc("/widget", s.widgetPage)
+	mux.HandleFunc("/api/widget-asset", s.guard(s.widgetAsset))
 	mux.HandleFunc("/api/status", s.guard(s.status))
 	mux.HandleFunc("/api/control", s.guard(s.control))
 	mux.HandleFunc("/api/links", s.guard(s.links))
@@ -126,12 +131,35 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
-	var doc map[string]any
-	if err := atomicio.ReadJSONShared(s.o.StatusPath, 4<<20, &doc); err != nil {
-		reply(w, 200, map[string]any{"state": "unavailable", "error": err.Error()})
+	if s.o.Snapshot != nil {
+		reply(w, 200, s.o.Snapshot())
 		return
 	}
-	reply(w, 200, doc)
+	reply(w, 200, ReadStatus(s.o.StatusPath, nil))
+}
+
+// ReadStatus combines metrics with authoritative supervisor lifecycle state.
+// A stopped supervisor overrides the last metrics file left by its child.
+func ReadStatus(path string, lifecycle func() (map[string]any, error)) map[string]any {
+	var doc map[string]any
+	if err := atomicio.ReadJSONShared(path, 4<<20, &doc); err != nil || doc == nil {
+		doc = map[string]any{"state": "unavailable"}
+	}
+	if at, ok := doc["updated_at"].(float64); ok && time.Since(time.Unix(int64(at), 0)) > 15*time.Second {
+		doc["state"], doc["transport"] = "unavailable", nil
+	}
+	if lifecycle != nil {
+		state, err := lifecycle()
+		if err != nil {
+			doc["state"], doc["error"] = "unavailable", err.Error()
+		} else if value, ok := state["state"].(string); ok {
+			doc["state"] = value
+		}
+	}
+	if doc["state"] != "running" {
+		doc["transport"] = nil
+	}
+	return doc
 }
 
 func (s *Server) control(w http.ResponseWriter, r *http.Request) {

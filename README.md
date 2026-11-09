@@ -5,7 +5,7 @@ Stripes bulk traffic across IPv4 uplinks and duplicates selected traffic for res
 
 ## Features
 
-- Bond 2 to 8 independent uplinks.
+- Run as a VPN with one uplink; bond traffic when multiple uplinks are active (up to 8).
 - All-app or selected-app capture, with application traffic profiles.
 - Adaptive redundancy, link roles, speed limits, and usage caps.
 - Dashboard and tray controls for connection health and app traffic.

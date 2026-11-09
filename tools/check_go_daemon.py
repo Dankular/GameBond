@@ -9,6 +9,7 @@ tunnel are touched.
     go -C native-edge build -o ../build/gamebond-native-client.exe ./cmd/client
     python tools/check_go_daemon.py
 """
+import argparse
 import json
 import os
 from pathlib import Path
@@ -51,7 +52,11 @@ while True:                                    # stay alive: the daemon exits wh
 
 
 def main():
-    exe = ROOT / 'build' / ('gamebond-native-client.exe' if sys.platform == 'win32' else 'gamebond-native-client')
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--uplinks', type=int, choices=range(1, 9), default=2)
+    parser.add_argument('--client', type=Path, help='Go daemon executable to test')
+    args = parser.parse_args()
+    exe = args.client.resolve() if args.client else ROOT / 'build' / ('gamebond-native-client.exe' if sys.platform == 'win32' else 'gamebond-native-client')
     key, session = secrets.token_bytes(32), secrets.token_bytes(16)
     server = Node(key, 'server', session, [('127.0.0.1', 0)], bonding_mode=True, probe_interval=.025,
                   path_timeout=.3, initial_rate_mbps=10, max_rate_mbps=100).start()
@@ -60,9 +65,9 @@ def main():
         tmp = Path(tmp)
         host, port = server.addresses[0]
         (tmp / 'key').write_bytes(key)
-        (tmp / 'config.json').write_text(json.dumps(dict(session=session.hex(), bind=[['127.0.0.1', 0], ['127.0.0.1', 0]],
+        (tmp / 'config.json').write_text(json.dumps(dict(session=session.hex(), bind=[['127.0.0.1', 0] for _ in range(args.uplinks)],
                                                          peer=[host, port], mtu=1280, game_udp_ports=[27015], loss_tracking=bool(os.environ.get('GB_LOSS_TRACKING')),
-                                                         link_policies={'0': dict(role='primary', daily_bytes=30000), '1': dict(role='primary')},
+                                                         link_policies={str(i): dict(role='primary', daily_bytes=30000 if i == 0 and args.uplinks > 1 else 0) for i in range(args.uplinks)},
                                                          bonding_initial_rate_mbps=10, bonding_max_rate_mbps=100)))
         (tmp / 'stack.py').write_text(FAKE_STACK)
         launcher = tmp / ('stack.cmd' if sys.platform == 'win32' else 'stack.sh')
@@ -102,24 +107,26 @@ def main():
             assert injected >= 50, injected
             stats = server.stats()
             assert stats['auth_failures'] == 0
-            if os.environ.get('GB_LOSS_TRACKING'):
+            if os.environ.get('GB_LOSS_TRACKING') and args.uplinks > 1:
                 # Replicated game packets are DATA_COPY: the Python server must score them and the Go client must receive its COPY_REPORT.
                 time.sleep(1.5)
                 stats = server.stats()
                 seen = sum(p['copy_quality']['seen'] for p in stats['paths'])
                 assert seen > 0, [p['copy_quality'] for p in stats['paths']]
                 print(json.dumps(dict(python_server_copy_quality=[p['copy_quality'] for p in stats['paths']])), flush=True)
-            # Uplink 0 has a 30 kB daily cap and must be blocked once metered; uplink 1 stays open.
+            # Multi-link mode caps uplink 0; single-link mode must remain usable.
             deadline = time.monotonic() + 8
             blocked = []
             while time.monotonic() < deadline:
                 blocked = sorted(bool(p.get('link_policy') and p['link_policy']['blocked']) for p in server.stats()['paths'])
-                if blocked == [False, True]:
+                if blocked == sorted([args.uplinks > 1] + [False] * (args.uplinks - 1)):
                     break
                 time.sleep(.2)
-            assert blocked == [False, True], f'cap not enforced on the server view: {blocked}'
+            assert blocked == sorted([args.uplinks > 1] + [False] * (args.uplinks - 1)), f'unexpected server policy view: {blocked}'
             ledger = json.loads((tmp / 'usage.json').read_text())
-            assert ledger['version'] == 1 and sum(sum(d.values()) for d in ledger['links']['0'].values()) >= 30000, ledger
+            assert ledger['version'] == 1 and sum(sum(d.values()) for d in ledger['links']['0'].values()) > 0, ledger
+            if args.uplinks > 1:
+                assert sum(sum(d.values()) for d in ledger['links']['0'].values()) >= 30000, ledger
             status = None
             for _ in range(60):    # the daemon rewrites its status once a second
                 time.sleep(.1)
@@ -130,7 +137,7 @@ def main():
                 if status['packets']['outbound'] == 200 and status['packets']['injected'] >= 50:
                     break
             assert status['state'] == 'running' and status['backend'] == 'go' and status['pid'] == process.pid, status
-            assert len(status['transport']['paths']) == 2 and all(p['ready'] for p in status['transport']['paths']), status['transport']
+            assert len(status['transport']['paths']) == args.uplinks and all(p['ready'] for p in status['transport']['paths']), status['transport']
             assert status['packets']['outbound'] == 200 and status['packets']['injected'] >= 50, status['packets']
             print(json.dumps(dict(status='ok', server_received=len(received), game_marked=len(game), injected_into_stack=injected,
                                   healthy_paths=sum(p['healthy'] for p in stats['paths']))))
