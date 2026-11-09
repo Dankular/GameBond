@@ -39,12 +39,13 @@ for n in range(100):
     frame(0, udp(50000, 27015, n))             # game traffic
     frame(0, udp(50000, 443, 1000 + n))        # ordinary UDP
 got = 0
-while got < 50:
+while True:                                    # stay alive: the daemon exits when its stack does
     head = inp.read(3)
     if len(head) < 3: break
     kind, size = struct.unpack('!BH', head); body = inp.read(size)
-    if kind == 0: got += 1
-open(sys.argv[1], 'w').write(json.dumps({"injected": got}))
+    if kind == 0:
+        got += 1
+        if got == 50: open(sys.argv[1], 'w').write(json.dumps({"injected": got}))
 '''
 
 
@@ -68,7 +69,7 @@ def main():
         launcher.write_text(('@echo off\r\n' + script) if sys.platform == 'win32' else script)
         launcher.chmod(0o755)
         try:
-            process = subprocess.Popen([str(exe), '-config', str(tmp / 'config.json'), '-key', str(tmp / 'key'), '-netstack', str(launcher)],
+            process = subprocess.Popen([str(exe), '-config', str(tmp / 'config.json'), '-key', str(tmp / 'key'), '-netstack', str(launcher), '-status', str(tmp / 'status.json')],
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             received = []
@@ -99,6 +100,18 @@ def main():
             assert injected >= 50, injected
             stats = server.stats()
             assert stats['auth_failures'] == 0
+            status = None
+            for _ in range(60):    # the daemon rewrites its status once a second
+                time.sleep(.1)
+                try:
+                    status = json.loads((tmp / 'status.json').read_text())
+                except (OSError, ValueError):
+                    continue
+                if status['packets']['outbound'] == 200 and status['packets']['injected'] >= 50:
+                    break
+            assert status['state'] == 'running' and status['backend'] == 'go' and status['pid'] == process.pid, status
+            assert len(status['transport']['paths']) == 2 and all(p['ready'] for p in status['transport']['paths']), status['transport']
+            assert status['packets']['outbound'] == 200 and status['packets']['injected'] >= 50, status['packets']
             print(json.dumps(dict(status='ok', server_received=len(received), game_marked=len(game), injected_into_stack=injected,
                                   healthy_paths=sum(p['healthy'] for p in stats['paths']))))
         finally:

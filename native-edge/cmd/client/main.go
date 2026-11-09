@@ -20,6 +20,7 @@ import (
 	"gamebond.local/nativeedge/bond"
 	"gamebond.local/nativeedge/client"
 	"gamebond.local/nativeedge/stackio"
+	"gamebond.local/nativeedge/status"
 	"gamebond.local/nativeedge/uplink"
 )
 
@@ -78,6 +79,7 @@ func run() error {
 	configPath := flag.String("config", "configs/local-client.json", "client config")
 	keyPath := flag.String("key", "secrets/gamebond.key", "shared key file")
 	stackPath := flag.String("netstack", "", "path to the netstack executable (required)")
+	statusPath := flag.String("status", ".runtime/userspace-status.json", "status file for the control tooling (empty disables)")
 	flag.Parse()
 	if *stackPath == "" {
 		return fmt.Errorf("-netstack is required")
@@ -115,11 +117,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	bridge := &stackio.Bridge{Classifier: classifier, GamePorts: gamePorts, Out: stackio.NewWriter(stdin), OnEvent: func(m map[string]any) {
+	bridge := &stackio.Bridge{Classifier: classifier, GamePorts: gamePorts, Out: stackio.NewWriter(stdin)}
+	bridge.OnEvent = func(m map[string]any) {
 		if s, ok := m["socks"].(string); ok {
 			fmt.Printf("{\"status\":\"stack_ready\",\"socks\":%q}\n", s)
 		}
-	}}
+		// Application capture is not ported: deny every request to the bulk
+		// profile, exactly what the Python runtime answers without the
+		// capture extension.
+		if m["type"] == "app_authorization_request" {
+			if id, ok := m["id"].(string); ok && len(id) == 24 {
+				_ = bridge.Respond(map[string]any{"type": "app_authorization_response", "id": id, "allow": false, "profile": "bulk"})
+			}
+		}
+	}
 	mtu := cfg.MTU
 	if mtu == 0 {
 		mtu = 1280
@@ -134,6 +145,7 @@ func run() error {
 	if err = stack.Start(); err != nil {
 		return err
 	}
+	created := time.Now()
 	errs := make(chan error, 2)
 	go func() { errs <- c.Run(ctx) }()
 	go func() { errs <- bridge.Pump(stdout) }()
@@ -141,6 +153,11 @@ func run() error {
 		for ctx.Err() == nil {
 			time.Sleep(time.Second)
 			s := c.Snapshot()
+			if *statusPath != "" {
+				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge)); err != nil {
+					fmt.Fprintln(os.Stderr, "status write failed:", err)
+				}
+			}
 			fmt.Printf("{\"status\":\"running\",\"ready\":%d,\"uplinks\":%d,\"outbound\":%d,\"injected\":%d}\n", s.Ready, s.Uplinks, bridge.Outbound.Load(), bridge.Injected.Load())
 		}
 	}()
@@ -155,4 +172,24 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// statusDocument is the Python-compatible subset of userspace-status.json the
+// control tooling reads: identity, state, peer, per-path transport and counters.
+func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge) map[string]any {
+	state := "connecting"
+	if s.Ready > 0 {
+		state = "running"
+	}
+	paths := make([]map[string]any, 0, len(s.Paths))
+	for i, p := range s.Paths {
+		paths = append(paths, map[string]any{"slot": i, "ready": p.Ready, "healthy": p.Healthy, "suspect": p.Suspect,
+			"rtt_ms": p.RTTMilliseconds, "rtt_jitter_ms": p.JitterMilliseconds, "wire_tx_bytes": p.WireTX, "wire_rx_bytes": p.WireRX,
+			"policy_confirmed": p.PolicyConfirmed, "remote": p.Endpoint.String()})
+	}
+	return map[string]any{"pid": os.Getpid(), "created": float64(created.UnixNano()) / 1e9, "updated_at": float64(time.Now().UnixNano()) / 1e9,
+		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
+		"transport": map[string]any{"paths": paths},
+		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
+		"qos":       map[string]any{}, "link_usage": map[string]any{}}
 }
