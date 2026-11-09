@@ -21,16 +21,16 @@ keeping Python orchestration (adapter selection, status, GUI) until later.
 
 ## Milestones
 
-1. **Client handshake state machine** (done, `bond/client_handshake.go`).
+1. **Client handshake state machine** (DONE, `bond/client_handshake.go`).
    Faithful port of the client branches of `Node.maintenance` / `Node._handshake`,
    tested against the Go `ServerHandshake`. Not yet wired into anything.
-2. **Path identity.** Add a local path index to `Datagram` and key
+2. **Path identity** (DONE). Add a local path index to `Datagram` and key
    `Receiver.paths` by (index, endpoint). Server behaviour must stay
    byte-for-byte identical (index 0, existing tests and `budget-vectors` unchanged).
-3. **Client role in the receiver/sender.** Relax the server-only checks, drive
+3. **Client role in the receiver/sender** (DONE for handshake, probing, bonded send/receive; link-policy sender still open). Relax the server-only checks, drive
    `ClientHandshake.Poll` from `Tick`, adopt the peer on READY, probe configured
    paths, and add the link-policy sender.
-4. **Cross-implementation interop tests.** Go client <-> Python server and
+4. **Cross-implementation interop tests** (Go client -> Python server DONE: `tools/check_native_client.py`, 1-3 uplinks, 200 payloads each way, striped over every uplink; Python client -> Go client path, blackhole and policy cases still open). Go client <-> Python server and
    Python client <-> Go server, over real loopback UDP, including a blackholed
    path (extend `tools/check_native_receiver.py`).
 5. **Client I/O plane.** A `cmd/client` that binds one UDP socket per uplink to
