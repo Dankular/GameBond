@@ -78,7 +78,25 @@ plane (`cmd/client`) -> cutover benchmark -> services -> GUI.
 
 1. Every row above is DONE or has an explicit written decision to drop it.
 2. Go client <-> Go server passes the interop suite, plus Go<->Python in both
-   directions while a mixed deployment exists.
+   directions while a mixed deployment exists. **Status:** Go<->Go loopback exists
+   (`tools/check_go_to_go.py`; 1-3 uplinks, MTU, policy), Go client -> Python server
+   exists, Python client -> Go server exists (`check_native_receiver.py`); Go server ->
+   Go client with failover/blackhole cases is still missing.
 3. `tools/benchmark_tunnel.py` shows Go at or above Python on the same link.
 4. A physical multi-uplink soak (not loopback) has been run. **Nothing in this
    repository has been validated that way yet**, for Python or for Go.
+
+## Loopback throughput findings (one machine; not a link benchmark)
+
+Same 1000-byte payload stream, `tools/check_native_client.py` / `check_go_to_go.py`:
+
+| Pairing | Result |
+|---|---|
+| Python client -> Python server, 2 uplinks | about 52 Mbit/s |
+| Go client -> Python server, 2 uplinks | about 125 Mbit/s plateau (Python receiver is the likely limit) |
+| Go client -> Go server, 1 / 2 / 3 uplinks | about 365 / 465 / 452 Mbit/s |
+| MTU discovery on vs off | no measurable difference (Python peer: 125.7 vs 125.6; Go peer: 458 vs 466) |
+| Go -> Go with a 50 Mbit/s per-uplink policy, 2 uplinks | about 60 Mbit/s payload. **Open:** expected up to about 90 (50 Mbit/s wire per uplink less framing); the pacer path undershoots and has not been explained |
+
+Harness lesson: a 2 ms loop tick capped Go at about 300 Mbit/s and made the policy case drop
+packets. The real client needs timer-driven pumping, not a coarse poll.

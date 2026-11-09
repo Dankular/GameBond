@@ -18,6 +18,8 @@ import (
 type config struct {
 	Key, Session string
 	Bonded       bool
+	Sink         bool    // count payloads, do not echo them
+	Rate         float64 // bonded sender ceiling Mbit/s per uplink (default 10/20)
 }
 
 func run() error {
@@ -49,7 +51,7 @@ func run() error {
 	var sender *bond.Sender
 	var outbound *bond.TransmitQueue
 	if c.Bonded {
-		sender, err = bond.NewSender(receiver, 10, 20)
+		sender, err = bond.NewSender(receiver, max(10, c.Rate/4), max(20, c.Rate))
 		if err != nil {
 			return err
 		}
@@ -70,7 +72,27 @@ func run() error {
 	go func() { input.ReadByte(); conn.Close() }()
 	var destination netip.AddrPort
 	writer := func(d bond.Datagram) error { _, err := conn.WriteToUDPAddrPort(d.Frame, d.Endpoint); return err }
+	var firstPayload, lastPayload time.Time
+	var seenPayloads uint64
 	output := func(result bond.ReceiveResult) error {
+		if n := receiver.Stats().PayloadPackets; n != seenPayloads {
+			seenPayloads = n
+			if firstPayload.IsZero() {
+				firstPayload = time.Now()
+			}
+			lastPayload = time.Now()
+		}
+		if c.Sink {
+			if sender != nil {
+				sender.Controls(result, time.Now(), writer)
+			} else {
+				for _, d := range result.Send {
+					_, err := conn.WriteToUDPAddrPort(d.Frame, d.Endpoint)
+					receiver.Sent(d, err)
+				}
+			}
+			return nil
+		}
 		if sender != nil {
 			now := time.Now()
 			sender.Controls(result, now, writer)
@@ -154,7 +176,7 @@ func run() error {
 			}
 		}
 	}
-	report := map[string]any{"receiver": receiver.Stats(), "reorder": receiver.ReorderStats()}
+	report := map[string]any{"receiver": receiver.Stats(), "reorder": receiver.ReorderStats(), "payload_seconds": lastPayload.Sub(firstPayload).Seconds()}
 	if sender != nil {
 		report["sender"] = sender.Stats()
 		report["paths"] = sender.Paths(time.Now())

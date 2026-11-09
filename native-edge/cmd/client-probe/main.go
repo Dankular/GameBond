@@ -151,7 +151,7 @@ func run() error {
 	}
 	sent, firstReady, firstSend := false, time.Time{}, time.Now()
 	end := time.Now().Add(30 * time.Second)
-	tick := time.NewTicker(2 * time.Millisecond)
+	tick := time.NewTicker(100 * time.Microsecond)
 	defer tick.Stop()
 	nextBulk := time.Now()
 loop:
