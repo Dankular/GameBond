@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 URL = "https://proof.ovh.net/files/1Gb.dat"
 HOST = "195.154.119.136"
 PLINK = "C:/Program Files (x86)/PuTTY/plink.exe"
+CURL = "C:/Windows/System32/curl.exe" if sys.platform == "win32" else "curl"  # the path the capture list names
 KEY = str(Path.home() / "Desktop/privkey.ppk")
 STATUS = ROOT / ".runtime/userspace-status.json"
 
@@ -40,7 +41,7 @@ def ssh(command, timeout=30):
 def download(seconds, url):
     """Return (bytes, elapsed seconds) for one curl, stopped at `seconds`."""
     start = time.perf_counter()
-    out = subprocess.run(["curl", "-s", "-A", "Mozilla/5.0", "-o", "NUL" if sys.platform == "win32" else "/dev/null",
+    out = subprocess.run([CURL, "-s", "-A", "Mozilla/5.0", "-o", "NUL" if sys.platform == "win32" else "/dev/null",
                           "-m", str(seconds), "-w", "%{size_download}", url],
                          capture_output=True, text=True).stdout.strip()
     return int(out or 0), time.perf_counter() - start
