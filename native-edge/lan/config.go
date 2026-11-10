@@ -38,6 +38,9 @@ type DeviceConfig struct {
 	InterfaceName  string
 	DeviceMAC      string
 	DNS            []netip.Addr
+	// UDPDirect sends the device's public UDP straight out the first uplink
+	// (workstation-side NAT) instead of through the tunnel; TCP stays tunneled.
+	UDPDirect bool
 }
 
 // Identity is the adapter identity, case-folded.
@@ -79,7 +82,7 @@ func LoadDevices(raw json.RawMessage, client netip.Addr, uplinkIDs []string, upl
 	for _, e := range entries {
 		for k := range e {
 			switch k {
-			case "name", "tunnel_ip", "interface_id", "interface_index", "interface_name", "device_mac", "dns":
+			case "name", "tunnel_ip", "interface_id", "interface_index", "interface_name", "device_mac", "dns", "udp_direct":
 			default:
 				return nil, fmt.Errorf("Unknown lan_devices field: %s", k)
 			}
@@ -98,6 +101,9 @@ func LoadDevices(raw json.RawMessage, client netip.Addr, uplinkIDs []string, upl
 			if err := get(key, into); err != nil {
 				return nil, fmt.Errorf("invalid lan_devices %s", key)
 			}
+		}
+		if err := get("udp_direct", &d.UDPDirect); err != nil {
+			return nil, errors.New("LAN device udp_direct must be true or false")
 		}
 		if _, ok := e["dns"]; ok {
 			if err := get("dns", &dns); err != nil {

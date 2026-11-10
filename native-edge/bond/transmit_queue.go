@@ -12,18 +12,25 @@ type QueuedPacket struct {
 	Expires             time.Time
 	Tag                 byte
 	ClassCapacity       int
+	queuedAt            time.Time // set on admission; measures queue residency
+	held                bool      // a send was attempted and deferred by pacing or the window
 }
 type TransmitQueueStats struct {
 	Admitted, Completed, Expired, Rejected, EvictedBulk uint64
 	PeerResetDropped                                    uint64
-	QueuedPackets, QueuedBytes, PeakPackets             int
+	// PriorityWaitMaxMS and the over-counters report how long urgent packets
+	// sat in the queue before being written (0 means released immediately).
+	ExpiredInWait, PrioritySent, PriorityWaitOver1ms, PriorityWaitOver5ms uint64
+	PriorityWaitMaxMS                                                     float64
+	QueuedPackets, QueuedBytes, PeakPackets                               int
 }
 
 // TransmitQueue keeps urgent and bulk admission separate and bounds memory.
 // Pump never waits for a pacing slot, so the actor can service UDP/TUN events.
 type TransmitQueue struct {
 	sender              *Sender
-	priority, bulk      list.List
+	priority            list.List
+	bulk                fairQueue
 	capacity, byteLimit int
 	stats               TransmitQueueStats
 	peer                [16]byte
@@ -45,7 +52,7 @@ func (q *TransmitQueue) syncPeer() {
 	if q.sender.hasPeer && (!q.hasPeer || q.peer != q.sender.peer) {
 		q.stats.PeerResetDropped += uint64(q.priority.Len() + q.bulk.Len())
 		q.priority.Init()
-		q.bulk.Init()
+		q.bulk.Reset()
 		q.stats.QueuedPackets = 0
 		q.stats.QueuedBytes = 0
 		q.classes = [64]int{}
@@ -53,13 +60,21 @@ func (q *TransmitQueue) syncPeer() {
 		q.hasPeer = true
 	}
 }
+func (q *TransmitQueue) release(p QueuedPacket) {
+	q.stats.QueuedPackets--
+	q.stats.QueuedBytes -= len(p.Payload)
+	q.classes[p.Tag]--
+}
 func (q *TransmitQueue) remove(queue *list.List) QueuedPacket {
 	e := queue.Front()
 	p := e.Value.(QueuedPacket)
 	queue.Remove(e)
-	q.stats.QueuedPackets--
-	q.stats.QueuedBytes -= len(p.Payload)
-	q.classes[p.Tag]--
+	q.release(p)
+	return p
+}
+func (q *TransmitQueue) popBulk() QueuedPacket {
+	p := q.bulk.Pop()
+	q.release(p)
 	return p
 }
 func (q *TransmitQueue) Enqueue(packet QueuedPacket) bool {
@@ -84,14 +99,16 @@ func (q *TransmitQueue) Enqueue(packet QueuedPacket) bool {
 			q.stats.Rejected++
 			return false
 		}
-		q.remove(&q.bulk)
+		p, _ := q.bulk.EvictLargest()
+		q.release(p)
 		q.stats.EvictedBulk++
 	}
 	packet.Payload = append([]byte(nil), packet.Payload...)
+	packet.queuedAt = time.Now()
 	if packet.Priority {
 		q.priority.PushBack(packet)
 	} else {
-		q.bulk.PushBack(packet)
+		q.bulk.Push(packet)
 	}
 	q.stats.Admitted++
 	q.stats.QueuedPackets++
@@ -132,15 +149,31 @@ func (q *TransmitQueue) Pump(now time.Time, writer DatagramWriter) (time.Time, e
 		}
 		q.remove(&q.priority)
 		q.stats.Completed++
+		q.stats.PrioritySent++
+		if !p.queuedAt.IsZero() {
+			ms := float64(time.Since(p.queuedAt)) / float64(time.Millisecond)
+			if ms > q.stats.PriorityWaitMaxMS {
+				q.stats.PriorityWaitMaxMS = ms
+			}
+			if ms > 1 {
+				q.stats.PriorityWaitOver1ms++
+			}
+			if ms > 5 {
+				q.stats.PriorityWaitOver5ms++
+			}
+		}
 	}
 	if q.bulk.Len() > 0 {
 		q.sender.ResumeBulk(now)
 	}
 	for i := 0; i < 64 && q.bulk.Len() > 0; i++ {
-		p := q.bulk.Front().Value.(QueuedPacket)
+		p, _ := q.bulk.Peek()
 		if !now.Before(p.Expires) {
-			q.remove(&q.bulk)
+			q.popBulk()
 			q.stats.Expired++
+			if p.held {
+				q.stats.ExpiredInWait++ // aged out while pacing or the window held it back
+			}
 			continue
 		}
 		sent, next, err := q.sender.Bulk(p.Payload, p.Flow, now, writer)
@@ -148,6 +181,7 @@ func (q *TransmitQueue) Pump(now time.Time, writer DatagramWriter) (time.Time, e
 			return due, err
 		}
 		if !sent {
+			q.bulk.MarkHeld()
 			if next.Before(due) {
 				due = next
 			}
@@ -156,7 +190,7 @@ func (q *TransmitQueue) Pump(now time.Time, writer DatagramWriter) (time.Time, e
 			}
 			break
 		}
-		q.remove(&q.bulk)
+		q.popBulk()
 		q.stats.Completed++
 	}
 	if q.priority.Len() > 0 || q.bulk.Len() > 0 { // Do not sleep through another ready batch.

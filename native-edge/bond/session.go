@@ -6,8 +6,13 @@ import (
 )
 
 type SessionOptions struct {
-	MTU                      int
-	ClientIP                 netip.Addr
+	MTU      int
+	ClientIP netip.Addr
+	// DeviceIPs are extra tunnel addresses (consoles behind a client LAN adapter)
+	// accepted as sources and destinations besides ClientIP.
+	// PriorityHostMax bounds game-priority device UDP (config priority_host_max_packet; 0 = tunnel MTU).
+	PriorityHostMax          int
+	DeviceIPs                []netip.Addr
 	InitialRate, MaximumRate float64
 	ReorderTimeout           time.Duration
 	Policies                 map[byte]QueuePolicy
@@ -16,6 +21,7 @@ type SessionOptions struct {
 	Redundant                bool
 	// Optional behaviours, all off by default like the Python server.
 	LossTracking, PathMTUDiscovery, FailoverReplay bool
+	DelayControl                                   bool
 }
 
 func DefaultSessionOptions() SessionOptions {
@@ -60,10 +66,13 @@ func NewSession(key, session []byte, options SessionOptions) (*Session, error) {
 	}
 	sender.EnableFailover(options.FailoverReplay)
 	sender.EnableLossTracking(options.LossTracking)
+	sender.EnableDelayControl(options.DelayControl)
 	classifier, err := NewClassifier(options.Policies, options.GamePorts, options.QoS)
 	if err != nil {
 		return nil, err
 	}
+	classifier.SetPriorityHosts(options.DeviceIPs)
+	classifier.SetPriorityHostMax(options.PriorityHostMax)
 	qos, err := NewAdaptiveQoS(options.QoS)
 	if err != nil {
 		return nil, err
@@ -101,16 +110,26 @@ func (s *Session) classify(packet []byte, incoming bool, now time.Time) (Classif
 		s.stats.Malformed++
 		return Classification{}, false
 	}
-	client := s.options.ClientIP.As4()
-	if incoming && p.Source != client {
+	if incoming && !s.ownsTunnelIP(p.Source) {
 		s.stats.WrongSource++
 		return Classification{}, false
 	}
-	if !incoming && p.Destination != client {
+	if !incoming && !s.ownsTunnelIP(p.Destination) {
 		s.stats.WrongDestination++
 		return Classification{}, false
 	}
 	return s.classifier.Classify(p, now), true
+}
+func (s *Session) ownsTunnelIP(a [4]byte) bool {
+	if a == s.options.ClientIP.As4() {
+		return true
+	}
+	for _, d := range s.options.DeviceIPs {
+		if d.As4() == a {
+			return true
+		}
+	}
+	return false
 }
 func queued(packet []byte, c Classification, now time.Time) QueuedPacket {
 	return QueuedPacket{Payload: packet, Flow: c.Info.Flow, Priority: c.Policy.Priority, Replicate: c.Policy.Replicate, Expires: now.Add(time.Duration(c.Policy.MaxAgeMS * float64(time.Millisecond))), Tag: c.Tag, ClassCapacity: c.Policy.Capacity}

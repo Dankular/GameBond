@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"slices"
 	"strconv"
 	"time"
 
@@ -15,26 +16,29 @@ import (
 )
 
 type Config struct {
-	Role           string                      `json:"role"`
-	Session        string                      `json:"session"`
-	Bind           [][]json.RawMessage         `json:"bind"`
-	ClientIP       string                      `json:"client_tunnel_ip"`
-	TunName        string                      `json:"tun_name"`
-	MTU            int                         `json:"mtu"`
-	Bonding        bool                        `json:"bonding_mode"`
-	Redundant      bool                        `json:"redundant_mode"`
-	DirectPriority bool                        `json:"direct_priority"`
-	BulkRate       float64                     `json:"bulk_rate_mbps"`
-	InitialRate    float64                     `json:"bonding_initial_rate_mbps"`
-	MaximumRate    float64                     `json:"bonding_max_rate_mbps"`
-	ReorderMS      float64                     `json:"reorder_timeout_ms"`
-	GamePorts      []uint16                    `json:"game_udp_ports"`
-	Queues         map[string]bond.QueuePolicy `json:"queues"`
-	QoS            bond.QoSSettings            `json:"adaptive_qos"`
-	Admin          json.RawMessage             `json:"admin"`
-	LossTracking   bool                        `json:"loss_tracking"`
-	PathMTU        bool                        `json:"path_mtu_discovery"`
-	Failover       bool                        `json:"failover_replay"`
+	Role            string                      `json:"role"`
+	Session         string                      `json:"session"`
+	Bind            [][]json.RawMessage         `json:"bind"`
+	ClientIP        string                      `json:"client_tunnel_ip"`
+	LanTunnelIPs    []string                    `json:"lan_tunnel_ips"`
+	TunName         string                      `json:"tun_name"`
+	MTU             int                         `json:"mtu"`
+	Bonding         bool                        `json:"bonding_mode"`
+	Redundant       bool                        `json:"redundant_mode"`
+	DirectPriority  bool                        `json:"direct_priority"`
+	BulkRate        float64                     `json:"bulk_rate_mbps"`
+	InitialRate     float64                     `json:"bonding_initial_rate_mbps"`
+	MaximumRate     float64                     `json:"bonding_max_rate_mbps"`
+	ReorderMS       float64                     `json:"reorder_timeout_ms"`
+	GamePorts       []uint16                    `json:"game_udp_ports"`
+	Queues          map[string]bond.QueuePolicy `json:"queues"`
+	QoS             bond.QoSSettings            `json:"adaptive_qos"`
+	Admin           json.RawMessage             `json:"admin"`
+	LossTracking    bool                        `json:"loss_tracking"`
+	DelayControl    bool                        `json:"delay_control"`
+	PriorityHostMax int                         `json:"priority_host_max_packet"`
+	PathMTU         bool                        `json:"path_mtu_discovery"`
+	Failover        bool                        `json:"failover_replay"`
 }
 
 func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []byte, error) {
@@ -77,12 +81,34 @@ func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []b
 	}
 	options.MTU = c.MTU
 	options.ClientIP = netip.MustParseAddr(c.ClientIP)
+	if len(c.LanTunnelIPs) > 32 {
+		return fail(fmt.Errorf("lan_tunnel_ips must list at most 32 addresses"))
+	}
+	for _, text := range c.LanTunnelIPs {
+		ip, err := netip.ParseAddr(text)
+		if err != nil || !ip.Is4() || ip.String() != text {
+			return fail(fmt.Errorf("lan_tunnel_ips: %q is not a dotted IPv4 address", text))
+		}
+		b := ip.As4()
+		if b[0] != 10 || b[1] != 77 || b[2] != 0 || b[3] < 3 || b[3] > 254 {
+			return fail(fmt.Errorf("lan_tunnel_ips: %s must be 10.77.0.3 to 10.77.0.254", text))
+		}
+		if slices.Contains(options.DeviceIPs, ip) {
+			return fail(fmt.Errorf("lan_tunnel_ips must be distinct"))
+		}
+		options.DeviceIPs = append(options.DeviceIPs, ip)
+	}
 	options.InitialRate = c.InitialRate
 	options.MaximumRate = c.MaximumRate
 	options.Redundant = c.Redundant
 	options.GamePorts = c.GamePorts
 	options.QoS = c.QoS
 	options.LossTracking, options.PathMTUDiscovery, options.FailoverReplay = c.LossTracking, c.PathMTU, c.Failover
+	options.DelayControl = c.DelayControl
+	if c.PriorityHostMax < 0 || c.PriorityHostMax > 1280 {
+		return fail(fmt.Errorf("priority_host_max_packet must be 0 to 1280"))
+	}
+	options.PriorityHostMax = c.PriorityHostMax
 	if c.ReorderMS < 1 || c.ReorderMS > 200 {
 		return fail(fmt.Errorf("reorder timeout must be 1..200ms"))
 	}

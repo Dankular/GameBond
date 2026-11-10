@@ -45,8 +45,12 @@ type ReceiverStats struct {
 	Authenticated, AuthenticationErrors, Malformed, Duplicates, FloorDrops, HandshakeRejected uint64
 	PayloadPackets, PayloadBytes, WireRX, WireTX, SendErrors                                  uint64
 	PeerRestarts, PathMigrations                                                              uint64
-	FeedbackReceived, FeedbackRejected, FeedbackDuplicates                                    uint64
-	PolicyDrops                                                                               uint64
+	// Data frames (replicated game traffic) are delivered at first arrival, so a
+	// frame with a lower sequence than one already delivered arrives out of order.
+	DataReordered, DataReorderedOver5ms, DataReorderedOver20ms uint64
+	DataReorderMaxMS                                           float64
+	FeedbackReceived, FeedbackRejected, FeedbackDuplicates     uint64
+	PolicyDrops                                                uint64
 }
 type receivePath struct {
 	copySeen, copyMissed, copyLate   uint64
@@ -100,6 +104,8 @@ type Receiver struct {
 	codec                *Codec
 	handshake            *ServerHandshake
 	replay               ReplayWindow
+	dataHigh             uint64
+	dataHighAt           time.Time
 	floor                uint64
 	paths                map[PathKey]*receivePath
 	recovery             map[int]recoveryState
@@ -115,6 +121,7 @@ type Receiver struct {
 	probes               map[[24]byte]pendingProbe
 	reorderBase          time.Duration
 	mtuDiscovery         bool
+	delayControl         bool
 	policyRevisionClient uint64
 	repairUnavailable    uint64
 }
@@ -280,6 +287,7 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 			clear(r.probes)
 			r.policyEnabled = false
 			r.replay = ReplayWindow{}
+			r.dataHigh, r.dataHighAt = 0, time.Time{}
 			r.floor = h.Sequence + 1
 			r.reorder, _ = NewReorder(DefaultReorderConfig())
 			r.copies = newCopyLedger()
@@ -506,6 +514,21 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		}
 		r.stats.PayloadPackets++
 		r.stats.PayloadBytes += uint64(len(payload))
+		if h.Sequence < r.dataHigh && r.dataHighAt.After(time.Time{}) {
+			r.stats.DataReordered++
+			late := float64(now.Sub(r.dataHighAt)) / float64(time.Millisecond)
+			if late > r.stats.DataReorderMaxMS {
+				r.stats.DataReorderMaxMS = late
+			}
+			if late > 5 {
+				r.stats.DataReorderedOver5ms++
+			}
+			if late > 20 {
+				r.stats.DataReorderedOver20ms++
+			}
+		} else {
+			r.dataHigh, r.dataHighAt = h.Sequence, now
+		}
 		out.Deliver = append(out.Deliver, payload)
 	}
 	return out, err

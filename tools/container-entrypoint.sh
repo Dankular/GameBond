@@ -61,9 +61,6 @@ PY
     TUNNEL_PREFIX=30
     NAT_SOURCES='10.77.0.2/32'
     if [[ -n "$LAN_IPS" ]]; then
-        [[ ${GAMEBOND_NATIVE_EDGE:-0} != 1 ]] || {
-            echo 'lan_tunnel_ips are supported by the Python server only; unset GAMEBOND_NATIVE_EDGE' >&2; exit 1;
-        }
         for lan_ip in $LAN_IPS; do
             [[ "$lan_ip" =~ ^10\.77\.0\.([3-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-4])$ ]] || {
                 echo "LAN device address $lan_ip must be 10.77.0.3 to 10.77.0.254" >&2; exit 1;
@@ -109,6 +106,8 @@ launch() {
 add table ip gamebond
 add chain ip gamebond postrouting { type nat hook postrouting priority srcnat; policy accept; }
 add rule ip gamebond postrouting ip saddr $NAT_SOURCES oifname "$WAN" masquerade
+add chain ip gamebond defrag { type filter hook prerouting priority -150; policy accept; }
+add rule ip gamebond defrag iifname "$WAN" meta length > 1280 ip frag-off & 0x4000 != 0 ip frag-off set 0
 EOF
     nat_added=1
     kill -0 "$child"

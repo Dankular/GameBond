@@ -44,6 +44,8 @@ type Budget struct {
 	growthAppLimited, appLimited, startup                                               bool
 	growthUtilization, growthAllowance, pacingWaitRatio, deliveryRate                   float64
 	congestionEpochs, delaySamples, startupIncreases                                    uint64
+	delayBackoffs                                                                       uint64
+	delayControl                                                                        bool
 	startupExit                                                                         string
 }
 
@@ -270,6 +272,30 @@ func (b *Budget) reduce(now float64) {
 	b.resetEpoch(now)
 	b.delaySamples = 0
 }
+
+// reduceForDelay answers a standing queue that loss never signals: the
+// bottleneck buffer is full and delaying everything behind it. The rate drops
+// to just under what was actually delivered so the queue drains, at most once
+// per two round trips, and never below the floor. It only runs when the path is
+// really being used (not app-limited), so sparse traffic is left alone.
+func (b *Budget) reduceForDelay(now float64) {
+	if now-b.lastBackoff < math.Max(.25, 2*b.srtt) {
+		return
+	}
+	target := b.rate * .9
+	if b.deliveryRate > 0 && b.deliveryRate*.9 < target {
+		target = b.deliveryRate * .9
+	}
+	b.rate = math.Max(b.minimum, target)
+	b.lastBackoff = now
+	b.delayBackoffs++
+	b.startup = false
+	if b.startupExit == "" {
+		b.startupExit = "delay"
+	}
+	b.resetEpoch(now)
+	b.delaySamples = 0
+}
 func (b *Budget) measure(now float64) {
 	if !b.hasEpoch {
 		return
@@ -318,6 +344,8 @@ func (b *Budget) measure(now float64) {
 	if b.congestionEpochs >= 2 {
 		b.reduce(now)
 		b.congestionEpochs = 0
+	} else if b.delayControl && b.delaySamples >= 3 && !b.appLimited {
+		b.reduceForDelay(now)
 	}
 	if !b.growthAppLimited && b.delaySamples == 0 && !corroborated && b.lossRatio < .01 && pressure < .25 && allowance > 0 && b.epochDelivered >= 6000 && b.epochRetired >= 6000 && b.epochDelivered >= allowance*.65 && now-b.lastBackoff >= math.Max(.25, b.rawSRTT) {
 		increment := 12500.
@@ -389,5 +417,5 @@ func (b *Budget) Stats() map[string]any {
 		"srtt_ms": b.srtt * 1000, "min_rtt_ms": minimum, "raw_srtt_ms": b.rawSRTT * 1000, "rtt_var_ms": b.rttVar * 1000, "queue_delay_ms": delay, "timeout_seconds": b.Timeout(), "sent_packets": b.sentPackets, "rto_backoff": b.rtoBackoff,
 		"sent_bytes": b.sentBytes, "acked_packets": b.ackedPackets, "delivered_bytes": b.deliveryCounter, "expired_packets": b.expiredPackets, "expired_bytes": b.expiredBytes, "invalid_acks": b.invalidACKs, "untracked_packets": b.untracked,
 		"backoffs": b.backoffs, "rate_increases": b.increases, "app_limited": b.appLimited, "startup": b.startup, "startup_increases": b.startupIncreases, "startup_exit_reason": exit, "growth_app_limited": b.growthAppLimited,
-		"growth_bulk_utilization": b.growthUtilization, "growth_bulk_allowance_bytes": b.growthAllowance, "pacing_wait_ratio": b.pacingWaitRatio, "delay_samples": b.delaySamples, "delay_backoffs": 0, "timeout_backoffs": b.timeoutBackoffs, "window_pressure_ratio": b.pressureRatio, "settled_loss_ratio": b.lossRatio, "congestion_epochs": b.congestionEpochs}
+		"growth_bulk_utilization": b.growthUtilization, "growth_bulk_allowance_bytes": b.growthAllowance, "pacing_wait_ratio": b.pacingWaitRatio, "delay_samples": b.delaySamples, "delay_backoffs": b.delayBackoffs, "timeout_backoffs": b.timeoutBackoffs, "window_pressure_ratio": b.pressureRatio, "settled_loss_ratio": b.lossRatio, "congestion_epochs": b.congestionEpochs}
 }

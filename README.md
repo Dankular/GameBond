@@ -52,6 +52,43 @@ Keep keys and live configs private. Server restarts require matching session han
 
 An optional HTTPS admin portal (status, config editing, restart) is described in [admin-portal.md](docs/admin-portal.md).
 
+## Fragmentation and the 1280 MTU (read this before debugging game loss)
+
+The tunnel MTU is 1280. Internet hosts, game servers in particular, send
+packets of 1280-1500 bytes with the Don't Fragment (DF) bit set. A Linux router
+must drop those instead of fragmenting them, and returns an ICMP "fragmentation
+needed" that games ignore. The result is silent loss of exactly the big packets:
+hits, kills and kill-cam data.
+
+What we saw (2026-11-10, COD on a PS5 through the tunnel):
+- In-game packet loss of 12-33% when getting hit, while movement was fine.
+- Every tunnel counter showed 0% loss, so the loss was invisible on the legs.
+- About 18% of inbound game packets were over 1280 bytes with DF set. The server
+  sent ICMP type 3 code 4 to the game servers at its rate limit of 1/s each.
+- Going direct (`udp_direct`) had no loss because nothing there is limited to 1280.
+- Time was lost on queue limits, classifier tags, reorder timers and the exit route.
+  None of them was the cause.
+
+Fix: the container entrypoint (`tools/container-entrypoint.sh`) adds an nft
+chain `ip gamebond defrag` that clears DF on inbound packets over 1280 bytes. The
+kernel then fragments them to fit the tunnel and the PS5 reassembles them.
+Every server image must use this entrypoint. If you swap the base image, keep
+the rule, and check that it survived with:
+
+```sh
+docker exec <container> nft list chain ip gamebond defrag
+```
+
+How to check for the problem in about a minute: on the server, capture inbound
+UDP on the public interface and count packets with total length over 1280 and
+DF set. Also count outbound ICMP type 3 code 4. Both should be zero on a
+healthy server. Pings to game servers tell you nothing, because they do not
+answer ICMP.
+
+The client's LAN gateway fragments oversized device packets without DF, and
+sends ICMP frag-needed for DF ones. Watch `oversize_fragmented` and
+`oversize_df_dropped` in the status file.
+
 ## Remaining gaps
 
 Live HTTPS, QUIC, persistent connections, and Codex traffic have passed checks.

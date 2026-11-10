@@ -7,6 +7,7 @@ type IPv4Info struct {
 	Protocol, DSCP                byte
 	Fragmented                    bool
 	HeaderLength, TransportOffset int
+	Length                        int // total IPv4 packet length
 	Flow                          string
 	TCPControl                    bool
 	SourcePort, DestinationPort   uint16
@@ -45,6 +46,7 @@ func ParseIPv4(packet []byte) (IPv4Info, error) {
 	p.Protocol = packet[9]
 	p.DSCP = packet[1] >> 2
 	p.HeaderLength = header
+	p.Length = len(packet)
 	p.TransportOffset = header
 	copy(p.Source[:], packet[12:16])
 	copy(p.Destination[:], packet[16:20])

@@ -72,6 +72,7 @@ type Gateway struct {
 	ident     uint16
 	Leased    bool
 	c         Counters
+	probe     probeState
 }
 
 func subnetOf(ip netip.Addr) netip.Prefix { p, _ := ip.Prefix(24); return p }
@@ -220,6 +221,10 @@ func (g *Gateway) arp(srcMAC [6]byte, body []byte) {
 		}
 	default:
 		g.c.SpoofedSourceDropped++
+		return
+	}
+	if op == 2 && senderIP == g.device && targetIP == g.gateway {
+		g.probe.reply(g.probe.seq, g.cfg.Now())
 		return
 	}
 	if op != 1 {
@@ -475,4 +480,69 @@ func (g *Gateway) sendFrame(dst [6]byte, ethertype uint16, payload []byte) bool 
 	}
 	g.c.FramesOut++
 	return true
+}
+
+type probeState struct {
+	sentAt                    map[uint16]time.Time
+	seq                       uint16
+	Sent, Recv, Over5, Over20 uint64
+	SumMS, MaxMS              float64
+}
+
+func (p *probeState) reply(seq uint16, now time.Time) {
+	t, ok := p.sentAt[seq]
+	if !ok {
+		return
+	}
+	delete(p.sentAt, seq)
+	ms := float64(now.Sub(t)) / float64(time.Millisecond)
+	p.Recv++
+	p.SumMS += ms
+	if ms > p.MaxMS {
+		p.MaxMS = ms
+	}
+	if ms > 5 {
+		p.Over5++
+	}
+	if ms > 20 {
+		p.Over20++
+	}
+}
+
+// ProbeDevice sends one unicast ARP request to the device so the adapter-to-device leg
+// can be timed. It does nothing until the device's MAC is known.
+func (g *Gateway) ProbeDevice() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.deviceMAC == nil {
+		return
+	}
+	p := &g.probe
+	if p.sentAt == nil {
+		p.sentAt = map[uint16]time.Time{}
+	}
+	p.seq++
+	for k, t := range p.sentAt { // forget probes that will never be answered
+		if g.cfg.Now().Sub(t) > 2*time.Second {
+			delete(p.sentAt, k)
+		}
+	}
+	req := append([]byte{0, 1, 8, 0, 6, 4, 0, 1}, g.mac[:]...)
+	req = append(append(append(req, g.gateway[:]...), g.deviceMAC[:]...), g.device[:]...)
+	p.sentAt[p.seq] = g.cfg.Now()
+	if g.sendFrame(*g.deviceMAC, ethARP, req) {
+		p.Sent++
+	}
+}
+
+// ProbeStats reports the device round trips seen so far.
+func (g *Gateway) ProbeStats() map[string]any {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	p := g.probe
+	mean := 0.0
+	if p.Recv > 0 {
+		mean = p.SumMS / float64(p.Recv)
+	}
+	return map[string]any{"sent": p.Sent, "received": p.Recv, "mean_ms": mean, "max_ms": p.MaxMS, "over_5ms": p.Over5, "over_20ms": p.Over20}
 }

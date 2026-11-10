@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"gamebond.local/nativeedge/launcher"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -50,6 +51,8 @@ type fileConfig struct {
 	LinkPolicies   map[string]linkpolicy.Policy `json:"link_policies"` // keyed by interface index, as in Python
 	GameUDPPorts   []uint16                     `json:"game_udp_ports"`
 	LossTracking   bool                         `json:"loss_tracking"`
+	DelayControl   bool                         `json:"delay_control"`
+	Dish           *dishConfig                  `json:"dish"`
 	PathMTU        bool                         `json:"path_mtu_discovery"`
 	InterfaceIndex []int                        `json:"interface_indices"` // pin uplink i to this adapter index
 	InterfaceIDs   []string                     `json:"interface_ids"`     // stable adapter identities across reconnects
@@ -268,6 +271,14 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			lanMgr.dnsFn = dnsCfg.Override
 		}
 		lanMgr.outbound = bridge.Send
+		for _, d := range lanMgr.devices {
+			if d.UDPDirect && len(specs) > 0 {
+				spec := specs[0]
+				lanMgr.direct = newDirectUDP(func() (*net.UDPConn, error) { return uplink.Open(spec) }, lanMgr.dispatch)
+				break
+			}
+		}
+		classifier.SetPriorityHosts(lanMgr.deviceIPs())
 		lanMgr.out = func(m map[string]any) { b, _ := json.Marshal(m); fmt.Println(string(b)) }
 		defer lanMgr.close()
 	}
@@ -295,7 +306,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 	}
 	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs, Available: available,
 		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay,
-		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking})
+		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking, DelayControl: cfg.DelayControl})
 	if err != nil {
 		return err
 	}
@@ -350,6 +361,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		}
 	}()
 	go func() { errs <- c.Run(ctx) }()
+	startDishWatch(ctx, cfg.Dish, c)
 	updateAdapters := func(sp []uplink.Spec, avail []bool) error {
 		failed, err := c.UpdateUplinks(sp, avail)
 		for _, f := range failed {
@@ -368,6 +380,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 	}
 	if lanMgr != nil {
 		go func() {
+			proxy.waitSettled(ctx)
 			for ctx.Err() == nil {
 				lanMgr.maintain(ctx)
 				time.Sleep(time.Second)
@@ -507,9 +520,9 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 	}
 	doc := map[string]any{"pid": os.Getpid(), "created": float64(created.UnixNano()) / 1e9, "updated_at": float64(time.Now().UnixNano()) / 1e9,
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
-		"transport": map[string]any{"paths": paths},
+		"transport": map[string]any{"paths": paths, "receive": s.Receiver, "send": s.Sender, "reorder": s.Reorder, "queue": s.Queue, "loop": s.Loop},
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"qos":       s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "dns": l.dnsStatus()}
+		"dish": dishStatusDoc(), "qos":       s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "dns": l.dnsStatus()}
 	if capture != nil {
 		capture.status(doc)
 	}

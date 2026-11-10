@@ -26,6 +26,7 @@ func (r *Receiver) freshPath(local int, endpoint netip.AddrPort, now time.Time) 
 	}
 	p := &receivePath{local: local, endpoint: endpoint, txEpoch: binary.BigEndian.Uint64(epoch[:]), last: now}
 	p.budget, _ = NewBudget(r.initialRate, r.maxRate)
+	p.budget.delayControl = r.delayControl
 	if r.mtuDiscovery {
 		p.mtu, _ = NewMTUProber(r.mtu, min(548, r.mtu))
 	}
@@ -102,6 +103,7 @@ func (r *Receiver) adoptClientPeer(peer [16]byte, sequence uint64, now time.Time
 	r.handshake.peer, r.handshake.hasPeer = peer, true
 	clear(r.probes)
 	r.replay = ReplayWindow{}
+	r.dataHigh, r.dataHighAt = 0, time.Time{}
 	r.floor = sequence + 1
 	r.reorder, _ = NewReorder(DefaultReorderConfig())
 	r.copies = newCopyLedger()

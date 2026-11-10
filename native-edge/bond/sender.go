@@ -43,6 +43,7 @@ type Sender struct {
 	failover          bool
 	lossTracking      bool
 	replayQueue       []replayItem
+	hints             map[int]pathHint
 }
 
 func NewSender(r *Receiver, initial, maximum float64) (*Sender, error) {
@@ -61,6 +62,52 @@ func NewSender(r *Receiver, initial, maximum float64) (*Sender, error) {
 // EnableLossTracking makes replicated priority sends use DATA_COPY so the peer
 // can score each path's copy (Python's loss_tracking option).
 func (s *Sender) EnableLossTracking(on bool) { s.lossTracking = on }
+
+// EnableDelayControl lets each path's budget cut its rate when a standing
+// queue builds without loss (config delay_control). Existing paths follow.
+func (s *Sender) EnableDelayControl(on bool) {
+	s.r.delayControl = on
+	for _, p := range s.r.paths {
+		p.budget.delayControl = on
+	}
+}
+
+type pathHint struct {
+	until  time.Time
+	reason string
+}
+
+// SetPathHint marks an uplink (by its local slot) as degraded by an outside
+// signal such as the Starlink dish's own statistics. Bulk steers away from a
+// hinted path while any other is usable and adaptive redundancy switches on;
+// gameplay copies keep using every path. The hint lapses at until.
+func (s *Sender) SetPathHint(local int, degraded bool, until time.Time, reason string) {
+	if !degraded {
+		delete(s.hints, local)
+		return
+	}
+	if s.hints == nil {
+		s.hints = make(map[int]pathHint)
+	}
+	s.hints[local] = pathHint{until: until, reason: reason}
+}
+
+func (s *Sender) hinted(local int, now time.Time) bool {
+	h, ok := s.hints[local]
+	return ok && now.Before(h.until)
+}
+
+// HintedPaths reports the uplink slots currently hinted degraded.
+func (s *Sender) HintedPaths(now time.Time) []int {
+	var out []int
+	for local := range s.hints {
+		if s.hinted(local, now) {
+			out = append(out, local)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
 
 func (s *Sender) Stats() SenderStats { return s.stats }
 func (s *Sender) syncPeer() {
@@ -346,6 +393,17 @@ func (s *Sender) Bulk(payload []byte, key string, now time.Time, writer Datagram
 		}
 		if len(alive) > 0 {
 			paths = alive
+		}
+	}
+	if len(s.hints) > 0 {
+		var clear []*receivePath
+		for _, p := range paths {
+			if !s.hinted(p.local, now) {
+				clear = append(clear, p)
+			}
+		}
+		if len(clear) > 0 {
+			paths = clear
 		}
 	}
 	paths = s.fitPaths(paths, size)

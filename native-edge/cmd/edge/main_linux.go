@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gamebond.local/nativeedge/edge"
+	"gamebond.local/nativeedge/hwmon"
 )
 
 func run() error {
@@ -63,6 +64,12 @@ func run() error {
 			return err
 		}
 		if settings.Enabled {
+			hardware,err:=hwmon.NewPlatform(ctx,hwmon.Options{})
+			if err!=nil {return err}
+			defer hardware.Close()
+			resources,err:=hwmon.StartService(ctx,hardware.Sample,1500*time.Millisecond)
+			if err!=nil {return err}
+			defer resources.Close()
 			var mu sync.Mutex
 			var latest map[string]any
 			observers = append(observers, func(stats map[string]any) {
@@ -70,7 +77,7 @@ func run() error {
 				latest = stats
 				mu.Unlock()
 			})
-			portal := adminportal.New(adminportal.Options{Settings: settings, ConfigPath: *configPath,
+			portal := adminportal.New(adminportal.Options{Settings: settings, ConfigPath: *configPath,Hardware:resources.Snapshot,
 				Snapshot: func() any {
 					mu.Lock()
 					defer mu.Unlock()

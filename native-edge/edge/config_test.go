@@ -69,3 +69,25 @@ func TestOptionalTransportFlagsReachSessionOptions(t *testing.T) {
 }
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
+
+func TestLanTunnelIPsAreValidatedAndPassedToTheSession(t *testing.T) {
+	decode := func(v any) ([]string, error) {
+		input := configFixture()
+		input["lan_tunnel_ips"] = v
+		data, _ := json.Marshal(input)
+		_, options, _, _, err := DecodeConfig(data)
+		var out []string
+		for _, ip := range options.DeviceIPs {
+			out = append(out, ip.String())
+		}
+		return out, err
+	}
+	if got, err := decode([]string{"10.77.0.3", "10.77.0.254"}); err != nil || len(got) != 2 || got[0] != "10.77.0.3" {
+		t.Fatal("valid device addresses rejected", got, err)
+	}
+	for _, bad := range []any{[]string{"10.77.0.2"}, []string{"10.77.0.1"}, []string{"10.77.0.255"}, []string{"10.77.1.3"}, []string{"192.168.1.5"}, []string{"10.77.0.3", "10.77.0.3"}, []string{"nope"}, []string{"::1"}} {
+		if _, err := decode(bad); err == nil {
+			t.Fatal("bad lan_tunnel_ips accepted", bad)
+		}
+	}
+}

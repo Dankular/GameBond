@@ -41,6 +41,8 @@ type Options struct {
 	Settings *Settings
 	// Snapshot is the live status document for /api/status.
 	Snapshot func() any
+	// Hardware reads a background cache; it must not sample in the HTTP handler.
+	Hardware func() map[string]any
 	// ConfigPath is the server config the portal reads and rewrites in place.
 	ConfigPath string
 	// Validate checks a candidate config file (load_config); nil accepts anything.
@@ -343,6 +345,10 @@ func (p *Portal) apiGet(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	routes := map[string]func() any{
+		"/api/hardware": func() any {
+			if p.o.Hardware==nil {return map[string]any{"available":false,"errors":[]string{"Hardware monitoring is unavailable"}}}
+			return p.o.Hardware()
+		},
 		"/api/status": func() any {
 			if p.o.Snapshot == nil {
 				return map[string]any{}

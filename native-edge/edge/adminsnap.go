@@ -49,7 +49,7 @@ func AdminSnapshot(c Config, stats map[string]any, now time.Time) map[string]any
 	}
 	return map[string]any{"version": Version, "pid": os.Getpid(), "observed_at": now.UTC().Format(time.RFC3339Nano),
 		"transport": map[string]any{"paths": paths}, "packets": packets, "queues": queues, "qos": stats["qos"],
-		"config": map[string]any{"lan_tunnel_ips": []any{}, "client_tunnel_ip": c.ClientIP, "game_udp_ports": gamePorts(c),
+		"config": map[string]any{"lan_tunnel_ips": lanIPs(c), "client_tunnel_ip": c.ClientIP, "game_udp_ports": gamePorts(c),
 			"queues": c.Queues, "bonding_mode": c.Bonding, "bind": bind, "mtu": c.MTU}}
 }
 
@@ -71,4 +71,12 @@ func rawNumber(m json.RawMessage) int {
 	var n int
 	_ = json.Unmarshal(m, &n)
 	return n
+}
+
+func lanIPs(c Config) []any {
+	out := []any{}
+	for _, ip := range c.LanTunnelIPs {
+		out = append(out, ip)
+	}
+	return out
 }

@@ -187,6 +187,9 @@ func (s *Sampler) Sample() map[string]any {
 		elapsed = &e
 	}
 	errs := []string{}
+	if be, ok := s.be.(interface{ BeginSample() }); ok {
+		be.BeginSample()
+	}
 
 	times := s.be.CPUTimes()
 	total, idleV := 0.0, 0.0
@@ -216,7 +219,13 @@ func (s *Sampler) Sample() map[string]any {
 	var procs []map[string]any
 	next := map[procKey]float64{}
 	examined, inaccessible := 0, 0
-	for _, p := range s.be.Processes() {
+	var processes []Proc
+	if be, ok := s.be.(interface{ LimitedProcesses(int) []Proc }); ok {
+		processes = be.LimitedProcesses(s.scanLimit)
+	} else {
+		processes = s.be.Processes()
+	}
+	for _, p := range processes {
 		if examined >= s.scanLimit {
 			break
 		}
@@ -363,8 +372,37 @@ func (s *Sampler) Sample() map[string]any {
 		}
 		diskRead, diskWrite = r, w
 	}
-	hist := map[string]any{"monotonic_time": now, "cpu_percent": cpu, "memory_percent": mem.Percent,
-		"memory_used_bytes": mem.Used, "disk_read_bytes_s": diskRead, "disk_write_bytes_s": diskWrite,
+	memory := map[string]any{"total_bytes": mem.Total, "available_bytes": mem.Available, "used_bytes": mem.Used, "percent": mem.Percent}
+	swapMemory := map[string]any{"total_bytes": swap.Total, "used_bytes": swap.Used, "percent": swap.Percent}
+	if be, ok := s.be.(interface{ Failures() map[string]string }); ok {
+		failures := be.Failures()
+		keys := make([]string, 0, len(failures))
+		for key := range failures {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			errs = append(errs, key+": "+failures[key])
+			switch key {
+			case "cpu":
+				cpu = nil
+				s.prevCPU = nil
+				for _, p := range procs {
+					p["cpu_percent"] = nil
+				}
+			case "memory":
+				for field := range memory {
+					memory[field] = nil
+				}
+			case "swap":
+				for field := range swapMemory {
+					swapMemory[field] = nil
+				}
+			}
+		}
+	}
+	hist := map[string]any{"monotonic_time": now, "cpu_percent": cpu, "memory_percent": memory["percent"],
+		"memory_used_bytes": memory["used_bytes"], "disk_read_bytes_s": diskRead, "disk_write_bytes_s": diskWrite,
 		"gpu_percent": numberOrNil(gpu["percent"])}
 	s.history = append(s.history, hist)
 	if len(s.history) > s.historyLimit {
@@ -390,8 +428,8 @@ func (s *Sampler) Sample() map[string]any {
 	return map[string]any{
 		"observed_at": s.wall(), "interval_seconds": interval,
 		"cpu":    map[string]any{"percent": cpu, "logical_processors": logical, "normalization": "total_machine_capacity"},
-		"memory": map[string]any{"total_bytes": mem.Total, "available_bytes": mem.Available, "used_bytes": mem.Used, "percent": mem.Percent},
-		"swap":   map[string]any{"total_bytes": swap.Total, "used_bytes": swap.Used, "percent": swap.Percent},
+		"memory": memory,
+		"swap":   swapMemory,
 		"disks":  disks, "disk_io": diskIO, "gpu": gpu, "adapters": network, "processes": procs,
 		"process_coverage": map[string]any{"examined": examined, "returned": returned,
 			"omitted": max(0, allProcs-s.processLimit), "inaccessible": inaccessible,

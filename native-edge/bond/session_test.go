@@ -115,3 +115,69 @@ func TestReorderConfigurationSurvivesAuthenticatedPeerRestart(t *testing.T) {
 		t.Fatal("peer adoption reset configured reorder timeout")
 	}
 }
+
+func TestSessionAcceptsConfiguredDeviceAddressesOnly(t *testing.T) {
+	_, s, _ := sessionFixture(t)
+	now := time.Now()
+	device := udpPacket(1234, 443, 46)
+	copy(device[12:16], []byte{10, 77, 0, 3})
+	if _, ok := s.classify(device, true, now); ok || s.stats.WrongSource != 1 {
+		t.Fatal("unlisted device source accepted")
+	}
+	s.options.DeviceIPs = []netip.Addr{netip.MustParseAddr("10.77.0.3")}
+	if _, ok := s.classify(device, true, now); !ok {
+		t.Fatal("listed device source rejected")
+	}
+	spoof := udpPacket(1234, 443, 46)
+	copy(spoof[12:16], []byte{10, 77, 0, 4})
+	if _, ok := s.classify(spoof, true, now); ok {
+		t.Fatal("other tunnel address accepted")
+	}
+	toDevice := udpPacket(443, 1234, 46)
+	copy(toDevice[16:20], []byte{10, 77, 0, 3})
+	if _, ok := s.classify(toDevice, false, now); !ok {
+		t.Fatal("return traffic to a listed device dropped")
+	}
+	copy(toDevice[16:20], []byte{10, 77, 0, 9})
+	if _, ok := s.classify(toDevice, false, now); ok {
+		t.Fatal("return traffic to an unlisted address accepted")
+	}
+}
+
+func TestDeviceUDPIsGamePriorityExceptDNSAndQUIC(t *testing.T) {
+	_, s, _ := sessionFixture(t)
+	s.classifier.SetPriorityHosts([]netip.Addr{netip.MustParseAddr("10.77.0.3")})
+	now := time.Now()
+	pkt := func(sport, dport uint16) IPv4Info {
+		p := udpPacket(sport, dport, 0)
+		copy(p[12:16], []byte{10, 77, 0, 3})
+		info, err := ParseIPv4(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info
+	}
+	if c := s.classifier.Classify(pkt(40000, 3478), now); c.Tag != 46 || !c.Policy.Replicate {
+		t.Fatal("device game UDP not priority", c.Tag)
+	}
+	for _, port := range []uint16{53, 443} {
+		if c := s.classifier.Classify(pkt(40001, port), now); c.Tag == 46 {
+			t.Fatal("DNS/QUIC treated as game traffic", port)
+		}
+	}
+	big := udpPacket(40000, 3478, 0)
+	copy(big[12:16], []byte{10, 77, 0, 3})
+	big = append(big, make([]byte, 600)...)
+	big[2], big[3] = byte(len(big)>>8), byte(len(big))
+	big[24], big[25] = byte((len(big)-20)>>8), byte(len(big)-20)
+	if info, err := ParseIPv4(big); err != nil {
+		t.Fatal(err)
+	} else if c := s.classifier.Classify(info, now); c.Tag != 46 || !c.Policy.Replicate {
+		t.Fatal("hit/kill-cam sized device UDP must be game priority", c.Tag)
+	}
+	other := udpPacket(40000, 3478, 0)
+	info, _ := ParseIPv4(other)
+	if c := s.classifier.Classify(info, now); c.Tag == 46 {
+		t.Fatal("non-device traffic promoted")
+	}
+}

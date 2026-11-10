@@ -3,6 +3,7 @@ package bond
 import (
 	"container/list"
 	"math"
+	"net/netip"
 	"sort"
 	"strconv"
 	"time"
@@ -70,7 +71,54 @@ type Classifier struct {
 	ports                    map[uint16]bool
 	qos                      QoSSettings
 	flows, fragments         map[string]*learnedPolicy
+	priorityHosts            map[[4]byte]bool
+	hostMax                  int // largest device UDP packet that is game-priority
 	flowOrder, fragmentOrder list.List
+}
+
+// SetPriorityHosts makes the UDP traffic of the given hosts (a console behind a
+// LAN adapter) game-priority: such a device uses many unpredictable game and
+// voice ports, so port lists cannot identify it. DNS and QUIC/HTTPS UDP stay
+// ordinary. The classifier is used from one goroutine; call before traffic.
+// SetPriorityHostMax overrides PriorityHostMaxPacket (0 keeps the default).
+func (c *Classifier) SetPriorityHostMax(n int) { c.hostMax = n }
+
+func (c *Classifier) hostLimit() int {
+	if c.hostMax > 0 {
+		return c.hostMax
+	}
+	return PriorityHostMaxPacket
+}
+
+func (c *Classifier) SetPriorityHosts(hosts []netip.Addr) {
+	c.priorityHosts = make(map[[4]byte]bool, len(hosts))
+	for _, h := range hosts {
+		if h.Is4() {
+			c.priorityHosts[h.As4()] = true
+		}
+	}
+}
+
+// PriorityHostMaxPacket bounds the device packets treated as latency-critical
+// game traffic. Hit, damage and kill-cam events are larger than position
+// updates, so the bound is the tunnel MTU: every UDP packet of the device
+// (except DNS and QUIC/HTTPS) is game-priority.
+const PriorityHostMaxPacket = 1280
+
+func (c *Classifier) hostUDP(info IPv4Info) bool {
+	if len(c.priorityHosts) == 0 || info.Protocol != 17 || !info.HasPorts {
+		return false
+	}
+	for _, p := range [2]uint16{info.SourcePort, info.DestinationPort} {
+		if p == 53 || p == 443 {
+			return false
+		}
+	}
+	return c.priorityHosts[info.Source] || c.priorityHosts[info.Destination]
+}
+
+func (c *Classifier) priorityHost(info IPv4Info) bool {
+	return info.Length <= c.hostLimit() && c.hostUDP(info)
 }
 
 func NewClassifier(policies map[byte]QueuePolicy, ports []uint16, settings QoSSettings) (*Classifier, error) {
@@ -157,7 +205,7 @@ func (c *Classifier) Classify(info IPv4Info, now time.Time) Classification {
 	if info.FragmentKey != "" && info.FragmentOffset == 0 {
 		reason = "fragment_first"
 	}
-	if info.Protocol == 17 && info.HasPorts && (c.ports[info.SourcePort] || c.ports[info.DestinationPort]) {
+	if info.Protocol == 17 && info.HasPorts && (c.ports[info.SourcePort] || c.ports[info.DestinationPort]) || c.priorityHost(info) {
 		tag = 46
 		reason = "game_port"
 	}
@@ -187,6 +235,9 @@ func (c *Classifier) Classify(info IPv4Info, now time.Time) Classification {
 		} else if tag == 0 {
 			reason = "fragment_orphan" // never guess the policy of an unassociated fragment
 		}
+	}
+	if tag == 46 && reason != "game_port" && info.Length > c.hostLimit() && c.hostUDP(info) {
+		tag, reason = 0, "device_bulk_udp" // even when the flow cache would promote it
 	}
 	policy := c.policyFor(tag)
 	return Classification{info, tag, policy, reason}
@@ -277,6 +328,12 @@ func (q *AdaptiveQoS) Observe(sender *Sender, now time.Time) {
 		return paths[i].Remote < paths[j].Remote
 	})
 	q.ObservePaths(paths, now)
+	if hinted := sender.HintedPaths(now); len(hinted) > 0 && len(q.quality) > 1 {
+		for _, tag := range []byte{18, 26} {
+			q.until[tag] = now.Add(time.Duration(q.settings.RecoverySeconds * float64(time.Second)))
+			q.reasons[tag] = append(q.reasons[tag], "path_hint")
+		}
+	}
 }
 
 // ObservePaths is AdaptiveQoS.observe: one quality sample from a snapshot.

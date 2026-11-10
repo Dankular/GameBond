@@ -49,6 +49,8 @@ type Config struct {
 	QoS *bond.QoSSettings
 	// LossTracking sends replicated packets as DATA_COPY (config loss_tracking).
 	LossTracking bool
+	// DelayControl cuts a path's bulk rate when a standing queue builds (config delay_control).
+	DelayControl bool
 }
 
 type inbound struct {
@@ -67,9 +69,11 @@ type Client struct {
 	conns    []*net.UDPConn
 	socks    []*carrier.Socket // nil entry: plain UDP
 	lastRec  []time.Time
+	loop     LoopStats
 	incoming chan inbound
 	submit   chan bond.QueuedPacket
 	policies chan []bond.PathPolicy
+	hints    chan pathHintMsg
 	once     sync.Once
 	mu       sync.Mutex
 	snapshot Snapshot
@@ -82,11 +86,23 @@ type Client struct {
 }
 
 // Snapshot is a copy of the loop's counters, safe to read from any goroutine.
+// LoopStats counts slow work inside the client loop (milliseconds).
+type LoopStats struct {
+	Iterations, BusyOver5, BusyOver20      uint64
+	BusyMaxMS                              float64
+	Delivered, DeliverOver2, DeliverOver10 uint64
+	DeliverMaxMS                           float64
+}
+
 type Snapshot struct {
 	Ready    int
 	Uplinks  int
 	Receiver bond.ReceiverStats
 	Sender   bond.SenderStats
+	Reorder  bond.ReorderStats
+	// Loop times how long the single protocol loop is busy per wakeup and how
+	// long handing a packet to the device takes; anything slow here delays every packet.
+	Loop     LoopStats
 	Queue    bond.TransmitQueueStats
 	Paths    []bond.PathSnapshot
 	Rejected uint64
@@ -144,6 +160,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	s.EnableFailover(cfg.Failover)
 	s.EnableLossTracking(cfg.LossTracking)
+	s.EnableDelayControl(cfg.DelayControl)
 	q, err := bond.NewTransmitQueue(s, cfg.QueuePackets, cfg.QueueBytes)
 	if err != nil {
 		return nil, err
@@ -155,7 +172,7 @@ func New(cfg Config) (*Client, error) {
 		}
 		q.SetQoS(qos)
 	}
-	c := &Client{qos: qos, cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4), rebind: make(chan rebindRequest), done: make(chan struct{}), specs: append([]uplink.Spec(nil), cfg.Uplinks...)}
+	c := &Client{qos: qos, cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4), hints: make(chan pathHintMsg, 16), rebind: make(chan rebindRequest), done: make(chan struct{}), specs: append([]uplink.Spec(nil), cfg.Uplinks...)}
 	now := hrclock.Now()
 	for i, spec := range cfg.Uplinks {
 		live := cfg.Available == nil || cfg.Available[i]
@@ -274,7 +291,20 @@ func (c *Client) Run(ctx context.Context) error {
 	handle := func(res bond.ReceiveResult, now time.Time) {
 		c.sender.Controls(res, now, c.write)
 		for _, p := range res.Deliver {
+			t0 := hrclock.Now()
 			c.cfg.Deliver(p)
+			ms := float64(hrclock.Now().Sub(t0)) / float64(time.Millisecond)
+			l := &c.loop
+			l.Delivered++
+			if ms > l.DeliverMaxMS {
+				l.DeliverMaxMS = ms
+			}
+			if ms > 2 {
+				l.DeliverOver2++
+			}
+			if ms > 10 {
+				l.DeliverOver10++
+			}
 		}
 	}
 	for {
@@ -304,7 +334,11 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			handle(res, hrclock.Now())
 		case p := <-c.submit:
-			c.queue.Enqueue(p)
+			// Urgent traffic never waits for the bulk pacing timer: nextBulk is
+			// a bulk wakeup, up to 5 ms ahead after every pump.
+			if c.queue.Enqueue(p) && (p.Priority || p.Replicate || bond.IsTCPControl(p.Payload)) {
+				nextBulk = hrclock.Now()
+			}
 		case policies := <-c.policies:
 			if err := c.recv.SetClientLinkPolicies(policies, hrclock.Now()); err != nil {
 				return err
@@ -314,6 +348,7 @@ func (c *Client) Run(ctx context.Context) error {
 		case <-idle:
 		}
 		now := hrclock.Now()
+		busyFrom := now
 		if err := c.carrierTick(now); err != nil {
 			return err
 		}
@@ -330,11 +365,26 @@ func (c *Client) Run(ctx context.Context) error {
 				return err
 			}
 		}
+		{
+			l := &c.loop
+			l.Iterations++
+			if ms := float64(hrclock.Now().Sub(busyFrom)) / float64(time.Millisecond); ms > 5 {
+				l.BusyOver5++
+				if ms > 20 {
+					l.BusyOver20++
+				}
+				if ms > l.BusyMaxMS {
+					l.BusyMaxMS = ms
+				}
+			}
+		}
 		if now.Sub(lastSnap) >= 100*time.Millisecond {
 			lastSnap = now
 			c.mu.Lock()
 			c.snapshot.Ready, c.snapshot.Uplinks = c.recv.ReadyPaths(now), len(c.conns)
 			c.snapshot.Receiver, c.snapshot.Sender = c.recv.Stats(), c.sender.Stats()
+			c.snapshot.Reorder = c.recv.ReorderStats()
+			c.snapshot.Loop = c.loop
 			c.snapshot.Queue, c.snapshot.Paths = c.queue.Stats(), c.sender.Paths(now)
 			if c.qos != nil {
 				c.snapshot.QoS = c.qos.Stats(now)
@@ -389,6 +439,24 @@ func (c *Client) SetPolicies(policies []bond.PathPolicy) error {
 		return nil
 	default:
 		return errors.New("client: policy update queue full")
+	}
+}
+
+type pathHintMsg struct {
+	uplink   int
+	degraded bool
+	ttl      time.Duration
+	reason   string
+}
+
+// SetPathHint tells the sender an uplink is degraded (or recovered) according
+// to an outside signal, for example the Starlink dish's own statistics. Bulk
+// avoids a hinted uplink while another works and adaptive redundancy turns on;
+// the hint expires after ttl so a silent monitor cannot pin it forever.
+func (c *Client) SetPathHint(uplink int, degraded bool, ttl time.Duration, reason string) {
+	select {
+	case c.hints <- pathHintMsg{uplink, degraded, ttl, reason}:
+	default:
 	}
 }
 

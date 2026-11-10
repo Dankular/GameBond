@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"gamebond.local/nativeedge/capture"
 	"gamebond.local/nativeedge/procjob"
@@ -30,6 +31,8 @@ type proxifyre struct {
 
 	mu      sync.Mutex
 	started bool
+	settled chan struct{} // closed once ProxiFyre has opened the packet driver (or will not run)
+	once    sync.Once
 	proc    *capture.Process
 	job     *procjob.Job
 }
@@ -43,8 +46,9 @@ type proxifyreFlags struct {
 }
 
 func newProxifyre(f proxifyreFlags, stack string, rawConfig []byte, log io.Writer) (*proxifyre, error) {
-	p := &proxifyre{enabled: f.enabled, log: log}
+	p := &proxifyre{enabled: f.enabled, log: log, settled: make(chan struct{})}
 	if !f.enabled {
+		p.settle()
 		return p, nil
 	}
 	// ProxiFyre is started with its own working directory, so every path must be absolute.
@@ -76,6 +80,19 @@ func newProxifyre(f proxifyreFlags, stack string, rawConfig []byte, log io.Write
 		Extension: p.extension, Token: p.token, Mode: cfg.CaptureMode, Apps: cfg.Executables,
 		Carriers: []string{self}, HideWindow: hideWindow}
 	return p, nil
+}
+
+func (p *proxifyre) settle() { p.once.Do(func() { close(p.settled) }) }
+
+// waitSettled blocks until ProxiFyre has had time to attach to the Windows
+// Packet Filter driver. With several handles on one adapter the newest
+// receives the frames, so a LAN-device gateway must open its adapter after
+// ProxiFyre or it never sees a frame. It returns early when ctx ends.
+func (p *proxifyre) waitSettled(ctx context.Context) {
+	select {
+	case <-p.settled:
+	case <-ctx.Done():
+	}
 }
 
 // attribution reports whether owner attribution is available.
@@ -121,6 +138,13 @@ func (p *proxifyre) onStackReady(ctx context.Context, socks string, fail func(er
 			o.AssignToJob = func(proc *os.Process) error { return job.Add(proc.Pid) }
 		}
 		proc, err := capture.Start(ctx, o)
+		if err == nil {
+			select { // ProxiFyre opens the driver shortly after its process starts
+			case <-time.After(4 * time.Second):
+			case <-ctx.Done():
+			}
+		}
+		p.settle()
 		if err != nil {
 			fail(fmt.Errorf("application capture: %w", err))
 			return
