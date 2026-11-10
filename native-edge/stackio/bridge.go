@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"gamebond.local/nativeedge/bond"
 	"io"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -31,6 +32,11 @@ type Bridge struct {
 	// profiles applications chose; app_flow_profile records feed it.
 	Profiles *bond.FlowProfiles
 	ClientIP string
+
+	// outMu serialises outbound: the stack pump and every attached LAN device
+	// call it from their own goroutines, and the classifier and profile caches
+	// are plain maps.
+	outMu sync.Mutex
 
 	Outbound, Injected, Dropped, Malformed atomic.Uint64
 }
@@ -117,6 +123,8 @@ func (b *Bridge) Send(packet []byte) bool {
 // not parse as IPv4 are still sent as bulk, as the Python runtime does when
 // classification raises.
 func (b *Bridge) outbound(packet []byte, ttl time.Duration) bond.QueuedPacket {
+	b.outMu.Lock()
+	defer b.outMu.Unlock()
 	q := bond.QueuedPacket{Payload: packet, Flow: "stack", Expires: time.Now().Add(ttl)}
 	if b.Classifier == nil {
 		return q
