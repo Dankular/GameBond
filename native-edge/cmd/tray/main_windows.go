@@ -95,6 +95,14 @@ func main() {
 	}
 	var busy atomic.Bool
 	var latest atomic.Value
+	var wifiRows atomic.Value
+	wifiRows.Store([]dashboard.WiFiInfo{})
+	go func() {
+		for {
+			wifiRows.Store(dashboard.SampleWiFi())
+			time.Sleep(4 * time.Second)
+		}
+	}()
 	var refreshMu sync.Mutex
 	var appActivity dashboard.AppActivitySampler
 	latest.Store(map[string]any{"state": "starting"})
@@ -105,6 +113,7 @@ func main() {
 			return runtimeOwner.Status()
 		})
 		doc["adapter_activity"] = latest.Load().(map[string]any)["adapter_activity"]
+		doc["wifi"] = wifiRows.Load()
 		doc["protect_activity"] = appActivity.Sample(doc, time.Now())
 		journal.Observe(doc)
 		latest.Store(doc)

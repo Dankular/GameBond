@@ -38,13 +38,22 @@ type StageOptions struct {
 	HideWindow   func(*exec.Cmd)
 	ProxyArgs    []string // default --allow-not-admin
 	ReadyMarker  string   // default "ProxiFyre Service is running"
+	Exclude      []string // extra executables that must never be captured
 }
 
 // Process is a started ProxiFyre child.
 type Process struct {
 	Cmd    *exec.Cmd
 	output *os.File
+	exited chan struct{}
+	err    error
 }
+
+// Done is closed when the child exits, however that happens.
+func (p *Process) Done() <-chan struct{} { return p.exited }
+
+// ExitError is the child's wait result; valid once Done is closed.
+func (p *Process) ExitError() error { return p.err }
 
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
@@ -89,6 +98,7 @@ func WriteConfiguration(o StageOptions) (*Configuration, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.Excludes = dedupe(append(cfg.Excludes, o.Exclude...))
 	if o.Extension != "" {
 		for i := range cfg.Proxies {
 			cfg.Proxies[i].Username, cfg.Proxies[i].Password = AttributionUser, o.Token
@@ -136,7 +146,7 @@ func Start(ctx context.Context, o StageOptions) (*Process, error) {
 		console.Close()
 		return nil, err
 	}
-	p := &Process{Cmd: cmd, output: console}
+	p := &Process{Cmd: cmd, output: console, exited: make(chan struct{})}
 	if o.AssignToJob != nil {
 		if err := o.AssignToJob(cmd.Process); err != nil {
 			p.Stop()
@@ -150,8 +160,8 @@ func Start(ctx context.Context, o StageOptions) (*Process, error) {
 	if marker == "" {
 		marker = "ProxiFyre Service is running"
 	}
-	exited := make(chan struct{})
-	go func() { cmd.Wait(); close(exited) }()
+	exited := p.exited
+	go func() { p.err = cmd.Wait(); close(exited) }()
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(100 * time.Millisecond)

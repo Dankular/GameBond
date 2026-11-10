@@ -37,8 +37,8 @@ type Config struct {
 	InitialMbps, MaxMbps float64
 	QueuePackets         int // 0 means 40000
 	QueueBytes           int // 0 means 64 MiB
-	// Deliver receives each payload the server sends; it runs on the loop
-	// goroutine and must not block.
+	// Deliver receives each payload the server sends, in reordered sequence; it runs on a dedicated delivery
+	// goroutine, so it may block briefly but must not be shared with the loop.
 	Deliver func(payload []byte)
 	// Outer, when set, wraps every usable uplink in a carrier.Socket: after
 	// FallbackAfter seconds without authenticated UDP the path moves to a
@@ -91,6 +91,7 @@ type LoopStats struct {
 	Iterations, BusyOver5, BusyOver20      uint64
 	BusyMaxMS                              float64
 	Delivered, DeliverOver2, DeliverOver10 uint64
+	DeliverDropped                         uint64 // delivery queue full: the consumer (netstack pipe) fell behind
 	DeliverMaxMS                           float64
 }
 
@@ -288,22 +289,45 @@ func (c *Client) Run(ctx context.Context) error {
 	close(closed)
 	nextBulk := hrclock.Now()
 	lastSnap := time.Time{}
+	// Delivery runs on its own goroutine: handing a packet to the application
+	// side can block (a full pipe to the netstack), and the loop must keep
+	// reading the uplinks, pacing and answering feedback meanwhile. One
+	// consumer keeps the reordered sequence intact.
+	deliverQ := make(chan []byte, 4096)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case p := <-deliverQ:
+				t0 := hrclock.Now()
+				c.cfg.Deliver(p)
+				ms := float64(hrclock.Now().Sub(t0)) / float64(time.Millisecond)
+				c.mu.Lock()
+				l := &c.loop
+				l.Delivered++
+				if ms > l.DeliverMaxMS {
+					l.DeliverMaxMS = ms
+				}
+				if ms > 2 {
+					l.DeliverOver2++
+				}
+				if ms > 10 {
+					l.DeliverOver10++
+				}
+				c.mu.Unlock()
+			}
+		}
+	}()
 	handle := func(res bond.ReceiveResult, now time.Time) {
 		c.sender.Controls(res, now, c.write)
 		for _, p := range res.Deliver {
-			t0 := hrclock.Now()
-			c.cfg.Deliver(p)
-			ms := float64(hrclock.Now().Sub(t0)) / float64(time.Millisecond)
-			l := &c.loop
-			l.Delivered++
-			if ms > l.DeliverMaxMS {
-				l.DeliverMaxMS = ms
-			}
-			if ms > 2 {
-				l.DeliverOver2++
-			}
-			if ms > 10 {
-				l.DeliverOver10++
+			select {
+			case deliverQ <- p:
+			default:
+				c.mu.Lock()
+				c.loop.DeliverDropped++
+				c.mu.Unlock()
 			}
 		}
 	}

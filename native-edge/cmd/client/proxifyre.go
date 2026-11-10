@@ -31,6 +31,7 @@ type proxifyre struct {
 
 	mu      sync.Mutex
 	started bool
+	closed  bool
 	settled chan struct{} // closed once ProxiFyre has opened the packet driver (or will not run)
 	once    sync.Once
 	proc    *capture.Process
@@ -62,8 +63,9 @@ func newProxifyre(f proxifyreFlags, stack string, rawConfig []byte, log io.Write
 		return nil, err
 	}
 	var cfg struct {
-		CaptureMode string `json:"capture_mode"`
-		Executables []any  `json:"cod_executables"`
+		CaptureMode string   `json:"capture_mode"`
+		Exclude     []string `json:"capture_exclude"`
+		Executables []any    `json:"cod_executables"`
 	}
 	if err := json.Unmarshal(rawConfig, &cfg); err != nil {
 		return nil, err
@@ -78,7 +80,7 @@ func newProxifyre(f proxifyreFlags, stack string, rawConfig []byte, log io.Write
 	}
 	p.options = capture.StageOptions{Source: f.source, Directory: f.runtimeDir, Root: f.root, Stack: stack,
 		Extension: p.extension, Token: p.token, Mode: cfg.CaptureMode, Apps: cfg.Executables,
-		Carriers: []string{self}, HideWindow: hideWindow}
+		Carriers: []string{self}, HideWindow: hideWindow, Exclude: cfg.Exclude}
 	return p, nil
 }
 
@@ -128,14 +130,27 @@ func (p *proxifyre) onStackReady(ctx context.Context, socks string, fail func(er
 	}
 	p.started = true
 	p.mu.Unlock()
-	go func() {
-		o := p.options
-		o.Address = socks
-		if job, err := procjob.New(); err == nil {
-			p.mu.Lock()
-			p.job = job
-			p.mu.Unlock()
-			o.AssignToJob = func(proc *os.Process) error { return job.Add(proc.Pid) }
+	go p.supervise(ctx, socks, fail)
+}
+
+// supervise keeps exactly one ProxiFyre alive. A copy left over from an
+// earlier run is ended first (two would both divert traffic), and if our own
+// copy exits it is restarted: otherwise apps captured into the tunnel keep
+// their tunnel-side connections while new ones leave directly from another
+// source address and get reset.
+func (p *proxifyre) supervise(ctx context.Context, socks string, fail func(error)) {
+	o := p.options
+	o.Address = socks
+	if job, err := procjob.New(); err == nil {
+		p.mu.Lock()
+		p.job = job
+		p.mu.Unlock()
+		o.AssignToJob = func(proc *os.Process) error { return job.Add(proc.Pid) }
+	}
+	first, failures, backoff := true, 0, 2*time.Second
+	for ctx.Err() == nil && !p.isClosed() {
+		if n := capture.KillStale(o.Directory); n > 0 {
+			fmt.Fprintf(p.log, "ended %d stale ProxiFyre process(es)\n", n)
 		}
 		proc, err := capture.Start(ctx, o)
 		if err == nil {
@@ -144,20 +159,66 @@ func (p *proxifyre) onStackReady(ctx context.Context, socks string, fail func(er
 			case <-ctx.Done():
 			}
 		}
-		p.settle()
+		if first {
+			p.settle()
+			first = false
+			if err != nil {
+				fail(fmt.Errorf("application capture: %w", err))
+				return
+			}
+		}
 		if err != nil {
-			fail(fmt.Errorf("application capture: %w", err))
+			failures++
+			fmt.Fprintln(p.log, "application capture restart failed:", err)
+			if failures >= 5 {
+				fail(fmt.Errorf("application capture: %w", err))
+				return
+			}
+		} else {
+			p.mu.Lock()
+			if p.closed {
+				p.mu.Unlock()
+				proc.Stop()
+				return
+			}
+			p.proc = proc
+			p.mu.Unlock()
+			fmt.Fprintln(p.log, "application capture running:", proc)
+			started := time.Now()
+			select {
+			case <-proc.Done():
+			case <-ctx.Done():
+				return
+			}
+			if p.isClosed() {
+				return
+			}
+			fmt.Fprintf(p.log, "application capture: ProxiFyre exited after %s (%v); restarting\n", time.Since(started).Round(time.Second), proc.ExitError())
+			proc.Stop()
+			if time.Since(started) > time.Minute {
+				failures, backoff = 0, 2*time.Second
+			}
+		}
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
 			return
 		}
-		p.mu.Lock()
-		p.proc = proc
-		p.mu.Unlock()
-		fmt.Fprintln(p.log, "application capture running:", proc)
-	}()
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func (p *proxifyre) isClosed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closed
 }
 
 func (p *proxifyre) close() {
 	p.mu.Lock()
+	p.closed = true
 	proc, job := p.proc, p.job
 	p.mu.Unlock()
 	proc.Stop()
