@@ -107,7 +107,7 @@ add table ip gamebond
 add chain ip gamebond postrouting { type nat hook postrouting priority srcnat; policy accept; }
 add rule ip gamebond postrouting ip saddr $NAT_SOURCES oifname "$WAN" masquerade
 add chain ip gamebond defrag { type filter hook prerouting priority -150; policy accept; }
-add rule ip gamebond defrag iifname "$WAN" meta length > 1280 ip frag-off & 0x4000 != 0 ip frag-off set 0
+add rule ip gamebond defrag iifname "$WAN" ip protocol udp meta length > 1280 ip frag-off & 0x4000 != 0 ip frag-off set 0
 EOF
     nat_added=1
     kill -0 "$child"
