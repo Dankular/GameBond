@@ -72,6 +72,15 @@ func (s *Sender) EnableDelayControl(on bool) {
 	}
 }
 
+// SetDelayAssertive makes delay control act on smaller standing queues and on
+// TCP-limited bulk (config delay_assertive).
+func (s *Sender) SetDelayAssertive(on bool) {
+	s.r.delayAssertive = on
+	for _, p := range s.r.paths {
+		p.budget.delayAssertive = on
+	}
+}
+
 type pathHint struct {
 	until  time.Time
 	reason string

@@ -36,6 +36,7 @@ type Config struct {
 	Admin           json.RawMessage             `json:"admin"`
 	LossTracking    bool                        `json:"loss_tracking"`
 	DelayControl    bool                        `json:"delay_control"`
+	DelayAssertive  bool                        `json:"delay_assertive"`
 	PriorityHostMax int                         `json:"priority_host_max_packet"`
 	PathMTU         bool                        `json:"path_mtu_discovery"`
 	Failover        bool                        `json:"failover_replay"`
@@ -105,6 +106,7 @@ func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []b
 	options.QoS = c.QoS
 	options.LossTracking, options.PathMTUDiscovery, options.FailoverReplay = c.LossTracking, c.PathMTU, c.Failover
 	options.DelayControl = c.DelayControl
+	options.DelayAssertive = c.DelayAssertive
 	if c.PriorityHostMax < 0 || c.PriorityHostMax > 1280 {
 		return fail(fmt.Errorf("priority_host_max_packet must be 0 to 1280"))
 	}

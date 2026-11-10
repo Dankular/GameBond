@@ -21,7 +21,7 @@ type SessionOptions struct {
 	Redundant                bool
 	// Optional behaviours, all off by default like the Python server.
 	LossTracking, PathMTUDiscovery, FailoverReplay bool
-	DelayControl                                   bool
+	DelayControl, DelayAssertive                   bool
 }
 
 func DefaultSessionOptions() SessionOptions {
@@ -67,6 +67,7 @@ func NewSession(key, session []byte, options SessionOptions) (*Session, error) {
 	sender.EnableFailover(options.FailoverReplay)
 	sender.EnableLossTracking(options.LossTracking)
 	sender.EnableDelayControl(options.DelayControl)
+	sender.SetDelayAssertive(options.DelayAssertive)
 	classifier, err := NewClassifier(options.Policies, options.GamePorts, options.QoS)
 	if err != nil {
 		return nil, err

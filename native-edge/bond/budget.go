@@ -46,7 +46,12 @@ type Budget struct {
 	congestionEpochs, delaySamples, startupIncreases                                    uint64
 	delayBackoffs                                                                       uint64
 	delayControl                                                                        bool
-	startupExit                                                                         string
+	// delayAssertive also cuts the rate on a modest standing queue while the
+	// path carries real traffic (>= half the rate). Plain delay control waits for
+	// 25 ms of queue and a saturated rate, which a TCP-limited download never
+	// reaches, so bulk sat in the bottleneck buffer and delayed game packets.
+	delayAssertive bool
+	startupExit    string
 }
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
@@ -242,7 +247,11 @@ func (b *Budget) Acknowledge(sequence, delivered uint64, now float64, delayUS ui
 	if b.hasBasePrev && (!b.hasBaseCur || b.basePrev < base) {
 		base = b.basePrev
 	}
-	if !b.appLimited && math.Max(0, b.srtt-base) > math.Max(.025, math.Max(base*.5, 4*b.rttVar)) {
+	delayFloor, delayVar, busy := .025, 4.0, !b.appLimited
+	if b.delayAssertive {
+		delayFloor, delayVar, busy = .010, 2.5, utilization >= .5
+	}
+	if busy && math.Max(0, b.srtt-base) > math.Max(delayFloor, math.Max(base*.5, delayVar*b.rttVar)) {
 		if b.delaySamples < 3 {
 			b.delaySamples++
 		}
@@ -344,7 +353,7 @@ func (b *Budget) measure(now float64) {
 	if b.congestionEpochs >= 2 {
 		b.reduce(now)
 		b.congestionEpochs = 0
-	} else if b.delayControl && b.delaySamples >= 3 && !b.appLimited {
+	} else if b.delayControl && b.delaySamples >= 3 && (!b.appLimited || (b.delayAssertive && utilization >= .5)) {
 		b.reduceForDelay(now)
 	}
 	if !b.growthAppLimited && b.delaySamples == 0 && !corroborated && b.lossRatio < .01 && pressure < .25 && allowance > 0 && b.epochDelivered >= 6000 && b.epochRetired >= 6000 && b.epochDelivered >= allowance*.65 && now-b.lastBackoff >= math.Max(.25, b.rawSRTT) {

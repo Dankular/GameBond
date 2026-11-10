@@ -122,6 +122,7 @@ type Receiver struct {
 	reorderBase          time.Duration
 	mtuDiscovery         bool
 	delayControl         bool
+	delayAssertive       bool
 	policyRevisionClient uint64
 	repairUnavailable    uint64
 }
