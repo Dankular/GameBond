@@ -262,8 +262,8 @@ func (m *lanManager) status() any {
 			continue
 		}
 		c := rg.gw.Stats()
-		row := map[string]any{"name": d.Name, "tunnel_ip": d.TunnelIP.String(), "adapter_mac": rg.mac, "leased": rg.gw.IsLeased(), "up": rg.alive(), "error": nil,
-			"frames_in": c.FramesIn, "frames_out": c.FramesOut, "packets_to_tunnel": c.PacketsToTunnel, "packets_from_tunnel": c.PacketsFromTunnel,
+		row := map[string]any{"name": d.Name, "tunnel_ip": d.TunnelIP.String(), "adapter_mac": rg.mac, "leased": rg.gw.IsLeased(), "present": rg.gw.Present(), "silent_s": rg.gw.SilentFor().Seconds(), "up": rg.alive(), "error": nil,
+			"frames_in": c.FramesIn, "frames_out": c.FramesOut, "packets_to_tunnel": c.PacketsToTunnel, "packets_from_tunnel": c.PacketsFromTunnel, "bytes_to_tunnel": c.BytesToTunnel, "bytes_from_tunnel": c.BytesFromTunnel,
 			"dhcp_offers": c.DHCPOffers, "dhcp_acks": c.DHCPAcks, "dns_overridden": c.DNSOverridden,
 			"udp_direct": m.directStatus(d), "oversize_fragmented": c.Fragmented, "oversize_df_dropped": c.FragNeededSent, "tunnel_to_device_malformed": c.Malformed}
 		if mac, ok := rg.gw.DeviceMAC(); ok {

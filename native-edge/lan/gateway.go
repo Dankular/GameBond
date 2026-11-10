@@ -50,7 +50,7 @@ type Config struct {
 
 // Counters mirror the Python counter names.
 type Counters struct {
-	FramesIn, FramesOut, PacketsToTunnel, PacketsFromTunnel, DHCPOffers, DHCPAcks, DHCPNaks, DNSOverridden uint64
+	BytesToTunnel, BytesFromTunnel, FramesIn, FramesOut, PacketsToTunnel, PacketsFromTunnel, DHCPOffers, DHCPAcks, DHCPNaks, DNSOverridden uint64
 	ARPReplies, ForeignMACDropped, SpoofedSourceDropped, LocalOnlyDropped, TTLExpired, Fragmented          uint64
 	FragNeededSent, WrongDestination, NoDeviceMAC, Malformed, WriteErrors                                  uint64
 }
@@ -129,11 +129,39 @@ func NewGateway(cfg Config, io IO) (*Gateway, error) {
 	return g, nil
 }
 
-// IsLeased reports whether the device has been given its address.
+// PresenceTimeout is how long a device may stay silent before it is treated as
+// disconnected (powered off or unplugged). A running console sends frames
+// constantly, so silence this long means it is gone.
+const PresenceTimeout = 30 * time.Second
+
+// IsLeased reports whether the device has its address and is still on the
+// wire. A device that stops sending for PresenceTimeout is disconnected and
+// has to ask for an address again when it returns.
 func (g *Gateway) IsLeased() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.Leased
+	return g.Leased && g.presentLocked()
+}
+
+// Present reports whether the device has sent a frame within PresenceTimeout.
+func (g *Gateway) Present() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.presentLocked()
+}
+
+// SilentFor is how long since the device last sent a frame; zero if never seen.
+func (g *Gateway) SilentFor() time.Duration {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.hasSeen {
+		return 0
+	}
+	return g.cfg.Now().Sub(g.lastSeen)
+}
+
+func (g *Gateway) presentLocked() bool {
+	return g.hasSeen && g.cfg.Now().Sub(g.lastSeen) < PresenceTimeout
 }
 
 func (g *Gateway) Stats() Counters {
@@ -291,6 +319,7 @@ func (g *Gateway) ipv4(srcMAC [6]byte, packet []byte) {
 	}
 	for _, p := range pieces {
 		g.c.PacketsToTunnel++
+		g.c.BytesToTunnel += uint64(len(p))
 		g.cfg.OnPacket(p)
 	}
 }
@@ -452,6 +481,7 @@ func (g *Gateway) Deliver(packet []byte) bool {
 		return false
 	}
 	g.c.PacketsFromTunnel++
+	g.c.BytesFromTunnel += uint64(len(p))
 	return g.sendFrame(*g.deviceMAC, ethIPv4, p)
 }
 
