@@ -18,6 +18,7 @@ type QueuedPacket struct {
 type TransmitQueueStats struct {
 	Admitted, Completed, Expired, Rejected, EvictedBulk uint64
 	PeerResetDropped                                    uint64
+	CoDelDropped, CoDelMarked                           uint64
 	// PriorityWaitMaxMS and the over-counters report how long urgent packets
 	// sat in the queue before being written (0 means released immediately).
 	ExpiredInWait, PrioritySent, PriorityWaitOver1ms, PriorityWaitOver5ms uint64
@@ -37,6 +38,8 @@ type TransmitQueue struct {
 	hasPeer             bool
 	classes             [64]int
 	qos                 *AdaptiveQoS
+	codel               bool
+	codelState          codelState
 }
 
 func NewTransmitQueue(sender *Sender, capacity, byteLimit int) (*TransmitQueue, error) {
@@ -175,6 +178,18 @@ func (q *TransmitQueue) Pump(now time.Time, writer DatagramWriter) (time.Time, e
 				q.stats.ExpiredInWait++ // aged out while pacing or the window held it back
 			}
 			continue
+		}
+		if q.codel && !p.queuedAt.IsZero() {
+			switch q.codelState.judge(p.Flow, time.Since(p.queuedAt), ecnCapable(p.Payload), time.Now()) {
+			case codelDrop:
+				q.popBulk()
+				q.stats.CoDelDropped++
+				continue
+			case codelMark:
+				if markCE(p.Payload) {
+					q.stats.CoDelMarked++
+				}
+			}
 		}
 		sent, next, err := q.sender.Bulk(p.Payload, p.Flow, now, writer)
 		if err != nil {

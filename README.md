@@ -10,6 +10,11 @@ Stripes bulk traffic across IPv4 uplinks and duplicates selected traffic for res
 - Adaptive redundancy, link roles, speed limits, and usage caps.
 - Dashboard and tray controls for connection health and app traffic.
 - Connected devices: a console on a spare (USB) adapter gets its own bond address ([setup](docs/lan-devices.md)).
+- Loss resilience: reorder buffer, TCP repair, parity FEC, adaptive duplication and loss steering.
+- Fast failover: BFD path detection (~300 ms), fast reroute, ECMP-style flow pinning.
+- Queueing: per-flow fair queue with CoDel and ECN marking, DSCP classes.
+
+The full list with config flags is in [FEATURES.md](FEATURES.md).
 
 ## Client
 
@@ -26,6 +31,8 @@ go -C netstack build -o ../build/gamebond-netstack.exe .
 ```
 
 Configure `configs/local-client.json` from [the example](configs/client.example.json).
+Optional transport flags (`failover_replay`, `flow_pinning`, `codel`, `loss_tracking`, `delay_control`)
+are described in [FEATURES.md](FEATURES.md); set the same ones on the server.
 Choose **Connect** in the widget. Closing the window hides it in the tray;
 **Quit (stop tunnel)** exits. `build\gamebond-desktopctl.exe status|ensure|connect|stop -root .`
 controls the supervisor from a shell. Rebuild `desktopctl` and the widget whenever

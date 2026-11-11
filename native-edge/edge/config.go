@@ -40,6 +40,8 @@ type Config struct {
 	PriorityHostMax int                         `json:"priority_host_max_packet"`
 	PathMTU         bool                        `json:"path_mtu_discovery"`
 	Failover        bool                        `json:"failover_replay"`
+	FlowPinning     bool                        `json:"flow_pinning"`
+	CoDel           bool                        `json:"codel"`
 }
 
 func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []byte, error) {
@@ -105,6 +107,7 @@ func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []b
 	options.GamePorts = c.GamePorts
 	options.QoS = c.QoS
 	options.LossTracking, options.PathMTUDiscovery, options.FailoverReplay = c.LossTracking, c.PathMTU, c.Failover
+	options.FlowPinning, options.CoDel = c.FlowPinning, c.CoDel
 	options.DelayControl = c.DelayControl
 	options.DelayAssertive = c.DelayAssertive
 	if c.PriorityHostMax < 0 || c.PriorityHostMax > 1280 {

@@ -34,14 +34,23 @@ type ReorderConfig struct {
 	MaxFlows, MaxPackets, MaxBytes int
 	Timeout, Idle                  time.Duration
 	AllowLate                      bool
+	// UDPTimeout, when positive and shorter than Timeout, is how long a hole in a UDP flow
+	// holds back later packets. UDP cannot be repaired, so waiting the full TCP budget only
+	// stalls the flow; a straggler is still delivered late (AllowLate).
+	UDPTimeout time.Duration
 }
 
 func DefaultReorderConfig() ReorderConfig {
-	return ReorderConfig{1024, 2048, 4 * 1024 * 1024, 30 * time.Millisecond, 120 * time.Second, true}
+	return ReorderConfig{1024, 2048, 4 * 1024 * 1024, 30 * time.Millisecond, 120 * time.Second, true, 0}
 }
 
 type ReorderStats struct {
 	Delivered, Duplicates, Late, Gaps, Skipped, DeadlineFlushes, CapacityFlushes uint64
+	// Protocol split (IPv4 protocol of the packet after the hole) for diagnosing loss.
+	SkippedTCP, SkippedUDP, LateTCP, LateUDP uint64
+	// Lost is Skipped minus the skipped packets that arrived afterwards: packets that
+	// never came. Computed in Stats.
+	Lost, LostTCP, LostUDP uint64
 	EvictedFlows, ExpiredFlows, DroppedPackets, DroppedBytes                     uint64
 	BufferedPackets, BufferedBytes, Flows, PeakPackets, PeakBytes                int
 }
@@ -62,7 +71,19 @@ func NewReorder(config ReorderConfig) (*Reorder, error) {
 	}
 	return &Reorder{config: config, flows: make(map[uint64]*orderedFlow)}, nil
 }
-func (r *Reorder) Stats() ReorderStats { result := r.stats; result.Flows = len(r.flows); return result }
+func (r *Reorder) Stats() ReorderStats {
+	result := r.stats
+	result.Flows = len(r.flows)
+	sub := func(a, b uint64) uint64 {
+		if b >= a {
+			return 0
+		}
+		return a - b
+	}
+	result.LostTCP, result.LostUDP = sub(result.SkippedTCP, result.LateTCP), sub(result.SkippedUDP, result.LateUDP)
+	result.Lost = sub(result.Skipped, result.Late)
+	return result
+}
 func (r *Reorder) remove(f *orderedFlow, expired bool) {
 	for _, p := range f.pending {
 		r.stats.BufferedBytes -= len(p.payload)
@@ -90,7 +111,11 @@ func (r *Reorder) expire(now time.Time) {
 func (r *Reorder) deadline(f *orderedFlow) {
 	f.deadline = time.Time{}
 	for _, p := range f.pending {
-		due := p.at.Add(r.config.Timeout)
+		timeout := r.config.Timeout
+		if u := r.config.UDPTimeout; u > 0 && u < timeout && ipProto(p.payload) == 17 {
+			timeout = u
+		}
+		due := p.at.Add(timeout)
 		if f.deadline.IsZero() || due.Before(f.deadline) {
 			f.deadline = due
 		}
@@ -119,12 +144,24 @@ func (r *Reorder) drain(f *orderedFlow, out *[][]byte) {
 	}
 	r.deadline(f)
 }
-func (r *Reorder) gap(f *orderedFlow, number uint64) {
+func ipProto(p []byte) byte {
+	if len(p) >= 20 && p[0]>>4 == 4 {
+		return p[9]
+	}
+	return 0
+}
+func (r *Reorder) gap(f *orderedFlow, number uint64, after []byte) {
 	if number <= f.expected {
 		return
 	}
 	r.stats.Gaps++
 	gap := number - f.expected
+	switch ipProto(after) {
+	case 6:
+		r.stats.SkippedTCP += gap
+	case 17:
+		r.stats.SkippedUDP += gap
+	}
 	if math.MaxUint64-r.stats.Skipped < gap {
 		r.stats.Skipped = math.MaxUint64
 	} else {
@@ -132,7 +169,7 @@ func (r *Reorder) gap(f *orderedFlow, number uint64) {
 	}
 }
 func (r *Reorder) flush(f *orderedFlow, out *[][]byte, capacity bool) {
-	r.gap(f, f.numbers[0])
+	r.gap(f, f.numbers[0], f.pending[f.numbers[0]].payload)
 	f.expected = f.numbers[0]
 	if capacity {
 		r.stats.CapacityFlushes++
@@ -179,6 +216,12 @@ func (r *Reorder) Push(id, number uint64, payload []byte, now time.Time) [][]byt
 			out = append(out, payload)
 			r.stats.Delivered++
 			r.stats.Late++
+			switch ipProto(payload) {
+			case 6:
+				r.stats.LateTCP++
+			case 17:
+				r.stats.LateUDP++
+			}
 		} else {
 			r.stats.Duplicates++
 		}
@@ -191,7 +234,7 @@ func (r *Reorder) Push(id, number uint64, payload []byte, now time.Time) [][]byt
 		for len(f.numbers) > 0 && f.numbers[0] < number {
 			r.flush(f, &out, true)
 		}
-		r.gap(f, number)
+		r.gap(f, number, payload)
 		r.advance(f, number)
 		out = append(out, payload)
 		r.stats.Delivered++
@@ -206,7 +249,7 @@ func (r *Reorder) Push(id, number uint64, payload []byte, now time.Time) [][]byt
 				}
 			}
 			if oldest == f && number < f.numbers[0] {
-				r.gap(f, number)
+				r.gap(f, number, payload)
 				r.advance(f, number)
 				out = append(out, payload)
 				r.stats.Delivered++

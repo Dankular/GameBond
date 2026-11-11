@@ -37,10 +37,13 @@ type Budget struct {
 	observed, lastBackoff                                                               float64
 	epochStarted                                                                        float64
 	hasEpoch                                                                            bool
+	lossSeen bool
+	lossEWMA float64
+	lossEWSet bool
 	epochSent, epochDelivered, epochBulkWire, epochUnpacedWire, epochRetired            float64
 	pressureAt                                                                          float64
 	hasPressure, pressureActive                                                         bool
-	epochPressure, epochPacingWait, waitUntil, pressureRatio, lossRatio                 float64
+	epochPressure, epochPacingWait, waitUntil, pressureRatio, lossRatio, lossAt                 float64
 	growthAppLimited, appLimited, startup                                               bool
 	growthUtilization, growthAllowance, pacingWaitRatio, deliveryRate                   float64
 	congestionEpochs, delaySamples, startupIncreases                                    uint64
@@ -325,6 +328,14 @@ func (b *Budget) measure(now float64) {
 	b.lossRatio = 0
 	if b.epochRetired > 0 {
 		b.lossRatio = math.Max(0, (b.epochRetired-b.epochDelivered)/b.epochRetired)
+		b.lossAt, b.lossSeen = now, true
+		if b.epochRetired >= 4000 {
+			if b.lossEWSet {
+				b.lossEWMA = .6*b.lossEWMA + .4*b.lossRatio
+			} else {
+				b.lossEWMA, b.lossEWSet = b.lossRatio, true
+			}
+		}
 	}
 	b.appLimited = utilization < .8 && pressure < .5
 	remaining := math.Max(0, b.rate*elapsed-b.epochUnpacedWire)

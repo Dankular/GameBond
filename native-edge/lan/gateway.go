@@ -251,7 +251,7 @@ func (g *Gateway) arp(srcMAC [6]byte, body []byte) {
 		return
 	}
 	if op == 2 && senderIP == g.device && targetIP == g.gateway {
-		g.probe.reply(g.probe.seq, g.cfg.Now())
+		g.probe.reply(g.cfg.Now())
 		return
 	}
 	if op != 1 {
@@ -493,9 +493,19 @@ type probeState struct {
 	SumMS, MaxMS              float64
 }
 
-func (p *probeState) reply(seq uint16, now time.Time) {
-	t, ok := p.sentAt[seq]
-	if !ok {
+// reply credits an ARP reply to the oldest unanswered probe. ARP replies carry no
+// sequence number, so matching only the newest probe made any reply slower than one
+// probe interval look like loss (a phone on Wi-Fi power save, a busy console).
+func (p *probeState) reply(now time.Time) {
+	var seq uint16
+	var t time.Time
+	found := false
+	for k, sent := range p.sentAt {
+		if !found || sent.Before(t) {
+			seq, t, found = k, sent, true
+		}
+	}
+	if !found {
 		return
 	}
 	delete(p.sentAt, seq)

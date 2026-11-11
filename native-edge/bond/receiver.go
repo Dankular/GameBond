@@ -51,6 +51,9 @@ type ReceiverStats struct {
 	DataReorderMaxMS                                           float64
 	FeedbackReceived, FeedbackRejected, FeedbackDuplicates     uint64
 	PolicyDrops                                                uint64
+	FECParity, FECRecovered                                    uint64
+	ReorderScale                                               float64
+	BFDSent, BFDReceived, BFDUp, BFDDown                       uint64
 }
 type receivePath struct {
 	copySeen, copyMissed, copyLate   uint64
@@ -79,6 +82,8 @@ type receivePath struct {
 	policySent                       time.Time
 	bulkFinish                       float64
 	bulkFiltered                     bool
+	steerOn                          bool
+	steerUntil                       float64
 	rtt, jitter                      float64
 	hasRTT                           bool
 	probeSent, probeAcked, probeLost uint64
@@ -87,6 +92,7 @@ type receivePath struct {
 	mtu                              *MTUProber
 	mtuAcks, mtuSkips                uint64
 	suspect                          bool
+	bfd                              bfdState
 	peerCopy                         [3]uint64
 	// parked: the adapter is gone; never polled, never ready.
 	parked bool
@@ -125,6 +131,10 @@ type Receiver struct {
 	delayAssertive       bool
 	policyRevisionClient uint64
 	repairUnavailable    uint64
+	fec                  *fecState
+	reorderScale         float64   // >= 1: widens the wait while TCP packets keep arriving after it
+	tuneAt               time.Time // last scale review
+	tuneLate, tuneDeliv  uint64
 }
 
 func NewReceiver(codec *Codec, mtu int) (*Receiver, error) {
@@ -291,6 +301,7 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 			r.dataHigh, r.dataHighAt = 0, time.Time{}
 			r.floor = h.Sequence + 1
 			r.reorder, _ = NewReorder(DefaultReorderConfig())
+			r.fecReset()
 			r.copies = newCopyLedger()
 			r.reorder.config.Timeout = r.reorderBase
 			p = nil
@@ -373,6 +384,10 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		valid = len(payload) == 16
 	case CopyReport:
 		valid = len(payload) == 24
+	case Parity:
+		valid = len(payload) >= parityHeader+2
+	case BFD:
+		valid = len(payload) == bfdPayload
 	}
 	if !valid {
 		r.stats.Malformed++
@@ -390,7 +405,7 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		p.wireRX += uint64(len(frame) + 28)
 		r.stats.PathMigrations++
 	}
-	if (h.Kind == Data || h.Kind == Striped) && p.policy != nil && (p.policy.Blocked || p.policy.Role == Never) {
+	if (h.Kind == Data || h.Kind == Striped || h.Kind == Parity) && p.policy != nil && (p.policy.Blocked || p.policy.Role == Never) {
 		r.stats.PolicyDrops++
 		return out, nil
 	}
@@ -404,6 +419,8 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		p.hasEpoch = true
 	}
 	switch h.Kind {
+	case BFD:
+		r.bfdReceived(p, payload, now)
 	case Probe:
 		err = r.write(Pong, payload, local, endpoint, &out)
 	case Pong:
@@ -489,7 +506,16 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		}
 		r.stats.PayloadPackets++
 		r.stats.PayloadBytes += uint64(len(payload) - 24)
-		out.Deliver = r.reorder.Push(binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:]), payload[24:], now)
+		flow, number := binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:])
+		out.Deliver = r.reorder.Push(flow, number, payload[24:], now)
+		if hit := r.fecData(flow, number, payload[24:], now); hit.payload != nil {
+			out.Deliver = append(out.Deliver, r.reorder.Push(hit.flow, hit.number, hit.payload, now)...)
+		}
+	case Parity:
+		r.stats.FECParity++
+		if hit := r.fecParity(payload, now); hit.payload != nil {
+			out.Deliver = append(out.Deliver, r.reorder.Push(hit.flow, hit.number, hit.payload, now)...)
+		}
 	case MTUProbeKind:
 		// Answer with the size actually received, as the Python peer does.
 		reply := make([]byte, 12)
@@ -535,6 +561,7 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 	return out, err
 }
 func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
+	r.tuneReorder(now)
 	out := ReceiveResult{Deliver: r.reorder.Poll(now)}
 	if err := r.resolveCopies(now, &out); err != nil {
 		return out, err
@@ -570,6 +597,16 @@ func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 		}
 		p.feedbackDue = false
 		p.lastFeedback = now
+	}
+	if r.probeInterval > 0 {
+		for _, p := range r.paths {
+			if p.parked || !p.ready || now.Sub(p.last) >= 3*time.Second || (p.policy != nil && (p.policy.Blocked || p.policy.Role == Never)) {
+				continue
+			}
+			if err := r.bfdSend(p, now, &out); err != nil {
+				return out, err
+			}
+		}
 	}
 	if r.probeInterval > 0 && (r.lastProbe.IsZero() || now.Sub(r.lastProbe) >= r.probeInterval) {
 		r.lastProbe = now
@@ -643,10 +680,16 @@ func (r *Receiver) updateReorderBudget() {
 		}
 	}
 	timeout := r.reorderBase.Seconds()
+	scale := math.Max(1, r.reorderScale)
 	if count >= 2 {
-		timeout = math.Min(.2, math.Max(timeout, math.Max((maximum-minimum)/2, maximum/2)+4*jitter+timeout))
+		timeout = math.Min(.2*scale, scale*math.Max(timeout, math.Max((maximum-minimum)/2, maximum/2)+4*jitter+timeout))
 	}
 	r.reorder.config.Timeout = time.Duration(timeout * float64(time.Second))
+	udp := timeout
+	if count >= 2 {
+		udp = math.Min(timeout, math.Max(r.reorderBase.Seconds(), (maximum-minimum)/2+2*jitter))
+	}
+	r.reorder.config.UDPTimeout = time.Duration(udp * float64(time.Second))
 }
 
 type recoveryState struct {
@@ -768,4 +811,42 @@ func (r *Receiver) resolveCopies(now time.Time, out *ReceiveResult) error {
 		p.copyReported, p.lastCopyReport = counters, now
 	}
 	return nil
+}
+
+// tuneReorder reviews the reorder wait every few seconds. TCP packets that keep
+// arriving after the receiver gave up mean the wait is shorter than the real delay
+// spread, so it widens (up to 1.6x); when they stop it relaxes back. UDP is
+// excluded on purpose: its wait is deliberately short and late packets are delivered.
+func (r *Receiver) tuneReorder(now time.Time) {
+	const (
+		period    = 5 * time.Second
+		maxScale  = 1.6
+		raiseRate = 0.003
+		lowerRate = 0.0005
+	)
+	if r.reorderScale == 0 {
+		r.reorderScale = 1
+	}
+	if r.tuneAt.IsZero() {
+		r.tuneAt = now
+		return
+	}
+	if now.Sub(r.tuneAt) < period {
+		return
+	}
+	st := r.reorder.Stats()
+	dLate, dDeliv := st.LateTCP-r.tuneLate, st.Delivered-r.tuneDeliv
+	r.tuneAt, r.tuneLate, r.tuneDeliv = now, st.LateTCP, st.Delivered
+	if dDeliv < 2000 {
+		return
+	}
+	rate := float64(dLate) / float64(dDeliv)
+	switch {
+	case rate > raiseRate:
+		r.reorderScale = math.Min(maxScale, r.reorderScale*1.15)
+	case rate < lowerRate:
+		r.reorderScale = math.Max(1, r.reorderScale*0.95)
+	}
+	r.stats.ReorderScale = r.reorderScale
+	r.updateReorderBudget()
 }

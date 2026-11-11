@@ -47,6 +47,8 @@ type fileConfig struct {
 	InitialMbps    float64                      `json:"bonding_initial_rate_mbps"`
 	MaxMbps        float64                      `json:"bonding_max_rate_mbps"`
 	FailoverReplay bool                         `json:"failover_replay"`
+	FlowPinning    bool                         `json:"flow_pinning"`
+	CoDel          bool                         `json:"codel"`
 	LinkPolicies   map[string]linkpolicy.Policy `json:"link_policies"` // keyed by interface index, as in Python
 	GameUDPPorts   []uint16                     `json:"game_udp_ports"`
 	LossTracking   bool                         `json:"loss_tracking"`
@@ -296,7 +298,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		specs, available = adapterwatch.PlanInventory(slots, rows, uplink.InterfaceFor)
 	}
 	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs, Available: available,
-		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay,
+		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay, FlowPinning: cfg.FlowPinning, CoDel: cfg.CoDel,
 		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking, DelayControl: cfg.DelayControl})
 	if err != nil {
 		return err

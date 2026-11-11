@@ -107,6 +107,7 @@ func (r *Receiver) adoptClientPeer(peer [16]byte, sequence uint64, now time.Time
 	r.dataHigh, r.dataHighAt = 0, time.Time{}
 	r.floor = sequence + 1
 	r.reorder, _ = NewReorder(DefaultReorderConfig())
+	r.fecReset()
 	r.copies = newCopyLedger()
 	r.reorder.config.Timeout = r.reorderBase
 	for _, p := range r.paths {

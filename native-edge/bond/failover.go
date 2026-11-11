@@ -30,7 +30,7 @@ func (s *Sender) suspectAfter(p *receivePath) time.Duration {
 }
 
 func (s *Sender) pathSuspect(p *receivePath, now time.Time) bool {
-	return p.ready && now.Sub(p.last) >= s.suspectAfter(p)
+	return p.ready && (p.bfdDown() || now.Sub(p.last) >= s.suspectAfter(p))
 }
 
 // failoverStep updates suspect state, queues replays on a new suspicion, and

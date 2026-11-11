@@ -18,8 +18,22 @@ type sendFlow struct {
 	exhausted  bool
 	last       time.Time
 	lru        *list.Element
+	// parity accumulator for the current group (fec_send.go)
+	fecBase uint64
+	fecMask uint8
+	fecXor  []byte
+	// flow pinning (pin.go)
+	pin, backup *receivePath
 }
-type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, RepairUnavailableSent, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped uint64 }
+// Loss steering: measured loss at or above lossSteerRatio, measured within lossSteerLife
+// seconds, moves bulk off a path while another path is cleaner.
+const (
+	lossSteerRatio = 0.04 // smoothed loss that moves bulk off a path
+	lossSteerExit  = 0.02 // smoothed loss below which it may return
+	lossSteerHold  = 3.0  // seconds a path stays out once steered away
+)
+
+type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, RepairUnavailableSent, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped, LossSteered, BulkDuplicates, ParitySent, FlowsPinned, FastReroutes, PinSpills uint64 }
 
 // Sender is the actor-owned transmit half. A caller retries a pending bulk
 // packet at the returned time, servicing Receive/Tick/urgent queues meanwhile.
@@ -41,6 +55,7 @@ type Sender struct {
 	askedOrder        list.List
 	nextRepairRequest time.Time
 	failover          bool
+	pinning           bool
 	lossTracking      bool
 	replayQueue       []replayItem
 	hints             map[int]pathHint
@@ -415,6 +430,22 @@ func (s *Sender) Bulk(payload []byte, key string, now time.Time, writer Datagram
 			paths = clear
 		}
 	}
+	// Loss-aware striping: a path whose smoothed delivery loss is high stops carrying
+	// new bulk while a cleaner path exists. Both ends do this from their own acks, so
+	// downstream bulk leaves a lossy Starlink link even though the dish hint only
+	// reaches the client. Entry and exit use different thresholds and a minimum hold,
+	// so a noisy reading cannot flap bulk on and off the link.
+	if len(paths) > 1 {
+		var clean []*receivePath
+		for _, p := range paths {
+			if !s.lossSteered(p, s.r.seconds(now)) {
+				clean = append(clean, p)
+			}
+		}
+		if len(clean) > 0 && len(clean) < len(paths) {
+			paths = clean
+		}
+	}
 	paths = s.fitPaths(paths, size)
 	ready := make(map[*receivePath]float64, len(paths))
 	transit := make(map[*receivePath]float64, len(paths))
@@ -504,6 +535,23 @@ func (s *Sender) Bulk(payload []byte, key string, now time.Time, writer Datagram
 	if err != nil {
 		return false, now, err
 	}
+	if s.pinning {
+		chosen, at := s.pinChoose(f, paths, available, ready, timestamp)
+		if chosen == nil {
+			wait := time.Millisecond
+			if at > timestamp {
+				wait = time.Duration((at - timestamp) * float64(time.Second))
+			}
+			return false, now.Add(wait), nil
+		}
+		reordered := []*receivePath{chosen}
+		for _, p := range available {
+			if p != chosen {
+				reordered = append(reordered, p)
+			}
+		}
+		available = reordered
+	}
 	for _, p := range available {
 		body := make([]byte, 24+len(payload))
 		binary.BigEndian.PutUint64(body, f.id)
@@ -519,6 +567,7 @@ func (s *Sender) Bulk(payload []byte, key string, now time.Time, writer Datagram
 			p.budget.Sent(sequence, len(frame), timestamp)
 			p.bulkFinish = math.Max(p.bulkFinish, s.bulkClock) + float64(len(frame)+28)/p.budget.rate
 			s.cacheRepair(MissingPacket{f.id, f.number}, payload, now, p)
+			s.bulkProtect(f, f.number, payload, p, now, writer)
 			if f.number == math.MaxUint64 {
 				f.exhausted = true
 			} else {
@@ -588,5 +637,5 @@ func mtuStats(p *receivePath) *MTUStats {
 }
 
 func isPayloadKind(frame []byte) bool {
-	return len(frame) > 36 && (frame[36] == Data || frame[36] == DataCopy || frame[36] == Striped)
+	return len(frame) > 36 && (frame[36] == Data || frame[36] == DataCopy || frame[36] == Striped || frame[36] == Parity)
 }

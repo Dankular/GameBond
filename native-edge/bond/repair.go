@@ -97,7 +97,7 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		jitter = math.Max(jitter, p.jitter)
 	}
 	if s.nextRepairRequest.IsZero() || !now.Before(s.nextRepairRequest) {
-		delay := time.Duration(math.Max(.015, (maximum-minimum)/2+2*jitter) * float64(time.Second))
+		delay := time.Duration(math.Max(.012, (maximum-minimum)/2+jitter) * float64(time.Second))
 		missing := s.r.reorder.Missing(now, delay, repairBatch, repairable)
 		if len(missing) > 0 {
 			s.nextRepairRequest = now.Add(5 * time.Millisecond)
@@ -146,9 +146,10 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 			if err != nil {
 				return err
 			}
-			if math.Max(ready, p.pacer.ReadyAt(size+28, timestamp)) > timestamp+.000001 {
-				continue
-			}
+			// Repairs are small and recover data the peer is already waiting for, so they
+			// go out at once instead of queueing behind the path's bulk pacing; the wait
+			// only decides which path is cheapest.
+			ready = math.Max(ready, p.pacer.ReadyAt(size+28, timestamp))
 			probe := 0.
 			if p.hasRTT {
 				probe = p.rtt

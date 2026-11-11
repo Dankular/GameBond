@@ -21,6 +21,7 @@ type SessionOptions struct {
 	Redundant                bool
 	// Optional behaviours, all off by default like the Python server.
 	LossTracking, PathMTUDiscovery, FailoverReplay bool
+	FlowPinning, CoDel                             bool
 	DelayControl, DelayAssertive                   bool
 }
 
@@ -65,6 +66,7 @@ func NewSession(key, session []byte, options SessionOptions) (*Session, error) {
 		return nil, err
 	}
 	sender.EnableFailover(options.FailoverReplay)
+	sender.SetFlowPinning(options.FlowPinning)
 	sender.EnableLossTracking(options.LossTracking)
 	sender.EnableDelayControl(options.DelayControl)
 	sender.SetDelayAssertive(options.DelayAssertive)
@@ -79,6 +81,7 @@ func NewSession(key, session []byte, options SessionOptions) (*Session, error) {
 		return nil, err
 	}
 	transmit, _ := NewTransmitQueue(sender, 1024, 4*1024*1024)
+	transmit.EnableCoDel(options.CoDel)
 	transmit.SetQoS(qos)
 	inject, _ := NewInjectionQueue(1024, 4*1024*1024)
 	return &Session{Receiver: r, Sender: sender, Transmit: transmit, Inject: inject, classifier: classifier, qos: qos, options: options}, nil

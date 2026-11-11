@@ -1,0 +1,86 @@
+package bond
+
+import "time"
+
+// Bidirectional forwarding detection. Every ready path exchanges a small BFD frame
+// each bfdInterval. A path is Up only while this end hears the peer within
+// bfdMultiplier intervals AND the peer reports hearing us, so a one-way failure is
+// detected by both ends in about 300 ms instead of waiting for the probe timeout.
+// After any failure the path must stay healthy for bfdHoldDown before it carries bulk
+// again, which damps flapping. Peers that never send BFD keep the older silence timer.
+
+const (
+	bfdInterval   = 100 * time.Millisecond
+	bfdMultiplier = 3
+	bfdHoldDown   = 2 * time.Second
+	bfdPayload    = 8
+)
+
+type bfdState struct {
+	seen      bool // the peer has sent BFD at least once
+	rx        time.Time
+	peerHears bool
+	up        bool
+	failed    bool // has been down since the session began: hold-down applies
+	goodSince time.Time
+	lastTx    time.Time
+}
+
+func (b *bfdState) hears(now time.Time) bool {
+	return b.seen && now.Sub(b.rx) < bfdMultiplier*bfdInterval
+}
+
+// bfdReceived records a BFD frame from the peer.
+func (r *Receiver) bfdReceived(p *receivePath, payload []byte, now time.Time) {
+	p.bfd.seen, p.bfd.rx = true, now
+	p.bfd.peerHears = payload[0]&1 != 0
+	r.stats.BFDReceived++
+	r.bfdEvaluate(p, now)
+}
+
+// bfdEvaluate updates the path's Up/Down state from both directions.
+func (r *Receiver) bfdEvaluate(p *receivePath, now time.Time) {
+	b := &p.bfd
+	if !b.seen {
+		return
+	}
+	both := b.hears(now) && b.peerHears
+	switch {
+	case !both:
+		if b.up {
+			r.stats.BFDDown++
+			b.failed = true
+		}
+		b.up, b.goodSince = false, time.Time{}
+	case b.up:
+	default:
+		if b.goodSince.IsZero() {
+			b.goodSince = now
+		}
+		if !b.failed || now.Sub(b.goodSince) >= bfdHoldDown {
+			b.up = true
+			r.stats.BFDUp++
+		}
+	}
+}
+
+// bfdSend sends the path's BFD frame when one is due.
+func (r *Receiver) bfdSend(p *receivePath, now time.Time, out *ReceiveResult) error {
+	if now.Sub(p.bfd.lastTx) < bfdInterval {
+		return nil
+	}
+	p.bfd.lastTx = now
+	r.bfdEvaluate(p, now)
+	var body [bfdPayload]byte
+	if p.bfd.hears(now) {
+		body[0] = 1
+	}
+	body[1] = bfdMultiplier
+	body[2] = byte(bfdInterval / time.Millisecond)
+	r.stats.BFDSent++
+	return r.write(BFD, body[:], p.local, p.endpoint, out)
+}
+
+// bfdDown reports a BFD-managed path that is not Up.
+// A session still negotiating (never been up) is not a failure.
+func (p *receivePath) bfdDown() bool { return p.bfd.seen && !p.bfd.up && p.bfd.failed }

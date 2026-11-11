@@ -33,6 +33,8 @@ type Config struct {
 	MTU      int  // 0 means 1400
 	Discover bool // per-path MTU discovery
 	Failover bool // suspect-path tracking and replay
+	FlowPinning bool // pin bulk flows to one path with fast reroute
+	CoDel       bool // per-flow CoDel with ECN marking on the bulk queue
 	// InitialMbps and MaxMbps seed the per-uplink congestion budget.
 	InitialMbps, MaxMbps float64
 	QueuePackets         int // 0 means 40000
@@ -160,9 +162,13 @@ func New(cfg Config) (*Client, error) {
 		return nil, err
 	}
 	s.EnableFailover(cfg.Failover)
+	s.SetFlowPinning(cfg.FlowPinning)
 	s.EnableLossTracking(cfg.LossTracking)
 	s.EnableDelayControl(cfg.DelayControl)
 	q, err := bond.NewTransmitQueue(s, cfg.QueuePackets, cfg.QueueBytes)
+	if err == nil {
+		q.EnableCoDel(cfg.CoDel)
+	}
 	if err != nil {
 		return nil, err
 	}
