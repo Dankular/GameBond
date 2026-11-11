@@ -37,6 +37,8 @@ type Device struct {
 
 // Config are the gateway parameters (client_tunnel_ip etc. in Python).
 type Config struct {
+	// Leases persists the DHCP lease table across restarts (nil: memory only).
+	Leases       *LeaseTable
 	Device       Device
 	ClientIP     netip.Addr
 	GatewayIP    netip.Addr // zero: network address + 1
@@ -49,9 +51,9 @@ type Config struct {
 
 // Counters mirror the Python counter names.
 type Counters struct {
-	BytesToTunnel, BytesFromTunnel, FramesIn, FramesOut, PacketsToTunnel, PacketsFromTunnel, DHCPOffers, DHCPAcks, DHCPNaks uint64
-	ARPReplies, ForeignMACDropped, SpoofedSourceDropped, LocalOnlyDropped, TTLExpired, Fragmented          uint64
-	FragNeededSent, WrongDestination, NoDeviceMAC, Malformed, WriteErrors                                  uint64
+	BytesToTunnel, BytesFromTunnel, FramesIn, FramesOut, PacketsToTunnel, PacketsFromTunnel, DHCPOffers, DHCPAcks, DHCPNaks, DHCPReleases uint64
+	ARPReplies, ForeignMACDropped, SpoofedSourceDropped, LocalOnlyDropped, TTLExpired, Fragmented                                         uint64
+	FragNeededSent, WrongDestination, NoDeviceMAC, Malformed, WriteErrors                                                                 uint64
 }
 
 // Gateway serves one device on one adapter. Methods are safe for concurrent
@@ -67,6 +69,9 @@ type Gateway struct {
 	deviceMAC *[6]byte
 	lastSeen  time.Time
 	hasSeen   bool
+	hinted    bool // deviceMAC came from the lease table and has not spoken yet
+	leaseEnd  time.Time
+	saved     Lease
 	mssLimit  int
 	ident     uint16
 	Leased    bool
@@ -120,10 +125,23 @@ func NewGateway(cfg Config, io IO) (*Gateway, error) {
 		gw = netip.AddrFrom4(a)
 	}
 	g := &Gateway{cfg: cfg, io: io, mac: io.MAC(), prefix: subnet, gateway: gw.As4(), device: ip.As4(), mssLimit: cfg.TunnelMTU - 40}
+	row, haveRow := cfg.Leases.Get(cfg.Device.Name, ip)
+	if haveRow {
+		g.saved = row
+		if row.Active(cfg.Now()) {
+			g.Leased, g.leaseEnd = true, time.Unix(row.Expires, 0)
+		}
+	}
 	if cfg.Device.PinnedMAC != nil {
 		m := *cfg.Device.PinnedMAC
 		g.deviceMAC = &m
 		g.lastSeen, g.hasSeen = cfg.Now(), true
+	} else if haveRow {
+		// Last known holder of the address: probed at once, but only a hint, so any
+		// other device may still claim the address until this one is heard from.
+		if m, err := ParseMAC(row.MAC); err == nil {
+			g.deviceMAC, g.hinted = &m, true
+		}
 	}
 	return g, nil
 }
@@ -139,7 +157,7 @@ const PresenceTimeout = 30 * time.Second
 func (g *Gateway) IsLeased() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.Leased && g.presentLocked()
+	return g.Leased && g.presentLocked() && (g.leaseEnd.IsZero() || g.cfg.Now().Before(g.leaseEnd))
 }
 
 // Present reports whether the device has sent a frame within PresenceTimeout.
@@ -169,6 +187,16 @@ func (g *Gateway) Stats() Counters {
 	return g.c
 }
 
+// Announce broadcasts a gratuitous ARP for the gateway address so devices refresh
+// their neighbour cache and know the gateway is back.
+func (g *Gateway) Announce() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	req := append([]byte{0, 1, 8, 0, 6, 4, 0, 1}, g.mac[:]...)
+	req = append(append(append(req, g.gateway[:]...), make([]byte, 6)...), g.gateway[:]...)
+	g.sendFrame(broadcastMAC, ethARP, req)
+}
+
 // DeviceMAC returns the learned or pinned device MAC.
 func (g *Gateway) DeviceMAC() (mac [6]byte, ok bool) {
 	g.mu.Lock()
@@ -180,7 +208,13 @@ func (g *Gateway) DeviceMAC() (mac [6]byte, ok bool) {
 }
 
 func (g *Gateway) stale() bool {
-	return g.cfg.Device.PinnedMAC == nil && g.hasSeen && g.cfg.Now().Sub(g.lastSeen) >= g.cfg.StaleAfter
+	if g.cfg.Device.PinnedMAC != nil {
+		return false
+	}
+	if g.hinted && !g.hasSeen {
+		return true // an unconfirmed hint never blocks a real device
+	}
+	return g.hasSeen && g.cfg.Now().Sub(g.lastSeen) >= g.cfg.StaleAfter
 }
 
 func (g *Gateway) mayClaim(src [6]byte) bool {
@@ -193,6 +227,41 @@ func (g *Gateway) mayClaim(src [6]byte) bool {
 func (g *Gateway) touch(src [6]byte) {
 	m := src
 	g.deviceMAC, g.lastSeen, g.hasSeen = &m, g.cfg.Now(), true
+	if g.hinted {
+		g.hinted = false
+	}
+	if fmtMAC(src) != g.saved.MAC {
+		g.persist(0)
+	}
+}
+
+func fmtMAC(m [6]byte) string {
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
+}
+
+// persist writes the device's row to the lease table. grantedAt is the unix time
+// of a fresh ACK, or 0 to keep the existing grant.
+func (g *Gateway) persist(grantedAt int64) {
+	if g.cfg.Leases == nil || g.deviceMAC == nil {
+		return
+	}
+	row := Lease{Name: g.cfg.Device.Name, IP: netip.AddrFrom4(g.device).String(), MAC: fmtMAC(*g.deviceMAC),
+		Leased: g.Leased, Granted: g.saved.Granted, Expires: g.saved.Expires}
+	if grantedAt != 0 {
+		row.Granted, row.Expires = grantedAt, g.leaseEnd.Unix()
+	}
+	if !g.Leased {
+		row.Expires = g.saved.Expires
+	}
+	g.saved = row
+	g.cfg.Leases.Put(row)
+}
+
+// Lease is this device's row of the lease table.
+func (g *Gateway) Lease() (Lease, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.saved, g.saved.MAC != ""
 }
 
 // HandleFrame processes one Ethernet frame from the device-facing adapter.
@@ -351,6 +420,14 @@ func (g *Gateway) dhcp(srcMAC [6]byte, p []byte) {
 	if v := opts[53]; len(v) > 0 {
 		kind = v[0]
 	}
+	if kind == 7 { // DHCPRELEASE: the device gives its address back
+		if g.deviceMAC != nil && srcMAC == *g.deviceMAC && bytes.Equal(p[12:16], g.device[:]) {
+			g.Leased, g.leaseEnd = false, time.Time{}
+			g.persist(0)
+			g.c.DHCPReleases++
+		}
+		return
+	}
 	if kind != 1 && kind != 3 {
 		return
 	}
@@ -381,6 +458,8 @@ func (g *Gateway) dhcp(srcMAC [6]byte, p []byte) {
 		g.dhcpReply(5, xid, flags, chaddr, g.device)
 		g.c.DHCPAcks++
 		g.Leased = true
+		g.leaseEnd = g.cfg.Now().Add(time.Duration(g.cfg.LeaseSeconds) * time.Second)
+		g.persist(g.cfg.Now().Unix())
 	} else {
 		g.dhcpReply(6, xid, flags, chaddr, [4]byte{})
 		g.c.DHCPNaks++

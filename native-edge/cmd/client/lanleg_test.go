@@ -87,6 +87,11 @@ func TestLANManagerRetriesAndDelivers(t *testing.T) {
 	if m.dispatch(lanPacket([4]byte{10, 77, 0, 2})) {
 		t.Fatal("client packet claimed by a gateway")
 	}
+	// First out of the adapter is the gratuitous ARP announcing the gateway.
+	ann, err := peer.Read(time.Second)
+	if err != nil || len(ann) < 14+28 || ann[0] != 0xff || ann[12] != 0x08 || ann[13] != 0x06 {
+		t.Fatalf("no gateway announce: %x %v", ann, err)
+	}
 	f, err := peer.Read(time.Second)
 	if err != nil || len(f) < 14+28 || f[0] != 2 || f[5] != 0xaa {
 		t.Fatalf("frame %x %v", f, err)

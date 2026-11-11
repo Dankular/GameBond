@@ -34,6 +34,9 @@ type lanManager struct {
 	retryAt map[string]time.Time
 	delvd   uint64
 	gaps    gapMeter
+
+	// leases is the DHCP lease table that survives restarts (nil: memory only).
+	leases *lan.LeaseTable
 }
 
 // lanStallReopen is how long an adapter may deliver no frames before it is reopened.
@@ -81,6 +84,14 @@ func newLanManager(raw json.RawMessage, client netip.Addr, uplinkIDs []string, u
 	return &lanManager{devices: devices, client: client, mtu: mtu, open: newSharedAdapters(openFrameIO).Open, now: time.Now,
 		gws: map[string]*runningGateway{}, byIP: map[[4]byte]*lan.Gateway{}, errs: map[string]string{}, retryAt: map[string]time.Time{},
 		out: func(map[string]any) {}}, nil
+}
+
+// useLeaseTable opens the persistent DHCP lease table every gateway shares. Each
+// gateway reads its own row at start and writes it on ACK, release and MAC change.
+func (m *lanManager) useLeaseTable(path string) {
+	if m != nil && path != "" {
+		m.leases = lan.OpenLeaseTable(path)
+	}
 }
 
 // deviceIPs are the tunnel addresses of the attached devices.
@@ -188,7 +199,7 @@ func (m *lanManager) start(ctx context.Context, d lan.DeviceConfig) (*runningGat
 		}
 		dev.PinnedMAC = &mac
 	}
-	gw, err := lan.NewGateway(lan.Config{Device: dev, ClientIP: m.client, TunnelMTU: m.mtu, OnPacket: func(p []byte) {
+	gw, err := lan.NewGateway(lan.Config{Device: dev, Leases: m.leases, ClientIP: m.client, TunnelMTU: m.mtu, OnPacket: func(p []byte) {
 		if d.UDPDirect && m.direct != nil && m.direct.Handle(p) {
 			return
 		}
@@ -200,6 +211,7 @@ func (m *lanManager) start(ctx context.Context, d lan.DeviceConfig) (*runningGat
 	}
 	cctx, cancel := context.WithCancel(ctx)
 	rg := &runningGateway{gw: gw, io: io, cancel: cancel, mac: fmtMAC(io.MAC())}
+	gw.Announce()
 	go func() { // time the adapter-to-device leg: ten echoes a second
 		t := time.NewTicker(100 * time.Millisecond)
 		defer t.Stop()
@@ -272,6 +284,13 @@ func (m *lanManager) status() any {
 			row["device_mac"] = fmtMAC(mac)
 		} else {
 			row["device_mac"] = ""
+		}
+		if l, ok := rg.gw.Lease(); ok {
+			lease := map[string]any{"mac": l.MAC, "ip": l.IP, "leased": rg.gw.IsLeased(), "granted": l.Granted}
+			if l.Expires > 0 {
+				lease["expires_in_s"] = l.Expires - m.now().Unix()
+			}
+			row["lease"] = lease
 		}
 		row["downstream_gaps"] = m.gaps.report()
 		row["device_probe"] = rg.gw.ProbeStats()

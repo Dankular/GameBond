@@ -19,6 +19,9 @@ type TransmitQueueStats struct {
 	Admitted, Completed, Expired, Rejected, EvictedBulk uint64
 	PeerResetDropped                                    uint64
 	CoDelDropped, CoDelMarked                           uint64
+	// ExpiredPriority and ExpiredBulk split Expired by queue: packets that outlived
+	// their class's max age before they could be sent.
+	ExpiredPriority, ExpiredBulk uint64
 	// PriorityWaitMaxMS and the over-counters report how long urgent packets
 	// sat in the queue before being written (0 means released immediately).
 	ExpiredInWait, PrioritySent, PriorityWaitOver1ms, PriorityWaitOver5ms uint64
@@ -136,6 +139,7 @@ func (q *TransmitQueue) Pump(now time.Time, writer DatagramWriter) (time.Time, e
 		if !now.Before(p.Expires) {
 			q.remove(&q.priority)
 			q.stats.Expired++
+			q.stats.ExpiredPriority++
 			continue
 		}
 		replicate := p.Replicate
@@ -174,6 +178,7 @@ func (q *TransmitQueue) Pump(now time.Time, writer DatagramWriter) (time.Time, e
 		if !now.Before(p.Expires) {
 			q.popBulk()
 			q.stats.Expired++
+			q.stats.ExpiredBulk++
 			if p.held {
 				q.stats.ExpiredInWait++ // aged out while pacing or the window held it back
 			}

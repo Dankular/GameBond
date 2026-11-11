@@ -58,7 +58,7 @@
     "0": {
       "priority": false,
       "replicate": false,
-      "max_age_ms": 100,
+      "max_age_ms": 400,
       "capacity": 256,
       "retransmissions": 0
     }

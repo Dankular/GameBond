@@ -13,9 +13,13 @@ import (
 // sequence number, so the receiver keeps whichever copy arrives first.
 
 const (
-	failoverCacheLimit = 512 // packets queued per suspect transition
-	failoverPerTick    = 16  // replays sent per Maintenance call
-	failoverPathLimit  = 1.5 // seconds; half of the 3s eligibility timeout
+	failoverCacheLimit = repairCacheMax // packets queued per suspect transition (the whole cache)
+	failoverPerTick    = 1024           // replays sent per Maintenance call: effectively one burst
+	// A path silent this long is "at risk": not yet declared suspect, but every bulk
+	// packet is also copied onto a healthy path so nothing sent into a dying link is
+	// lost while detection catches up.
+	riskFloor         = 150 * time.Millisecond
+	failoverPathLimit = 1.5 // seconds; half of the 3s eligibility timeout
 )
 
 type replayItem struct{ key MissingPacket }
@@ -27,6 +31,16 @@ func (s *Sender) suspectAfter(p *receivePath) time.Duration {
 	probe := s.r.probeInterval.Seconds()
 	after := math.Max(2.5*probe, 4*p.rtt+8*p.jitter)
 	return time.Duration(math.Min(failoverPathLimit, after) * float64(time.Second))
+}
+
+// atRisk reports a ready path that has gone quiet for longer than a healthy one
+// ever does (BFD and probes arrive every 100 ms) but is not yet suspect.
+func (s *Sender) atRisk(p *receivePath, now time.Time) bool {
+	if !p.ready || p.last.IsZero() {
+		return false
+	}
+	after := math.Max(riskFloor.Seconds(), 1.5*s.r.probeInterval.Seconds()+4*p.jitter)
+	return now.Sub(p.last) >= time.Duration(after*float64(time.Second))
 }
 
 func (s *Sender) pathSuspect(p *receivePath, now time.Time) bool {

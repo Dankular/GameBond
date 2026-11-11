@@ -29,18 +29,22 @@ func (s *Sender) protectionLevel(paths []*receivePath, now time.Time) protection
 	if len(paths) < 2 {
 		return protectNone
 	}
+	if s.protectName == "off" {
+		return protectNone
+	}
+	fecAt, dupAt := s.thresholds()
 	ts := s.r.seconds(now)
 	worst := 0.
 	for _, p := range paths {
 		worst = math.Max(worst, s.lossEstimate(p, ts))
-		if s.hinted(p.local, now) {
+		if s.hinted(p.local, now) || s.atRisk(p, now) {
 			return protectDuplicate
 		}
 	}
 	switch {
-	case worst >= dupRatio:
+	case worst >= dupAt:
 		return protectDuplicate
-	case worst >= fecRatio:
+	case worst >= fecAt:
 		return protectParity
 	}
 	return protectNone
@@ -51,29 +55,43 @@ func (s *Sender) protectionLevel(paths []*receivePath, now time.Time) protection
 func (s *Sender) bulkProtect(f *sendFlow, number uint64, payload []byte, used *receivePath, now time.Time, writer DatagramWriter) {
 	paths := s.eligible(now, true)
 	level := s.protectionLevel(paths, now)
-	if level != protectParity {
+	// The tcp preset copies every TCP data packet and every small UDP packet (games,
+	// voice). A packet that cannot be copied because both links are saturated falls
+	// back to a parity group, so it is still recoverable from one loss.
+	tcpMode := s.protectName == "tcp" && len(paths) > 1
+	if tcpMode && level != protectDuplicate && (repairable(payload) || smallUDP(payload)) {
+		level = protectDuplicate
+	}
+	if level != protectParity && !(tcpMode && level == protectDuplicate) {
 		f.fecMask = 0
 	}
 	switch level {
 	case protectDuplicate:
-		s.duplicate(f, number, payload, used, paths, now, writer)
+		if !s.duplicate(f, number, payload, used, paths, now, writer) && tcpMode {
+			s.accumulateParity(f, number, payload, used, paths, now, writer)
+		}
 	case protectParity:
 		s.accumulateParity(f, number, payload, used, paths, now, writer)
 	}
 }
 
 // other returns the ready path (other than used) with the shortest transit time.
-func (s *Sender) other(used *receivePath, paths []*receivePath, size int, now time.Time) *receivePath {
+// ungated skips the path's window and pacing gate: a redundancy copy must not have
+// to win a place in line against the traffic it protects. The copy is still
+// charged to the path's wire accounting by the caller.
+func (s *Sender) other(used *receivePath, paths []*receivePath, size int, now time.Time, ungated bool) *receivePath {
 	ts := s.r.seconds(now)
 	var best *receivePath
 	bestScore := math.Inf(1)
 	for _, p := range s.fitPaths(paths, size) {
-		if p == used {
+		if p == used || s.atRisk(p, now) {
 			continue
 		}
-		ready, err := p.budget.ReadyAt(size, ts)
-		if err != nil || math.Max(ready, p.pacer.ReadyAt(size+28, ts)) > ts+.000001 {
-			continue
+		if !ungated {
+			ready, err := p.budget.ReadyAt(size, ts)
+			if err != nil || math.Max(ready, p.pacer.ReadyAt(size+28, ts)) > ts+.000001 {
+				continue
+			}
 		}
 		probe := 0.
 		if p.hasRTT {
@@ -86,11 +104,13 @@ func (s *Sender) other(used *receivePath, paths []*receivePath, size int, now ti
 	return best
 }
 
-func (s *Sender) duplicate(f *sendFlow, number uint64, payload []byte, used *receivePath, paths []*receivePath, now time.Time, writer DatagramWriter) {
+func (s *Sender) duplicate(f *sendFlow, number uint64, payload []byte, used *receivePath, paths []*receivePath, now time.Time, writer DatagramWriter) bool {
 	size := len(payload) + Overhead + 24
-	target := s.other(used, paths, size, now)
+	ungated := s.protectName == "tcp"
+	target := s.other(used, paths, size, now, ungated)
 	if target == nil {
-		return
+		s.stats.BulkDupSkipped++
+		return false
 	}
 	body := make([]byte, 24+len(payload))
 	binary.BigEndian.PutUint64(body, f.id)
@@ -99,13 +119,27 @@ func (s *Sender) duplicate(f *sendFlow, number uint64, payload []byte, used *rec
 	copy(body[24:], payload)
 	frame, err := s.r.codec.Encode(Striped, body)
 	if err != nil {
-		return
+		return false
 	}
 	if s.written(Datagram{Endpoint: target.endpoint, Frame: frame, Local: target.local}, target, now, writer) {
-		target.budget.Sent(binary.BigEndian.Uint64(frame[37:]), len(frame), s.r.seconds(now))
+		if ungated {
+			target.budget.UnpacedSent(len(frame), s.r.seconds(now), false)
+		} else {
+			target.budget.Sent(binary.BigEndian.Uint64(frame[37:]), len(frame), s.r.seconds(now))
+		}
 		s.stats.Copies++
 		s.stats.BulkDuplicates++
+		return true
 	}
+	s.stats.BulkDupSkipped++
+	return false
+}
+
+// smallUDP is a UDP datagram small enough to be game or voice traffic: cheap to
+// copy and the first to suffer when a link drops it.
+func smallUDP(packet []byte) bool {
+	p, err := ParseIPv4(packet)
+	return err == nil && p.Protocol == 17 && !p.Fragmented && len(packet) <= 400
 }
 
 // accumulateParity folds the packet into the flow's current group and emits the
@@ -147,7 +181,7 @@ func (s *Sender) emitParity(f *sendFlow, used *receivePath, paths []*receivePath
 	size := len(body) + Overhead
 	// Parity travels on a different path than the data when one is ready, so a
 	// single-path loss burst cannot take both.
-	target := s.other(used, paths, size, now)
+	target := s.other(used, paths, size, now, false)
 	if target == nil {
 		target = used
 	}

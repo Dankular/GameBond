@@ -11,7 +11,7 @@ import "time"
 
 const (
 	bfdInterval   = 100 * time.Millisecond
-	bfdMultiplier = 3
+	bfdMultiplier = 5
 	bfdHoldDown   = 2 * time.Second
 	bfdPayload    = 8
 )
@@ -24,6 +24,10 @@ type bfdState struct {
 	failed    bool // has been down since the session began: hold-down applies
 	goodSince time.Time
 	lastTx    time.Time
+	// flap accounting, reported in the status
+	downs, ups uint64
+	lastDown   time.Time
+	cause      string // why the last failure was declared
 }
 
 func (b *bfdState) hears(now time.Time) bool {
@@ -50,6 +54,12 @@ func (r *Receiver) bfdEvaluate(p *receivePath, now time.Time) {
 		if b.up {
 			r.stats.BFDDown++
 			b.failed = true
+			b.downs++
+			b.lastDown = now
+			b.cause = "peer_not_hearing_us"
+			if !b.hears(now) {
+				b.cause = "silence"
+			}
 		}
 		b.up, b.goodSince = false, time.Time{}
 	case b.up:
@@ -59,6 +69,7 @@ func (r *Receiver) bfdEvaluate(p *receivePath, now time.Time) {
 		}
 		if !b.failed || now.Sub(b.goodSince) >= bfdHoldDown {
 			b.up = true
+			b.ups++
 			r.stats.BFDUp++
 		}
 	}
@@ -84,3 +95,28 @@ func (r *Receiver) bfdSend(p *receivePath, now time.Time, out *ReceiveResult) er
 // bfdDown reports a BFD-managed path that is not Up.
 // A session still negotiating (never been up) is not a failure.
 func (p *receivePath) bfdDown() bool { return p.bfd.seen && !p.bfd.up && p.bfd.failed }
+
+// bfdStatus is the per-path BFD view for the status document.
+func (p *receivePath) bfdStatus(now time.Time) map[string]any {
+	b := &p.bfd
+	state := "off"
+	switch {
+	case !b.seen:
+	case b.up:
+		state = "up"
+	case b.failed:
+		state = "down"
+	default:
+		state = "negotiating"
+	}
+	out := map[string]any{"state": state, "downs": b.downs, "ups": b.ups, "peer_hears_us": b.peerHears,
+		"detect_ms": bfdMultiplier * int(bfdInterval/time.Millisecond)}
+	if b.seen {
+		out["rx_age_ms"] = float64(now.Sub(b.rx)) / float64(time.Millisecond)
+	}
+	if !b.lastDown.IsZero() {
+		out["last_down_s_ago"] = now.Sub(b.lastDown).Seconds()
+		out["last_cause"] = b.cause
+	}
+	return out
+}

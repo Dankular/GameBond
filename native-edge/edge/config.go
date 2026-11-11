@@ -42,6 +42,7 @@ type Config struct {
 	Failover        bool                        `json:"failover_replay"`
 	FlowPinning     bool                        `json:"flow_pinning"`
 	CoDel           bool                        `json:"codel"`
+	Protection      string                      `json:"protection"`
 }
 
 func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []byte, error) {
@@ -108,6 +109,7 @@ func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []b
 	options.QoS = c.QoS
 	options.LossTracking, options.PathMTUDiscovery, options.FailoverReplay = c.LossTracking, c.PathMTU, c.Failover
 	options.FlowPinning, options.CoDel = c.FlowPinning, c.CoDel
+	options.Protection = c.Protection
 	options.DelayControl = c.DelayControl
 	options.DelayAssertive = c.DelayAssertive
 	if c.PriorityHostMax < 0 || c.PriorityHostMax > 1280 {

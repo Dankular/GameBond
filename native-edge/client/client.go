@@ -35,6 +35,7 @@ type Config struct {
 	Failover bool // suspect-path tracking and replay
 	FlowPinning bool // pin bulk flows to one path with fast reroute
 	CoDel       bool // per-flow CoDel with ECN marking on the bulk queue
+	Protection  string // off, low, normal, high or max (see bond/protection.go)
 	// InitialMbps and MaxMbps seed the per-uplink congestion budget.
 	InitialMbps, MaxMbps float64
 	QueuePackets         int // 0 means 40000
@@ -163,6 +164,9 @@ func New(cfg Config) (*Client, error) {
 	}
 	s.EnableFailover(cfg.Failover)
 	s.SetFlowPinning(cfg.FlowPinning)
+	if err := s.SetProtection(cfg.Protection); err != nil {
+		return nil, err
+	}
 	s.EnableLossTracking(cfg.LossTracking)
 	s.EnableDelayControl(cfg.DelayControl)
 	q, err := bond.NewTransmitQueue(s, cfg.QueuePackets, cfg.QueueBytes)

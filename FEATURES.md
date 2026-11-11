@@ -23,6 +23,7 @@ one. "Default" is the value when the flag is absent. Counters appear under
 | Adaptive reorder wait | Widens the TCP wait up to 1.6x while packets keep arriving after it, relaxes when they stop; UDP keeps a short wait | always on (`ReorderScale`) |
 | TCP repair | The receiver requests missing TCP packets; the sender resends from its cache | `loss_tracking` (off) |
 | Parity FEC | For 0.3-1.5% loss, one XOR parity frame per 8 packets lets the receiver rebuild one missing packet per group | automatic |
+| Protection presets | Move the loss levels at which parity and duplication start: `off`, `low` (parity 0.5%, duplicate 3%), `normal` (0.3% / 1.5%), `high` (0.1% / 0.5%), `max` (always duplicate bulk while two paths are ready) | `protection` (`normal`) |
 | Adaptive duplication | At 1.5% loss or more (or a Starlink dish "degraded" hint) bulk is also sent on a second path; first copy wins | automatic |
 | Loss steering | Bulk leaves a path whose smoothed loss reaches 4% and returns below 2% after at least 3 s | automatic |
 | Lost vs late | Issues tab separates packets that never arrived from ones that arrived after the wait | always on |
@@ -31,7 +32,7 @@ one. "Default" is the value when the flag is absent. Counters appear under
 
 | Feature | What it does | Flag (default) |
 |---|---|---|
-| BFD | A 100 ms frame exchange per path; a path is Up only while both ends hear each other (about 300 ms detection, one-way failures included), with a 2 s hold-down after a failure | always on; older peers fall back to the silence timer |
+| BFD | A 100 ms frame exchange per path; a path is Up only while both ends hear each other (500 ms detection: 5 missed 100 ms intervals; one-way failures included; per-path state, flap counts and last cause appear in the status under `transport.paths[].bfd`), with a 2 s hold-down after a failure | always on; older peers fall back to the silence timer |
 | Suspect-path replay | Bulk avoids a suspect path and its recent packets are replayed on a live path | `failover_replay` (off) |
 | Flow pinning (ECMP) | Each bulk flow sticks to one path so it arrives in order; new flows pin to the least loaded path; a flow spills to others only when its pin is busy more than 20 ms | `flow_pinning` (off) |
 | Fast reroute | Each pinned flow has a precomputed backup and flips to it on the next packet when BFD, suspect state, loss steering or a hint takes the pin out | with `flow_pinning` |
@@ -71,6 +72,7 @@ firewall. This is everything it does in those roles.
 One gateway per attached device (PS5, laptop, phone, access point) on its own adapter:
 - Answers ARP for the gateway address and sends unicast ARP probes to time the adapter-to-device leg.
 - DHCP server for the device: offer, ack and nak, 24 h lease, handing out its fixed tunnel address (10.77.0.x).
+- Persistent DHCP lease table (`.runtime/lan-leases.json`): name, address, MAC, lease state and expiry per device, saved on every ACK, release and MAC change. After a client restart each device is restored as leased, its remembered MAC is ARP-probed immediately, and the gateway announces itself with a gratuitous ARP, so a device with a valid lease is adopted again without a DHCP exchange or an `ipconfig /renew`. A remembered MAC is only a hint: any other device can still claim the address until the holder is heard from. DHCPRELEASE is honoured, expired leases are not restored, and a corrupt table starts empty.
 - Forwards the device's IPv4 into the tunnel and delivers tunnel packets back to it.
 - Device MAC is learned from the first frame or pinned with `device_mac`. Frames from any other MAC are dropped (`ForeignMACDropped`).
 - Source-address check: packets whose source is not the device's leased address are dropped (`SpoofedSourceDropped`).

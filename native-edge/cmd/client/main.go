@@ -49,6 +49,7 @@ type fileConfig struct {
 	FailoverReplay bool                         `json:"failover_replay"`
 	FlowPinning    bool                         `json:"flow_pinning"`
 	CoDel          bool                         `json:"codel"`
+	Protection     string                       `json:"protection"`
 	LinkPolicies   map[string]linkpolicy.Policy `json:"link_policies"` // keyed by interface index, as in Python
 	GameUDPPorts   []uint16                     `json:"game_udp_ports"`
 	LossTracking   bool                         `json:"loss_tracking"`
@@ -264,6 +265,9 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			return err
 		}
 		lanMgr.outbound = bridge.Send
+		if *statusPath != "" {
+			lanMgr.useLeaseTable(filepath.Join(filepath.Dir(*statusPath), "lan-leases.json"))
+		}
 		for _, d := range lanMgr.devices {
 			if d.UDPDirect && len(specs) > 0 {
 				spec := specs[0]
@@ -298,7 +302,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		specs, available = adapterwatch.PlanInventory(slots, rows, uplink.InterfaceFor)
 	}
 	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs, Available: available,
-		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay, FlowPinning: cfg.FlowPinning, CoDel: cfg.CoDel,
+		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay, FlowPinning: cfg.FlowPinning, CoDel: cfg.CoDel, Protection: cfg.Protection,
 		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking, DelayControl: cfg.DelayControl})
 	if err != nil {
 		return err
@@ -509,13 +513,13 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 	for _, p := range s.Paths {
 		paths = append(paths, map[string]any{"slot": p.Local, "ready": p.Ready, "healthy": p.Healthy, "suspect": p.Suspect,
 			"rtt_ms": p.RTTMilliseconds, "rtt_jitter_ms": p.JitterMilliseconds, "wire_tx_bytes": p.WireTX, "wire_rx_bytes": p.WireRX,
-			"policy_confirmed": p.PolicyConfirmed, "remote": p.Endpoint.String(), "mtu": mtuStatus(p, df)})
+			"bfd": p.BFD, "policy_confirmed": p.PolicyConfirmed, "remote": p.Endpoint.String(), "mtu": mtuStatus(p, df)})
 	}
 	doc := map[string]any{"pid": os.Getpid(), "created": float64(created.UnixNano()) / 1e9, "updated_at": float64(time.Now().UnixNano()) / 1e9,
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
 		"transport": map[string]any{"paths": paths, "receive": s.Receiver, "send": s.Sender, "reorder": s.Reorder, "queue": s.Queue, "loop": s.Loop},
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"dish": dishStatusDoc(), "qos":       s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status()}
+		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status()}
 	if capture != nil {
 		capture.status(doc)
 	}

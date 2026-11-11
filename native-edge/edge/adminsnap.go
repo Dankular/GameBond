@@ -24,7 +24,7 @@ func AdminSnapshot(c Config, stats map[string]any, now time.Time) map[string]any
 				paths = append(paths, map[string]any{
 					"slot": p.Local, "remote": []any{p.Endpoint.Addr().String(), int(p.Endpoint.Port())},
 					"healthy": p.Healthy, "available": p.Ready, "rtt_ms": p.RTTMilliseconds, "rtt_jitter_ms": p.JitterMilliseconds,
-					"wire_tx_bytes": p.WireTX, "wire_rx_bytes": p.WireRX,
+					"wire_tx_bytes": p.WireTX, "wire_rx_bytes": p.WireRX, "bfd": p.BFD,
 					"errors": map[string]any{"probe_lost": p.ProbeLost}})
 			}
 		}

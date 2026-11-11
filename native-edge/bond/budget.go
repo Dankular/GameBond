@@ -37,13 +37,13 @@ type Budget struct {
 	observed, lastBackoff                                                               float64
 	epochStarted                                                                        float64
 	hasEpoch                                                                            bool
-	lossSeen bool
-	lossEWMA float64
-	lossEWSet bool
+	lossSeen                                                                            bool
+	lossEWMA                                                                            float64
+	lossEWSet                                                                           bool
 	epochSent, epochDelivered, epochBulkWire, epochUnpacedWire, epochRetired            float64
 	pressureAt                                                                          float64
 	hasPressure, pressureActive                                                         bool
-	epochPressure, epochPacingWait, waitUntil, pressureRatio, lossRatio, lossAt                 float64
+	epochPressure, epochPacingWait, waitUntil, pressureRatio, lossRatio, lossAt         float64
 	growthAppLimited, appLimited, startup                                               bool
 	growthUtilization, growthAllowance, pacingWaitRatio, deliveryRate                   float64
 	congestionEpochs, delaySamples, startupIncreases                                    uint64

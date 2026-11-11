@@ -15,6 +15,6 @@
   "game_udp_ports": [3075],
   "queues": {
     "46": {"priority": true, "replicate": true, "max_age_ms": 20, "capacity": 128, "retransmissions": 0},
-    "0": {"priority": false, "replicate": false, "max_age_ms": 100, "capacity": 256, "retransmissions": 0}
+    "0": {"priority": false, "replicate": false, "max_age_ms": 400, "capacity": 256, "retransmissions": 0}
   }
 }

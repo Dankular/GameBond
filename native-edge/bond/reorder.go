@@ -50,9 +50,9 @@ type ReorderStats struct {
 	SkippedTCP, SkippedUDP, LateTCP, LateUDP uint64
 	// Lost is Skipped minus the skipped packets that arrived afterwards: packets that
 	// never came. Computed in Stats.
-	Lost, LostTCP, LostUDP uint64
-	EvictedFlows, ExpiredFlows, DroppedPackets, DroppedBytes                     uint64
-	BufferedPackets, BufferedBytes, Flows, PeakPackets, PeakBytes                int
+	Lost, LostTCP, LostUDP                                        uint64
+	EvictedFlows, ExpiredFlows, DroppedPackets, DroppedBytes      uint64
+	BufferedPackets, BufferedBytes, Flows, PeakPackets, PeakBytes int
 }
 
 // Reorder owns independent flow sequences. The server actor serializes calls.

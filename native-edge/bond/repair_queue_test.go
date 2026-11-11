@@ -21,7 +21,7 @@ func tcpPacket(payload string) []byte {
 	copy(p[40:], payload)
 	return p
 }
-func TestRepairRetainsFlowSequenceUsesFreshNonceAndStopsAfterTwo(t *testing.T) {
+func TestRepairRetainsFlowSequenceUsesFreshNonceAndStopsAfterFour(t *testing.T) {
 	f, s, a := senderFixture(t, 1)
 	var frames []Datagram
 	writer := func(d Datagram) error { frames = append(frames, d); return nil }
@@ -32,7 +32,7 @@ func TestRepairRetainsFlowSequenceUsesFreshNonceAndStopsAfterTwo(t *testing.T) {
 	}
 	original, _ := f.c.Decode(frames[0].Frame)
 	request := append([]byte(nil), original.Payload[:16]...)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < repairAttempts+1; i++ {
 		f.now = f.now.Add(20 * time.Millisecond)
 		out := f.receive(t, Repair, request, a[0])
 		s.Controls(out, f.now, writer)
@@ -41,14 +41,14 @@ func TestRepairRetainsFlowSequenceUsesFreshNonceAndStopsAfterTwo(t *testing.T) {
 		}
 	}
 	// the third request is past the attempt limit: it is answered with REPAIR_NA
-	if len(frames) != 4 || s.Stats().RepairUnavailableSent != 1 || s.Stats().RepairCopies != 2 || s.Stats().Copies != 3 || s.Stats().PayloadPackets != 1 {
+	if len(frames) != repairAttempts+2 || s.Stats().RepairUnavailableSent != 1 || s.Stats().RepairCopies != repairAttempts || s.Stats().Copies != repairAttempts+1 || s.Stats().PayloadPackets != 1 {
 		t.Fatal("repair attempts or payload accounting differ", s.Stats(), len(frames))
 	}
-	na, err := f.c.Decode(frames[3].Frame)
-	if err != nil || na.Header.Kind != RepairNA || !bytes.Equal(na.Payload, request) || frames[3].Endpoint != a[0] {
+	na, err := f.c.Decode(frames[repairAttempts+1].Frame)
+	if err != nil || na.Header.Kind != RepairNA || !bytes.Equal(na.Payload, request) || frames[repairAttempts+1].Endpoint != a[0] {
 		t.Fatal("expected REPAIR_NA for the exhausted request", err)
 	}
-	for _, d := range frames[1:3] {
+	for _, d := range frames[1 : repairAttempts+1] {
 		packet, err := f.c.Decode(d.Frame)
 		if err != nil || packet.Header.Sequence <= original.Header.Sequence || !bytes.Equal(packet.Payload[:16], original.Payload[:16]) || !bytes.Equal(packet.Payload[24:], payload) {
 			t.Fatal("repair reused nonce or changed inner packet", err)
@@ -72,13 +72,13 @@ func TestReceiveHolesRequestBoundedTCPRepairsWithoutBlockingUrgent(t *testing.T)
 		requests = append(requests, packet)
 		return nil
 	}
-	for _, at := range []time.Duration{16, 60, 110} {
+	for _, at := range []time.Duration{16, 60, 110, 160, 210} {
 		if err := s.Maintenance(f.now.Add(at*time.Millisecond), writer); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(requests) != 2 {
-		t.Fatal("missing TCP range not bounded to two repair attempts", len(requests))
+	if len(requests) != repairAttempts {
+		t.Fatal("missing TCP range not bounded to the repair attempt limit", len(requests))
 	}
 	for _, p := range requests {
 		if p.Header.Kind != Repair || binary.BigEndian.Uint64(p.Payload) != 77 || binary.BigEndian.Uint64(p.Payload[8:]) != 0 {
@@ -91,8 +91,8 @@ func TestReceiveHolesRequestBoundedTCPRepairsWithoutBlockingUrgent(t *testing.T)
 	}
 	// UDP/game packets never trigger this TCP repair mechanism.
 	f.receive(t, Striped, stripe(88, 1, 1, []byte("not TCP")), a[0])
-	s.Maintenance(f.now.Add(150*time.Millisecond), writer)
-	if len(requests) != 2 {
+	s.Maintenance(f.now.Add(250*time.Millisecond), writer)
+	if len(requests) != repairAttempts {
 		t.Fatal("UDP was retransmitted as TCP")
 	}
 }
@@ -129,7 +129,7 @@ func TestTransmitQueueAdmitsUrgentDuringBulkPressureAndOwnsBuffers(t *testing.T)
 		t.Fatal("bulk pressure blocked ACK or queue borrowed memory", q.Stats())
 	}
 	q.Pump(expires, writer)
-	if q.Stats().Expired != 1 || q.Stats().QueuedPackets != 0 || q.Stats().QueuedBytes != 0 {
+	if q.Stats().Expired != 1 || q.Stats().ExpiredBulk != 1 || q.Stats().ExpiredPriority != 0 || q.Stats().QueuedPackets != 0 || q.Stats().QueuedBytes != 0 {
 		t.Fatal("expired bulk retained", q.Stats())
 	}
 }
@@ -215,5 +215,27 @@ func TestUnknownRepairIsAnsweredOnceWithNAOnItsPath(t *testing.T) {
 	s.Controls(f.receive(t, Repair, known, a[0]), f.now, writer)
 	if len(frames) != n || s.Stats().RepairUnavailableSent != 1 {
 		t.Fatalf("stale-but-queued request answered NA: %+v", s.Stats())
+	}
+}
+
+func TestRepairRequestGoesOutOnEveryReadyPath(t *testing.T) {
+	f, s, a := senderFixture(t, 2)
+	f.r.reorder.config.Timeout = 200 * time.Millisecond
+	f.receive(t, Striped, stripe(77, 1, 1, tcpPacket("later")), a[0])
+	targets := map[string]int{}
+	writer := func(d Datagram) error {
+		if p, err := f.c.Decode(d.Frame); err == nil && p.Header.Kind == Repair {
+			targets[d.Endpoint.String()]++
+		}
+		return nil
+	}
+	if err := s.Maintenance(f.now.Add(20*time.Millisecond), writer); err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("repair request used %d path(s), want both: %v", len(targets), targets)
+	}
+	if s.Stats().RepairRequests != 1 {
+		t.Fatalf("one hole counted as %d requests", s.Stats().RepairRequests)
 	}
 }

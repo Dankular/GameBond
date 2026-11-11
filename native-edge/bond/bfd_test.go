@@ -39,3 +39,22 @@ func TestBFDDetectsOneWayFailureAndHoldsDown(t *testing.T) {
 		t.Fatal("silence not detected within detect time")
 	}
 }
+
+func TestBFDStatusReportsFlapsAndCause(t *testing.T) {
+	r := &Receiver{}
+	p := &receivePath{}
+	t0 := time.Unix(1000, 0)
+	if p.bfdStatus(t0)["state"] != "off" {
+		t.Fatal("unmanaged path should report off")
+	}
+	r.bfdReceived(p, []byte{1, bfdMultiplier, 100, 0, 0, 0, 0, 0}, t0)
+	st := p.bfdStatus(t0)
+	if st["state"] != "up" || st["downs"].(uint64) != 0 {
+		t.Fatalf("%v", st)
+	}
+	r.bfdEvaluate(p, t0.Add(time.Second)) // silent for 1 s: beyond 500 ms detect time
+	st = p.bfdStatus(t0.Add(time.Second))
+	if st["state"] != "down" || st["downs"].(uint64) != 1 || st["last_cause"] != "silence" || st["detect_ms"].(int) != 500 {
+		t.Fatalf("%v", st)
+	}
+}

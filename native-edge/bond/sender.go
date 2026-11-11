@@ -25,6 +25,7 @@ type sendFlow struct {
 	// flow pinning (pin.go)
 	pin, backup *receivePath
 }
+
 // Loss steering: measured loss at or above lossSteerRatio, measured within lossSteerLife
 // seconds, moves bulk off a path while another path is cleaner.
 const (
@@ -33,7 +34,7 @@ const (
 	lossSteerHold  = 3.0  // seconds a path stays out once steered away
 )
 
-type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, RepairUnavailableSent, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped, LossSteered, BulkDuplicates, ParitySent, FlowsPinned, FastReroutes, PinSpills uint64 }
+type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, RepairUnavailableSent, RepairExhausted, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped, LossSteered, BulkDuplicates, BulkDupSkipped, ParitySent, FlowsPinned, FastReroutes, PinSpills uint64 }
 
 // Sender is the actor-owned transmit half. A caller retries a pending bulk
 // packet at the returned time, servicing Receive/Tick/urgent queues meanwhile.
@@ -56,6 +57,8 @@ type Sender struct {
 	nextRepairRequest time.Time
 	failover          bool
 	pinning           bool
+	protectName       string
+	fecAt, dupAt      float64
 	lossTracking      bool
 	replayQueue       []replayItem
 	hints             map[int]pathHint
@@ -274,7 +277,7 @@ func (s *Sender) Controls(result ReceiveResult, now time.Time, writer DatagramWr
 	s.syncPeer()
 	for i, key := range result.Repairs {
 		cached := s.repairs[key]
-		if cached == nil || now.Sub(cached.at) >= time.Second || cached.attempts >= 2 {
+		if cached == nil || now.Sub(cached.at) >= time.Second || cached.attempts >= repairAttempts {
 			// Tell the requester to stop waiting: one answer per request (a
 			// key already queued for repair is not answered).
 			if s.repairRequests[key] == nil && i < len(result.RepairPaths) {
@@ -301,7 +304,7 @@ func (s *Sender) Controls(result ReceiveResult, now time.Time, writer DatagramWr
 	for _, key := range result.Unavailable {
 		// The peer will never repair this packet: stop asking.
 		if asked := s.asked[key]; asked != nil {
-			asked.at, asked.attempts = now, 99
+			asked.at, asked.attempts, asked.exhausted = now, 99, true
 		}
 	}
 	for _, d := range result.Send {
@@ -606,6 +609,7 @@ type PathSnapshot struct {
 	MTUAcks, MTUSkips                                uint64
 	PolicyConfirmed                                  bool
 	Suspect                                          bool
+	BFD                                              map[string]any
 	Local                                            int // client uplink index (socket slot)
 }
 
@@ -617,7 +621,7 @@ func (s *Sender) Paths(now time.Time) []PathSnapshot {
 			copy := *p.policy
 			policy = &copy
 		}
-		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats(), mtuStats(p), p.mtuAcks, p.mtuSkips, p.policyConfirmed, p.suspect, p.local})
+		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats(), mtuStats(p), p.mtuAcks, p.mtuSkips, p.policyConfirmed, p.suspect, p.bfdStatus(now), p.local})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if c := out[i].Endpoint.Compare(out[j].Endpoint); c != 0 {

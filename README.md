@@ -11,7 +11,7 @@ Stripes bulk traffic across IPv4 uplinks and duplicates selected traffic for res
 - Dashboard and tray controls for connection health and app traffic.
 - Connected devices: a console on a spare (USB) adapter gets its own bond address ([setup](docs/lan-devices.md)).
 - Loss resilience: reorder buffer, TCP repair, parity FEC, adaptive duplication and loss steering.
-- Fast failover: BFD path detection (~300 ms), fast reroute, ECMP-style flow pinning.
+- Fast failover: BFD path detection (500 ms), fast reroute, ECMP-style flow pinning.
 - Queueing: per-flow fair queue with CoDel and ECN marking, DSCP classes.
 
 The full list with config flags is in [FEATURES.md](FEATURES.md).

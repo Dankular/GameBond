@@ -2,6 +2,7 @@ package bond
 
 import (
 	"bytes"
+	"encoding/binary"
 	"net/netip"
 	"testing"
 	"time"
@@ -15,9 +16,14 @@ type sentFrame struct {
 
 // sendProtected sends n distinct bulk packets (varying lengths) with the given
 // smoothed loss on path 0 and returns every frame the sender wrote.
-func sendProtected(t *testing.T, loss float64, n int) ([][]byte, []sentFrame, *Sender) {
+func sendProtected(t *testing.T, loss float64, n int, mode ...string) ([][]byte, []sentFrame, *Sender) {
 	t.Helper()
 	f, s, a := senderFixture(t, 2)
+	for _, m := range mode {
+		if err := s.SetProtection(m); err != nil {
+			t.Fatal(err)
+		}
+	}
 	p0 := f.r.paths[pk(a[0])]
 	ts := f.r.seconds(f.now)
 	p0.budget.lossSeen, p0.budget.lossAt, p0.budget.lossEWMA, p0.budget.lossEWSet = true, ts, loss, true
@@ -163,5 +169,162 @@ func TestNoProtectionWhenClean(t *testing.T) {
 	}
 	if s.Stats().BulkDuplicates != 0 {
 		t.Fatal("duplicated on a clean path")
+	}
+}
+
+func TestProtectionPresetsMoveTheThresholds(t *testing.T) {
+	count := func(frames []sentFrame) (parity int) {
+		for _, fr := range frames {
+			if fr.kind == Parity {
+				parity++
+			}
+		}
+		return
+	}
+	// off: even 3% loss gets nothing extra.
+	_, frames, s := sendProtected(t, 0.03, 16, "off")
+	if count(frames) != 0 || s.Stats().BulkDuplicates != 0 {
+		t.Fatal("off still added redundancy")
+	}
+	// max: a clean path is still duplicated.
+	_, _, s = sendProtected(t, 0, 8, "max")
+	if s.Stats().BulkDuplicates == 0 {
+		t.Fatal("max did not duplicate on a clean path")
+	}
+	// 0.2% loss: normal does nothing, high sends parity.
+	_, frames, s = sendProtected(t, 0.002, 16, "normal")
+	if count(frames) != 0 {
+		t.Fatal("normal acted below its threshold")
+	}
+	_, frames, s = sendProtected(t, 0.002, 16, "high")
+	if count(frames) == 0 {
+		t.Fatal("high did not send parity at 0.2%")
+	}
+	if err := s.SetProtection("bogus"); err == nil {
+		t.Fatal("accepted an unknown preset")
+	}
+}
+
+func TestTCPPresetCopiesTCPAndSmallUDPOnly(t *testing.T) {
+	f, s, a := senderFixture(t, 2)
+	if err := s.SetProtection("tcp"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range a {
+		f.r.paths[pk(k)].last = f.now
+	}
+	udp := udpOfSize(600) // large UDP: bulk, not copied
+	send := func(payload []byte, i int) {
+		for tries := 0; tries < 500; tries++ {
+			now := f.now.Add(time.Duration(i*10+tries) * time.Millisecond)
+			for _, k := range a {
+				f.r.paths[pk(k)].last = now
+			}
+			if ok, _, err := s.Bulk(payload, "flow", now, func(Datagram) error { return nil }); err != nil {
+				t.Fatal(err)
+			} else if ok {
+				return
+			}
+		}
+		t.Fatal("never sent")
+	}
+	for i := 0; i < 5; i++ {
+		send(tcpPacket("data"), i)
+	}
+	if got := s.Stats().BulkDuplicates; got != 5 {
+		t.Fatalf("tcp preset copied %d of 5 TCP packets", got)
+	}
+	for i := 5; i < 10; i++ {
+		send(udp, i)
+	}
+	if got := s.Stats().BulkDuplicates; got != 5 {
+		t.Fatalf("tcp preset copied large UDP: %d duplicates", got)
+	}
+	small := udpOfSize(40)
+	for i := 10; i < 15; i++ {
+		send(small, i)
+	}
+	if got := s.Stats().BulkDuplicates; got != 10 {
+		t.Fatalf("tcp preset copied %d of 5 small UDP packets", got-5)
+	}
+}
+
+// When the copy cannot go out, the packet falls back to a parity group instead of
+// travelling alone.
+func TestTCPPresetFallsBackToParityWhenNoCopyFits(t *testing.T) {
+	f, s, a := senderFixture(t, 2)
+	if err := s.SetProtection("tcp"); err != nil {
+		t.Fatal(err)
+	}
+	// Both links look quiet, so no path may take a copy.
+	for _, k := range a {
+		f.r.paths[pk(k)].last = f.now.Add(-400 * time.Millisecond)
+	}
+	var parity int
+	writer := func(d Datagram) error {
+		if p, err := f.c.Decode(d.Frame); err == nil && p.Header.Kind == Parity {
+			parity++
+		}
+		return nil
+	}
+	sent := 0
+	for i := 0; i < 2000 && sent < 16; i++ {
+		now := f.now.Add(time.Duration(i) * time.Millisecond)
+		for _, k := range a {
+			f.r.paths[pk(k)].last = now.Add(-400 * time.Millisecond)
+		}
+		if ok, _, err := s.Bulk(tcpPacket("data"), "flow", now, writer); err != nil {
+			t.Fatal(err)
+		} else if ok {
+			sent++
+		}
+	}
+	if s.Stats().BulkDupSkipped == 0 || parity == 0 || s.Stats().ParitySent == 0 {
+		t.Fatalf("no parity fallback: skipped=%d parity=%d %+v", s.Stats().BulkDupSkipped, parity, s.Stats())
+	}
+}
+
+// udpOfSize builds a valid IPv4/UDP datagram with n payload bytes.
+func udpOfSize(n int) []byte {
+	p := make([]byte, 28+n)
+	p[0] = 0x45
+	binary.BigEndian.PutUint16(p[2:], uint16(len(p)))
+	p[9] = 17
+	copy(p[12:16], []byte{10, 77, 0, 2})
+	copy(p[16:20], []byte{1, 1, 1, 1})
+	binary.BigEndian.PutUint16(p[20:], 5000)
+	binary.BigEndian.PutUint16(p[22:], 27015)
+	binary.BigEndian.PutUint16(p[24:], uint16(8+n))
+	return p
+}
+
+// A line whose window is full still takes the copy: redundancy does not queue
+// behind the traffic it protects.
+func TestTCPPresetCopiesOntoAFullWindow(t *testing.T) {
+	f, s, a := senderFixture(t, 2)
+	if err := s.SetProtection("tcp"); err != nil {
+		t.Fatal(err)
+	}
+	full := f.r.paths[pk(a[1])]
+	for i := 0; i < maxPending; i++ {
+		full.budget.Sent(uint64(1000+i), 1400, 0)
+	}
+	if ready, _ := full.budget.ReadyAt(1400, 0); ready <= 0.01 {
+		t.Fatal("fixture: window not full")
+	}
+	sent := 0
+	for i := 0; i < 2000 && sent < 10; i++ {
+		now := f.now.Add(time.Duration(i) * time.Millisecond)
+		for _, k := range a {
+			f.r.paths[pk(k)].last = now
+		}
+		if ok, _, err := s.Bulk(tcpPacket("data"), "flow", now, func(Datagram) error { return nil }); err != nil {
+			t.Fatal(err)
+		} else if ok {
+			sent++
+		}
+	}
+	if sent < 10 || s.Stats().BulkDuplicates != uint64(sent) || s.Stats().BulkDupSkipped != 0 {
+		t.Fatalf("sent %d, copies %d, skipped %d", sent, s.Stats().BulkDuplicates, s.Stats().BulkDupSkipped)
 	}
 }

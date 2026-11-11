@@ -1,8 +1,8 @@
 package bond
 
 import (
-	"time"
 	"testing"
+	"time"
 )
 
 func steerPacket() []byte {

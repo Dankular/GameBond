@@ -20,6 +20,8 @@ type askedRepair struct {
 	at       time.Time
 	attempts int
 	order    *list.Element
+	// exhausted marks a hole that used every attempt and is still missing.
+	exhausted bool
 }
 
 // A 100 Mbps bulk flow is about 10,000 packets a second, so the old 2048-entry
@@ -29,6 +31,12 @@ type askedRepair struct {
 const (
 	repairCacheMax = 16384
 	repairBatch    = 16
+	// A hole is asked for up to repairAttempts times. Each ask goes out on every
+	// ready path, and the answering copy prefers a path other than the one that last
+	// carried the packet, so one lossy link cannot swallow both the request and the
+	// answer.
+	repairAttempts   = 4
+	repairOriginBias = 0.015 // seconds added to the path that last carried the packet
 )
 
 func repairable(packet []byte) bool {
@@ -102,19 +110,34 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		if len(missing) > 0 {
 			s.nextRepairRequest = now.Add(5 * time.Millisecond)
 		}
+		// Space asks so a copy can arrive before the next one goes out.
+		gap := time.Duration(math.Min(.08, math.Max(.03, maximum*.75)) * float64(time.Second))
 		for _, key := range missing {
 			asked := s.asked[key]
-			if asked != nil && (asked.attempts >= 2 || now.Sub(asked.at) < 40*time.Millisecond) {
+			if asked != nil && asked.attempts >= repairAttempts {
+				if !asked.exhausted {
+					asked.exhausted = true
+					s.stats.RepairExhausted++
+				}
+				continue
+			}
+			if asked != nil && now.Sub(asked.at) < gap {
 				continue
 			}
 			body := make([]byte, 16)
 			binary.BigEndian.PutUint64(body, key.Flow)
 			binary.BigEndian.PutUint64(body[8:], key.Number)
-			frame, err := s.r.codec.Encode(Repair, body)
-			if err != nil {
-				return err
+			sent := false
+			for _, p := range paths {
+				frame, err := s.r.codec.Encode(Repair, body)
+				if err != nil {
+					return err
+				}
+				if s.written(Datagram{Endpoint: p.endpoint, Frame: frame, Local: p.local}, p, now, writer) {
+					sent = true
+				}
 			}
-			if s.written(Datagram{Endpoint: best.endpoint, Frame: frame, Local: best.local}, best, now, writer) {
+			if sent {
 				if asked == nil {
 					asked = &askedRepair{key: key}
 					asked.order = s.askedOrder.PushBack(asked)
@@ -133,7 +156,7 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		e := s.requestOrder.Front()
 		key := e.Value.(MissingPacket)
 		cached := s.repairs[key]
-		if cached == nil || cached.attempts >= 2 {
+		if cached == nil || cached.attempts >= repairAttempts {
 			delete(s.repairRequests, key)
 			s.requestOrder.Remove(e)
 			continue
@@ -155,6 +178,9 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 				probe = p.rtt
 			}
 			score := ready + p.budget.TransitSeconds(size, probe)
+			if p == cached.origin {
+				score += repairOriginBias
+			}
 			if score < bestScore {
 				bestScore = score
 				target = p
