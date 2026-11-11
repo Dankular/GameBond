@@ -78,6 +78,7 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		delete(s.asked, old.key)
 		s.askedOrder.Remove(old.order)
 	}
+	s.flushParity(now, writer)
 	if s.failover {
 		if err := s.failoverStep(now, writer); err != nil {
 			return err

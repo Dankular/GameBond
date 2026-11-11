@@ -15,6 +15,9 @@ import (
 //	high    parity from 0.1%, duplication from 0.5%
 //	tcp     as high, and every TCP data packet is also copied onto a second path
 //	        (UDP, such as games and voice, keeps the loss-triggered tiers)
+//	auto    cheap cover: TCP data in parity groups (about 1/8 extra), small packets
+//	        (ACKs, handshakes, games, voice) copied, full duplication only when a
+//	        path is failing, silent or hinted
 //	max     bulk is always duplicated while two paths are ready
 type protectionPreset struct{ fec, dup float64 }
 
@@ -24,6 +27,7 @@ var protectionPresets = map[string]protectionPreset{
 	"normal": {fecRatio, dupRatio},
 	"high":   {0.001, 0.005},
 	"tcp":    {0.001, 0.005},
+	"auto":   {0.001, 0.005},
 	"max":    {0, 0},
 }
 
@@ -34,7 +38,7 @@ func (s *Sender) SetProtection(name string) error {
 	}
 	p, ok := protectionPresets[name]
 	if !ok {
-		return fmt.Errorf("unknown protection %q (off, low, normal, high, tcp, max)", name)
+		return fmt.Errorf("unknown protection %q (off, low, normal, high, tcp, auto, max)", name)
 	}
 	s.protectName, s.fecAt, s.dupAt = name, p.fec, p.dup
 	return nil

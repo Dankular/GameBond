@@ -357,3 +357,59 @@ func TestTCPPresetCopiesAreTrackedForFeedback(t *testing.T) {
 		t.Fatalf("sent %d copies %d but budgets track %d", sent, s.Stats().BulkDuplicates, tracked)
 	}
 }
+
+func autoFixture(t *testing.T) (receiverFixture, *Sender, []netip.AddrPort) {
+	f, s, a := senderFixture(t, 2)
+	if err := s.SetProtection("auto"); err != nil {
+		t.Fatal(err)
+	}
+	return f, s, a
+}
+
+func autoSend(t *testing.T, f receiverFixture, s *Sender, a []netip.AddrPort, pkt []byte, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		now := f.now.Add(time.Duration(i) * 10 * time.Millisecond)
+		for _, k := range a {
+			f.r.paths[pk(k)].last = now
+		}
+		if _, _, err := s.Bulk(pkt, "flow", now, func(Datagram) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Large TCP data costs about 1/fecK extra, not a full copy; small packets are
+// copied outright.
+func TestAutoPresetCoversTCPWithParityAndCopiesSmallPackets(t *testing.T) {
+	f, s, a := autoFixture(t)
+	autoSend(t, f, s, a, tcpPacket(string(make([]byte, 1000))), 16)
+	st := s.Stats()
+	if st.BulkDuplicates != 0 || st.ParitySent != 2 {
+		t.Fatalf("large TCP: copies %d parity %d", st.BulkDuplicates, st.ParitySent)
+	}
+	f, s, a = autoFixture(t)
+	autoSend(t, f, s, a, tcpPacket("ack"), 8)
+	if s.Stats().BulkDuplicates != 8 {
+		t.Fatalf("small TCP not copied: %d", s.Stats().BulkDuplicates)
+	}
+}
+
+// The tail of a burst (a partly filled group) is covered once the flow goes quiet.
+func TestAutoPresetFlushesTheTailOfABurst(t *testing.T) {
+	f, s, a := autoFixture(t)
+	autoSend(t, f, s, a, tcpPacket(string(make([]byte, 1000))), 3)
+	if s.Stats().ParitySent != 0 {
+		t.Fatal("parity sent before the group was full or idle")
+	}
+	end := f.now.Add(25 * time.Millisecond)
+	for _, k := range a {
+		f.r.paths[pk(k)].last = end
+	}
+	if err := s.Maintenance(end, func(Datagram) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if s.Stats().ParitySent != 1 || len(s.parityOpen) != 0 {
+		t.Fatalf("tail not flushed: parity %d open %d", s.Stats().ParitySent, len(s.parityOpen))
+	}
+}

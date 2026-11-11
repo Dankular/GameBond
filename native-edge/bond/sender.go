@@ -22,6 +22,7 @@ type sendFlow struct {
 	fecBase uint64
 	fecMask uint8
 	fecXor  []byte
+	fecPath *receivePath // path the group's newest packet used
 	// flow pinning (pin.go)
 	pin, backup *receivePath
 }
@@ -41,6 +42,7 @@ type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, P
 type Sender struct {
 	r                 *Receiver
 	flows             map[string]*sendFlow
+	parityOpen        map[*sendFlow]struct{} // flows holding a partly filled parity group
 	lru               list.List
 	bulkClock         float64
 	peer              [16]byte
@@ -140,6 +142,7 @@ func (s *Sender) Stats() SenderStats { return s.stats }
 func (s *Sender) syncPeer() {
 	if s.r.handshake.hasPeer && (!s.hasPeer || s.peer != s.r.handshake.peer) {
 		clear(s.flows)
+		clear(s.parityOpen)
 		s.lru.Init()
 		s.bulkClock = 0
 		s.peer = s.r.handshake.peer

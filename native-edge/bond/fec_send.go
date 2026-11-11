@@ -62,6 +62,21 @@ func (s *Sender) bulkProtect(f *sendFlow, number uint64, payload []byte, used *r
 	if tcpMode && level != protectDuplicate && (repairable(payload) || smallUDP(payload)) {
 		level = protectDuplicate
 	}
+	// The auto preset is the cheap version: TCP data rides in a parity group
+	// (about 1/fecK extra), small packets (ACKs, handshakes, games, voice) are
+	// copied outright, and only a failing or silent path earns full duplication.
+	autoMode := s.protectName == "auto" && len(paths) > 1
+	if autoMode && level != protectDuplicate {
+		switch {
+		case smallUDP(payload) || (repairable(payload) && len(payload) <= autoSmallPacket):
+			level = protectDuplicate
+		case repairable(payload):
+			level = protectParity
+		}
+	}
+	if autoMode {
+		tcpMode = true // failed copies fall back to parity
+	}
 	if level != protectParity && !(tcpMode && level == protectDuplicate) {
 		f.fecMask = 0
 	}
@@ -106,7 +121,7 @@ func (s *Sender) other(used *receivePath, paths []*receivePath, size int, now ti
 
 func (s *Sender) duplicate(f *sendFlow, number uint64, payload []byte, used *receivePath, paths []*receivePath, now time.Time, writer DatagramWriter) bool {
 	size := len(payload) + Overhead + 24
-	ungated := s.protectName == "tcp"
+	ungated := s.protectName == "tcp" || s.protectName == "auto"
 	target := s.other(used, paths, size, now, ungated)
 	if target == nil {
 		s.stats.BulkDupSkipped++
@@ -132,6 +147,33 @@ func (s *Sender) duplicate(f *sendFlow, number uint64, payload []byte, used *rec
 	}
 	s.stats.BulkDupSkipped++
 	return false
+}
+
+// autoSmallPacket is the largest TCP payload the auto preset copies outright.
+const autoSmallPacket = 160
+
+// parityFlushAfter is how long a partly filled parity group may wait for its next
+// packet before its parity goes out anyway. It covers the tail of a burst, which
+// would otherwise sit unprotected until the flow sent again.
+const parityFlushAfter = 3 * time.Millisecond
+
+// flushParity sends the parity of groups whose flow has gone quiet.
+func (s *Sender) flushParity(now time.Time, writer DatagramWriter) {
+	if len(s.parityOpen) == 0 {
+		return
+	}
+	paths := s.eligible(now, true)
+	for f := range s.parityOpen {
+		if now.Sub(f.last) < parityFlushAfter {
+			continue
+		}
+		if len(paths) == 0 || f.fecPath == nil {
+			f.fecMask, f.fecXor = 0, f.fecXor[:0]
+			delete(s.parityOpen, f)
+			continue
+		}
+		s.emitParity(f, f.fecPath, paths, now, writer)
+	}
 }
 
 // smallUDP is a UDP datagram small enough to be game or voice traffic: cheap to
@@ -162,6 +204,11 @@ func (s *Sender) accumulateParity(f *sendFlow, number uint64, payload []byte, us
 		f.fecXor[2+i] ^= b
 	}
 	f.fecMask |= 1 << (number - base)
+	f.fecPath = used
+	if s.parityOpen == nil {
+		s.parityOpen = make(map[*sendFlow]struct{})
+	}
+	s.parityOpen[f] = struct{}{}
 	if number%fecK == fecK-1 {
 		s.emitParity(f, used, paths, now, writer)
 	}
@@ -177,6 +224,7 @@ func (s *Sender) emitParity(f *sendFlow, used *receivePath, paths []*receivePath
 	body[16] = f.fecMask
 	copy(body[parityHeader:], f.fecXor)
 	f.fecMask, f.fecXor = 0, f.fecXor[:0]
+	delete(s.parityOpen, f)
 	size := len(body) + Overhead
 	// Parity travels on a different path than the data when one is ready, so a
 	// single-path loss burst cannot take both.
