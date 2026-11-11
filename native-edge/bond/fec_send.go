@@ -122,11 +122,10 @@ func (s *Sender) duplicate(f *sendFlow, number uint64, payload []byte, used *rec
 		return false
 	}
 	if s.written(Datagram{Endpoint: target.endpoint, Frame: frame, Local: target.local}, target, now, writer) {
-		if ungated {
-			target.budget.UnpacedSent(len(frame), s.r.seconds(now), false)
-		} else {
-			target.budget.Sent(binary.BigEndian.Uint64(frame[37:]), len(frame), s.r.seconds(now))
-		}
+		// Always tracked: the receiver acknowledges this frame's sequence, and an
+		// untracked sequence makes that path's feedback get rejected (everything
+		// then times out and the feedback-timeout ratio reads 100%).
+		target.budget.Sent(binary.BigEndian.Uint64(frame[37:]), len(frame), s.r.seconds(now))
 		s.stats.Copies++
 		s.stats.BulkDuplicates++
 		return true

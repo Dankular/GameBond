@@ -328,3 +328,32 @@ func TestTCPPresetCopiesOntoAFullWindow(t *testing.T) {
 		t.Fatalf("sent %d, copies %d, skipped %d", sent, s.Stats().BulkDuplicates, s.Stats().BulkDupSkipped)
 	}
 }
+
+// Every copy is tracked by its line's budget: the receiver acknowledges the copy's
+// sequence, and feedback for an untracked sequence is rejected (the line then reads
+// 100% feedback timeouts).
+func TestTCPPresetCopiesAreTrackedForFeedback(t *testing.T) {
+	f, s, a := senderFixture(t, 2)
+	if err := s.SetProtection("tcp"); err != nil {
+		t.Fatal(err)
+	}
+	sent := 0
+	for i := 0; i < 200 && sent < 20; i++ {
+		now := f.now.Add(time.Duration(i) * 10 * time.Millisecond)
+		for _, k := range a {
+			f.r.paths[pk(k)].last = now
+		}
+		if ok, _, err := s.Bulk(tcpPacket("data"), "flow", now, func(Datagram) error { return nil }); err != nil {
+			t.Fatal(err)
+		} else if ok {
+			sent++
+		}
+	}
+	var tracked uint64
+	for _, k := range a {
+		tracked += f.r.paths[pk(k)].budget.sentPackets
+	}
+	if sent < 20 || s.Stats().BulkDuplicates == 0 || tracked != uint64(sent)+s.Stats().BulkDuplicates {
+		t.Fatalf("sent %d copies %d but budgets track %d", sent, s.Stats().BulkDuplicates, tracked)
+	}
+}
