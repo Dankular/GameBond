@@ -70,6 +70,7 @@ func NewBudget(initial, maximum float64) (*Budget, error) {
 func validTime(now float64) bool   { return finite(now) && now >= 0 }
 func validSize(size int) bool      { return size >= 1 && size <= 65535 }
 func (b *Budget) Timeout() float64 { return math.Min(2, math.Max(.25, 4*b.rawSRTT)*b.rtoBackoff) }
+
 // AckStalled reports a path that is sending but hearing nothing back: the oldest
 // unacknowledged packet is older than limit seconds and no acknowledgement has
 // been accepted for that long. It is a passive loss-of-path signal that needs no

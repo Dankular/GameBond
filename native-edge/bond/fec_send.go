@@ -35,8 +35,15 @@ func (s *Sender) protectionLevel(paths []*receivePath, now time.Time) protection
 	fecAt, dupAt := s.thresholds()
 	ts := s.r.seconds(now)
 	worst := 0.
+	if s.protectName == "auto" && now.Before(s.coverUntil) {
+		return protectDuplicate
+	}
 	for _, p := range paths {
 		worst = math.Max(worst, s.lossEstimate(p, ts))
+		if s.protectName == "auto" && autoDelaySpike(p) {
+			s.coverUntil = now.Add(autoCoverHold)
+			return protectDuplicate
+		}
 		if s.hinted(p.local, now) || s.atRisk(p, now) {
 			return protectDuplicate
 		}
@@ -149,6 +156,16 @@ func (s *Sender) duplicate(f *sendFlow, number uint64, payload []byte, used *rec
 	return false
 }
 
+// autoCoverHold is how long the auto preset keeps copying everything after it sees
+// trouble (the peer asking for repairs, or a path's queue delay jumping).
+const autoCoverHold = 5 * time.Second
+
+// autoDelaySpike reports a path whose delay has jumped well above its floor: a
+// hotspot or satellite link doing this is about to drop a burst.
+func autoDelaySpike(p *receivePath) bool {
+	return p.budget.hasMin && p.budget.srtt-p.budget.minRTT > .025
+}
+
 // autoSmallPacket is the largest TCP payload the auto preset copies outright.
 const autoSmallPacket = 160
 
@@ -228,7 +245,7 @@ func (s *Sender) emitParity(f *sendFlow, used *receivePath, paths []*receivePath
 	size := len(body) + Overhead
 	// Parity travels on a different path than the data when one is ready, so a
 	// single-path loss burst cannot take both.
-	target := s.other(used, paths, size, now, false)
+	target := s.other(used, paths, size, now, s.protectName == "tcp" || s.protectName == "auto")
 	if target == nil {
 		target = used
 	}

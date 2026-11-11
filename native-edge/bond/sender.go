@@ -43,6 +43,7 @@ type Sender struct {
 	r                 *Receiver
 	flows             map[string]*sendFlow
 	parityOpen        map[*sendFlow]struct{} // flows holding a partly filled parity group
+	coverUntil        time.Time              // auto preset: full duplication until then
 	lru               list.List
 	bulkClock         float64
 	peer              [16]byte
@@ -278,6 +279,11 @@ func (s *Sender) cancelProbe(d Datagram) {
 // A denied control write is retried by protocol timers, as in the Python Node.
 func (s *Sender) Controls(result ReceiveResult, now time.Time, writer DatagramWriter) {
 	s.syncPeer()
+	if len(result.Repairs) > 0 && s.protectName == "auto" {
+		// The peer is missing packets from us: something is dropping them right now,
+		// so every packet is copied for the next few seconds.
+		s.coverUntil = now.Add(autoCoverHold)
+	}
 	for i, key := range result.Repairs {
 		cached := s.repairs[key]
 		if cached == nil || now.Sub(cached.at) >= time.Second || cached.attempts >= repairAttempts {

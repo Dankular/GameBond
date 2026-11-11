@@ -20,7 +20,7 @@ const (
 	// lost while detection catches up.
 	riskFloor         = 150 * time.Millisecond
 	ackStallFloor     = 60 * time.Millisecond // least silence that marks a busy path stalled
-	failoverPathLimit = 1.5 // seconds; half of the 3s eligibility timeout
+	failoverPathLimit = 1.5                   // seconds; half of the 3s eligibility timeout
 )
 
 type replayItem struct{ key MissingPacket }

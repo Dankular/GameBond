@@ -413,3 +413,31 @@ func TestAutoPresetFlushesTheTailOfABurst(t *testing.T) {
 		t.Fatalf("tail not flushed: parity %d open %d", s.Stats().ParitySent, len(s.parityOpen))
 	}
 }
+
+// Trouble switches the auto preset to full duplication for a few seconds: a repair
+// request from the peer, or a path whose delay jumps.
+func TestAutoPresetEscalatesToFullCopiesOnTrouble(t *testing.T) {
+	big := tcpPacket(string(make([]byte, 1000)))
+	f, s, a := autoFixture(t)
+	autoSend(t, f, s, a, big, 8)
+	if s.Stats().BulkDuplicates != 0 {
+		t.Fatalf("copied large TCP with no trouble: %d", s.Stats().BulkDuplicates)
+	}
+	f, s, a = autoFixture(t)
+	s.Controls(ReceiveResult{Repairs: []MissingPacket{{Flow: 1, Number: 1}}}, f.now, func(Datagram) error { return nil })
+	if !s.coverUntil.After(f.now) {
+		t.Fatal("repair request did not start cover")
+	}
+	autoSend(t, f, s, a, big, 8)
+	if got := s.Stats().BulkDuplicates; got != 8 {
+		t.Fatalf("copied %d of 8 during cover", got)
+	}
+
+	f, s, a = autoFixture(t)
+	slow := f.r.paths[pk(a[1])]
+	slow.budget.hasMin, slow.budget.minRTT, slow.budget.srtt = true, .05, .12
+	autoSend(t, f, s, a, big, 8)
+	if s.Stats().BulkDuplicates != 8 {
+		t.Fatalf("delay spike did not trigger full copies: %d", s.Stats().BulkDuplicates)
+	}
+}
