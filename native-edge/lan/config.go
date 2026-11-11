@@ -172,11 +172,13 @@ func LoadDevices(raw json.RawMessage, client netip.Addr, uplinkIDs []string, upl
 	for _, c := range []struct {
 		what string
 		vals []string
-	}{{"name", names}, {"tunnel_ip", ips}, {"adapters", ids}} {
+	}{{"name", names}, {"tunnel_ip", ips}} {
 		if err := distinct(c.what, c.vals); err != nil {
 			return nil, err
 		}
 	}
+	// Several devices may share one adapter (PS5 and laptop behind an access
+	// point); unpinned ones claim a device by DHCP request or tunnel-IP traffic.
 	// Python compares the lower-cased strings as written, so aa:.. and aa-.. differ.
 	for _, d := range devices {
 		if d.DeviceMAC != "" {

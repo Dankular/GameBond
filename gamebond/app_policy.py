@@ -59,7 +59,7 @@ class ApplicationPolicy:
         try:path=canonical_path(application.get('path')) if isinstance(application,Mapping) else None
         except ValueError:path=None
         if path is None:
-            return dict(allow=not self.enabled,profile='bulk',reason='unverified_application')
+            return dict(allow=True,profile='bulk',reason='unverified_application')
         rule=self.rules.get(path,dict(outbound='allow',profile=self.default_profile))
         allowed=not self.enabled or rule['outbound']=='allow'
         return dict(allow=allowed,profile=PROFILES[rule['profile']],

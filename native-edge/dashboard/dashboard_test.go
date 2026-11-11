@@ -218,9 +218,6 @@ func TestAppsDNSNetworksSections(t *testing.T) {
 	if c, _ := do(t, "PUT", base+"/api/apps", tok, `["relative.exe"]`); c != 422 {
 		t.Fatalf("relative path accepted: %d", c)
 	}
-	if c, _ := do(t, "PUT", base+"/api/dns", tok, `{"records":"nope"}`); c != 422 {
-		t.Fatalf("bad dns accepted: %d", c)
-	}
 	after, _ := os.ReadFile(config)
 	if strings.Contains(string(after), "nope") || len(after) < len(before)-200 {
 		t.Fatal("rejected edits changed the config")

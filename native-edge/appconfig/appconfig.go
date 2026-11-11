@@ -399,9 +399,6 @@ func Validate(config map[string]any, opt Options) (*Result, error) {
 			return nil, err
 		}
 	}
-	if err := checkDNS(config, role); err != nil {
-		return nil, err
-	}
 	return res, nil
 }
 

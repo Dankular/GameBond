@@ -73,3 +73,49 @@ func TestDelayControlIgnoresSparseTraffic(t *testing.T) {
 		t.Fatalf("sparse (app-limited) traffic was throttled: %d backoffs", b.delayBackoffs)
 	}
 }
+
+// After a standing queue clears, an assertive path must get its rate back in
+// seconds, not minutes; otherwise every backoff permanently starves the link.
+func TestAssertiveDelayControlRecovers(t *testing.T) {
+	b, err := NewBudget(10, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.delayControl, b.delayAssertive = true, true
+	b.rate, b.startup = 80*125000, false
+	type inflight struct {
+		seq   uint64
+		ackAt float64
+		size  int
+	}
+	var queue []inflight
+	var seq, delivered uint64
+	const size = 1400
+	now, low := 0.0, b.rate
+	for now < 20 {
+		now += float64(size+28) / b.rate
+		seq++
+		if ok, _ := b.Sent(seq, size, now); ok {
+			rtt := .030
+			if now > 2 && now < 5 {
+				rtt = .030 + .060 // a 60 ms standing queue for three seconds
+			}
+			queue = append(queue, inflight{seq, now + rtt, size})
+		}
+		for len(queue) > 0 && queue[0].ackAt <= now {
+			p := queue[0]
+			queue = queue[1:]
+			delivered += uint64(p.size)
+			b.Acknowledge(p.seq, delivered, p.ackAt, 0)
+		}
+		if now > 5 && b.rate < low {
+			low = b.rate
+		}
+	}
+	if b.delayBackoffs == 0 {
+		t.Fatal("no backoff during the queue")
+	}
+	if b.rate < 60*125000 {
+		t.Fatalf("rate only recovered to %.1f Mbps within 15 s of the queue clearing", b.rate/125000)
+	}
+}

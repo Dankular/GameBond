@@ -67,10 +67,6 @@
     <table><thead><tr><th>Use</th><th>Index</th><th>Name</th><th>Addresses</th><th>Gateway</th></tr></thead><tbody id="nets"></tbody></table>
     <p>Choose 1 to 8 adapters. One active link runs the VPN; multiple active links enable bonding. Offline adapters can stay selected using their stable Windows identities. Restart the tunnel after saving to apply.</p>
     <div class="row"><button id="savenets" disabled>Save adapters</button><button id="refreshnets" class="secondary">Refresh</button><span id="netsmsg" role="status"></span></div></section>
-  <section><h2>DNS overrides</h2>
-    <p style="margin-top:0;color:var(--mute)">The <code>dns</code> block (records, bind, ttl, upstream). Checked with the daemon's own loader.</p>
-    <textarea id="dnsjson" spellcheck="false" style="min-height:120px"></textarea>
-    <div class="row"><button id="savedns">Save</button><span id="dnsmsg"></span></div></section>
   <section><h2>Daemon log</h2><pre id="log" style="max-height:220px;overflow:auto;margin:0;font:12px/1.4 ui-monospace,Consolas,monospace"></pre></section>
 </main>
 <script>
@@ -250,19 +246,9 @@ $("saveapppolicy").onclick = async () => {
   } catch (e) { text($("apppolicymsg"), "Rejected: " + e.message); }
 };
 loadAppPolicy();
-async function loadDns() {
-  const d = await (await fetch("/api/dns", { headers: H })).json();
-  $("dnsjson").value = JSON.stringify(d.dns ?? {}, null, 2);
-}
-$("savedns").onclick = async () => {
-  let body; try { body = JSON.parse($("dnsjson").value); } catch (e) { text($("dnsmsg"), "Not valid JSON: " + e.message); return; }
-  const r = await fetch("/api/dns", { method: "PUT", headers: H, body: JSON.stringify(body) }); const d = await r.json();
-  text($("dnsmsg"), r.ok ? "Saved. Restart the tunnel to apply." : "Rejected: " + d.error);
-};
 async function logs() {
   try { const d = await (await fetch("/api/log", { headers: H })).json(); const el = $("log"); const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 8; text(el, (d.lines || []).join("\n")); if (atEnd) el.scrollTop = el.scrollHeight; } catch (e) {}
 }
-loadApps(); loadNets(); loadDns(); hardware(); logs(); setInterval(hardware, 3000); setInterval(logs, 2000);
 
 </script>
 </body>

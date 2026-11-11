@@ -45,12 +45,11 @@ type Config struct {
 	StaleAfter   time.Duration
 	Now          func() time.Time
 	OnPacket     func([]byte)
-	DNSOverride  func([]byte) []byte
 }
 
 // Counters mirror the Python counter names.
 type Counters struct {
-	BytesToTunnel, BytesFromTunnel, FramesIn, FramesOut, PacketsToTunnel, PacketsFromTunnel, DHCPOffers, DHCPAcks, DHCPNaks, DNSOverridden uint64
+	BytesToTunnel, BytesFromTunnel, FramesIn, FramesOut, PacketsToTunnel, PacketsFromTunnel, DHCPOffers, DHCPAcks, DHCPNaks uint64
 	ARPReplies, ForeignMACDropped, SpoofedSourceDropped, LocalOnlyDropped, TTLExpired, Fragmented          uint64
 	FragNeededSent, WrongDestination, NoDeviceMAC, Malformed, WriteErrors                                  uint64
 }
@@ -297,9 +296,6 @@ func (g *Gateway) ipv4(srcMAC [6]byte, packet []byte) {
 		g.c.LocalOnlyDropped++
 		return
 	}
-	if g.cfg.DNSOverride != nil && g.answerDNS(packet, header, protocol, src, dst) {
-		return
-	}
 	fwd := decrementTTL(packet)
 	if fwd == nil {
 		g.c.TTLExpired++
@@ -322,28 +318,6 @@ func (g *Gateway) ipv4(srcMAC [6]byte, packet []byte) {
 		g.c.BytesToTunnel += uint64(len(p))
 		g.cfg.OnPacket(p)
 	}
-}
-
-func (g *Gateway) answerDNS(packet []byte, header int, protocol byte, src, dst [4]byte) bool {
-	if protocol != 17 || binary.BigEndian.Uint16(packet[6:])&0x3FFF != 0 || len(packet) < header+8 {
-		return false
-	}
-	sport := binary.BigEndian.Uint16(packet[header:])
-	dport := binary.BigEndian.Uint16(packet[header+2:])
-	length := int(binary.BigEndian.Uint16(packet[header+4:]))
-	if dport != 53 || !(8 < length && length <= len(packet)-header) {
-		return false
-	}
-	resp := g.cfg.DNSOverride(packet[header+8 : header+length])
-	if len(resp) == 0 {
-		return false
-	}
-	reply := buildIPv4(dst, src, 17, buildUDP(dst, src, 53, sport, resp), g.nextIdent())
-	if g.sendFrame(*g.deviceMAC, ethIPv4, reply) {
-		g.c.DNSOverridden++
-		return true
-	}
-	return false
 }
 
 func (g *Gateway) dhcp(srcMAC [6]byte, p []byte) {

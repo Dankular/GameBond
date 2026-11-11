@@ -29,7 +29,6 @@ import (
 	"gamebond.local/nativeedge/bond"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/client"
-	"gamebond.local/nativeedge/dns"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/omr"
 	"gamebond.local/nativeedge/procjob"
@@ -59,7 +58,6 @@ type fileConfig struct {
 	AdaptiveQoS    json.RawMessage              `json:"adaptive_qos"`
 	ClientTunnelIP string                       `json:"client_tunnel_ip"`
 	LANDevices     json.RawMessage              `json:"lan_devices"`
-	DNS            json.RawMessage              `json:"dns"`
 	OuterTransport json.RawMessage              `json:"outer_transport"` // stream-carrier fallback; null/absent = UDP only
 }
 
@@ -262,13 +260,6 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		}
 		if lanMgr, err = newLanManager(cfg.LANDevices, clientIP, cfg.InterfaceIDs, cfg.InterfaceIndex, cfg.MTU); err != nil {
 			return err
-		}
-		dnsCfg, derr := dns.Load(cfg.DNS)
-		if derr != nil {
-			return derr
-		}
-		if dnsCfg != nil && dnsCfg.Enabled {
-			lanMgr.dnsFn = dnsCfg.Override
 		}
 		lanMgr.outbound = bridge.Send
 		for _, d := range lanMgr.devices {
@@ -522,7 +513,7 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
 		"transport": map[string]any{"paths": paths, "receive": s.Receiver, "send": s.Sender, "reorder": s.Reorder, "queue": s.Queue, "loop": s.Loop},
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"dish": dishStatusDoc(), "qos":       s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "dns": l.dnsStatus()}
+		"dish": dishStatusDoc(), "qos":       s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status()}
 	if capture != nil {
 		capture.status(doc)
 	}

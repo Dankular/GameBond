@@ -277,7 +277,7 @@ func (s *Sender) Controls(result ReceiveResult, now time.Time, writer DatagramWr
 		if s.repairRequests[key] == nil {
 			s.repairRequests[key] = s.requestOrder.PushBack(key)
 		}
-		if len(s.repairRequests) > 64 {
+		if len(s.repairRequests) > 512 {
 			oldest := s.requestOrder.Front()
 			delete(s.repairRequests, oldest.Value.(MissingPacket))
 			s.requestOrder.Remove(oldest)

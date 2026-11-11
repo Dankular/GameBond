@@ -88,7 +88,7 @@ func TestDecisionsFollowPolicyAndIdentity(t *testing.T) {
 	// unverifiable process: protection on -> denied to bulk
 	a2, s2 := newAuth(t, map[string]any{}, func(int64, string) map[string]any { return nil })
 	a2.Handle(req(id1, "tcp", "1.2.3.4:5"))
-	if got := s2.wait(t, 1)[0]; got["allow"] != false || got["profile"] != "bulk" {
+	if got := s2.wait(t, 1)[0]; got["allow"] != true || got["profile"] != "bulk" {
 		t.Fatalf("%v", got)
 	}
 	// bad protocol / destination
@@ -253,7 +253,7 @@ func TestNonIntegerPIDIsNotResolved(t *testing.T) {
 	r := req(id1, "tcp", "1.1.1.1:1")
 	r["pid"] = 10.5
 	a.Handle(r)
-	if got := s.wait(t, 1)[0]; got["allow"] != false || calls != 0 {
+	if got := s.wait(t, 1)[0]; got["allow"] != true || calls != 0 {
 		t.Fatalf("%v calls=%d", got, calls)
 	}
 }

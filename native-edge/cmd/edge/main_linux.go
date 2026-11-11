@@ -3,6 +3,7 @@
 package main
 
 import (
+	"net"
 	"context"
 	"flag"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"gamebond.local/nativeedge/edge"
 	"gamebond.local/nativeedge/hwmon"
+	"gamebond.local/nativeedge/stream"
 )
 
 func run() error {
@@ -100,6 +102,9 @@ func run() error {
 			fmt.Fprintf(os.Stdout, "{\"status\":\"admin_portal\",\"bind\":[%q,%d],\"tls\":%t}\n", settings.Host, portal.Port, settings.TLSCert != "")
 		}
 	}
+	if os.Getenv("GAMEBOND_STREAM") != "0" {
+		go serveStreamGateway(ctx)
+	}
 	err = edge.Run(ctx, c, options, address, session, key, os.Stdout, observers...)
 	if restart.Load() {
 		// The container entrypoint relaunches on exit status 75.
@@ -120,4 +125,26 @@ func main() {
 		}
 		os.Exit(1)
 	}
+}
+
+// serveStreamGateway terminates the bond-aware stream transport on the tunnel
+// address: the client's userspace stack opens streams to 10.77.0.1:4436 and this
+// relays them to the internet, so TCP loss recovery runs across both links
+// instead of end to end.
+func serveStreamGateway(ctx context.Context) {
+	var pc net.PacketConn
+	for pc == nil {
+		var err error
+		if pc, err = net.ListenPacket("udp4", "10.77.0.1:4436"); err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
+	ep := stream.NewEndpoint(pc, nil, stream.Config{ReorderHint: func() time.Duration { return 25 * time.Millisecond }})
+	go func() { <-ctx.Done(); ep.Close() }()
+	fmt.Fprintln(os.Stdout, `{"status":"stream_gateway","bind":"10.77.0.1:4436"}`)
+	(&stream.Gateway{Ep: ep}).Serve()
 }

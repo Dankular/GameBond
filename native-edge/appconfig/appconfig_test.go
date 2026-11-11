@@ -32,6 +32,9 @@ func TestPythonVectors(t *testing.T) {
 	}
 	var okN, deferred, failed int
 	for i, v := range vectors {
+		if bytes.Contains(v.Config, []byte(`"dns"`)) {
+			continue // managed DNS removed
+		}
 		res, err := Load(bytes.TrimSpace(v.Config), Options{Windows: v.Windows, AllowUnavailableLinks: v.Allow})
 		got := err == nil
 		if got && !v.OK && len(res.Unchecked) > 0 {

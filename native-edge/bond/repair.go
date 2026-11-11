@@ -22,6 +22,15 @@ type askedRepair struct {
 	order    *list.Element
 }
 
+// A 100 Mbps bulk flow is about 10,000 packets a second, so the old 2048-entry
+// cache covered only 200 ms and four repairs per 10 ms could not keep up with
+// a burst of loss: holes then waited out the reorder deadline and were skipped,
+// which TCP reads as loss.
+const (
+	repairCacheMax = 16384
+	repairBatch    = 16
+)
+
 func repairable(packet []byte) bool {
 	p, err := ParseIPv4(packet)
 	return err == nil && p.Protocol == 6 && !p.Fragmented
@@ -33,7 +42,7 @@ func (s *Sender) cacheRepair(key MissingPacket, payload []byte, now time.Time, o
 	entry := &repairEntry{key: key, payload: append([]byte(nil), payload...), at: now, origin: origin}
 	entry.order = s.repairOrder.PushBack(entry)
 	s.repairs[key] = entry
-	for len(s.repairs) > 2048 {
+	for len(s.repairs) > repairCacheMax {
 		old := s.repairOrder.Front().Value.(*repairEntry)
 		delete(s.repairs, old.key)
 		s.repairOrder.Remove(old.order)
@@ -89,9 +98,9 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 	}
 	if s.nextRepairRequest.IsZero() || !now.Before(s.nextRepairRequest) {
 		delay := time.Duration(math.Max(.015, (maximum-minimum)/2+2*jitter) * float64(time.Second))
-		missing := s.r.reorder.Missing(now, delay, 4, repairable)
+		missing := s.r.reorder.Missing(now, delay, repairBatch, repairable)
 		if len(missing) > 0 {
-			s.nextRepairRequest = now.Add(10 * time.Millisecond)
+			s.nextRepairRequest = now.Add(5 * time.Millisecond)
 		}
 		for _, key := range missing {
 			asked := s.asked[key]
@@ -120,7 +129,7 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		}
 	}
 	timestamp := s.r.seconds(now)
-	for i := 0; i < 4 && s.requestOrder.Len() > 0; i++ {
+	for i := 0; i < repairBatch && s.requestOrder.Len() > 0; i++ {
 		e := s.requestOrder.Front()
 		key := e.Value.(MissingPacket)
 		cached := s.repairs[key]

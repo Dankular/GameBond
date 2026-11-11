@@ -24,7 +24,6 @@ import (
 	"gamebond.local/nativeedge/apppolicy"
 	"gamebond.local/nativeedge/atomicio"
 	"gamebond.local/nativeedge/capture"
-	"gamebond.local/nativeedge/dns"
 	"gamebond.local/nativeedge/eventjournal"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/scanner"
@@ -89,7 +88,6 @@ func Start(o Options) (*Server, string, error) {
 	mux.HandleFunc("/api/links", s.guard(s.links))
 	mux.HandleFunc("/api/apps", s.guard(s.apps))
 	mux.HandleFunc("/api/app-policy", s.guard(s.appPolicy))
-	mux.HandleFunc("/api/dns", s.guard(s.dnsConfig))
 	mux.HandleFunc("/api/lan-devices", s.guard(s.lanDevices))
 	mux.HandleFunc("/api/omr", s.guard(s.omrConfig))
 	mux.HandleFunc("/api/omr-check", s.guard(s.omrCheck))
@@ -458,20 +456,6 @@ func (s *Server) apps(w http.ResponseWriter, r *http.Request) {
 		patch["cod_executables"] = out
 		return patch, nil
 	})
-}
-
-// dnsConfig edits the project DNS profile, validated by the daemon's own loader.
-func (s *Server) dnsConfig(w http.ResponseWriter, r *http.Request) {
-	s.section(w, r, "dns", func(raw []byte) (any, error) {
-		if _, err := dns.Load(raw); err != nil {
-			return nil, err
-		}
-		var v any
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return nil, err
-		}
-		return v, nil
-	}, nil)
 }
 
 // networks discovers adapters and saves their selection without changing the OS.

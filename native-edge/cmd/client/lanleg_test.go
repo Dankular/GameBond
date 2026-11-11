@@ -130,7 +130,7 @@ func TestLANManagerConfig(t *testing.T) {
 		}
 	}
 	var none *lanManager
-	if none.dispatch(lanPacket([4]byte{1, 2, 3, 4})) || none.dnsStatus() != nil {
+	if none.dispatch(lanPacket([4]byte{1, 2, 3, 4})) {
 		t.Fatal("nil manager must be inert")
 	}
 }

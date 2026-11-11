@@ -361,6 +361,12 @@ func (b *Budget) measure(now float64) {
 		if b.startup {
 			increment = math.Max(12500, math.Min(b.rate*.5, 1250000))
 		}
+		if b.delayAssertive && !b.startup {
+			// Backing off on a modest queue is only safe if the rate can come
+			// back: 12.5 KB/s per epoch takes minutes to climb from a few Mbps.
+			// Grow in proportion to the rate instead, capped per epoch.
+			increment = math.Max(increment, math.Min(b.rate*.08, 625000))
+		}
 		updated := math.Min(b.maximum*125000, b.rate+increment)
 		if updated > b.rate {
 			b.rate = updated

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"gamebond.local/nativeedge/dns"
 )
 
 type fakeIO struct{ out []string }
@@ -25,7 +24,6 @@ func TestPythonVectors(t *testing.T) {
 	defer f.Close()
 	z, _ := gzip.NewReader(f)
 	var v struct {
-		DNSConfig json.RawMessage `json:"dns_config"`
 		Scenarios []struct {
 			Pinned     *string  `json:"pinned"`
 			DNS        bool     `json:"dns"`
@@ -49,13 +47,12 @@ func TestPythonVectors(t *testing.T) {
 	if err := json.NewDecoder(z).Decode(&v); err != nil {
 		t.Fatal(err)
 	}
-	dnsCfg, err := dns.Load(v.DNSConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
 	epoch := time.Unix(500, 0)
 	steps := 0
 	for si, sc := range v.Scenarios {
+		if sc.DNS {
+			continue // DNS override removed
+		}
 		var now time.Time
 		io := &fakeIO{}
 		var tunnel []string
@@ -73,9 +70,6 @@ func TestPythonVectors(t *testing.T) {
 			StaleAfter: time.Duration(sc.Stale * float64(time.Second)), Now: func() time.Time { return now },
 			OnPacket: func(p []byte) { tunnel = append(tunnel, hex.EncodeToString(p)) }}
 		now = epoch
-		if sc.DNS {
-			cfg.DNSOverride = dnsCfg.Override
-		}
 		g, err := NewGateway(cfg, io)
 		if err != nil {
 			t.Fatal(err)
@@ -104,7 +98,7 @@ func TestPythonVectors(t *testing.T) {
 		}
 		c := g.Stats()
 		got := map[string]uint64{"frames_in": c.FramesIn, "frames_out": c.FramesOut, "packets_to_tunnel": c.PacketsToTunnel, "packets_from_tunnel": c.PacketsFromTunnel,
-			"dhcp_offers": c.DHCPOffers, "dhcp_acks": c.DHCPAcks, "dhcp_naks": c.DHCPNaks, "dns_overridden": c.DNSOverridden, "arp_replies": c.ARPReplies,
+			"dhcp_offers": c.DHCPOffers, "dhcp_acks": c.DHCPAcks, "dhcp_naks": c.DHCPNaks, "arp_replies": c.ARPReplies,
 			"foreign_mac_dropped": c.ForeignMACDropped, "spoofed_source_dropped": c.SpoofedSourceDropped, "local_only_dropped": c.LocalOnlyDropped,
 			"ttl_expired": c.TTLExpired, "fragmented": c.Fragmented, "frag_needed_sent": c.FragNeededSent, "wrong_destination": c.WrongDestination,
 			"no_device_mac": c.NoDeviceMAC, "malformed": c.Malformed, "write_errors": c.WriteErrors}

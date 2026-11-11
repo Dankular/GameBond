@@ -327,7 +327,9 @@ func (p *Policy) Authorize(application, protocol, destination any) Decision {
 		}
 	}
 	if !havePath {
-		return Decision{!p.Enabled, "bulk", "unverified_application"}
+		// All traffic belongs in GameBond: a flow whose owner cannot be resolved
+		// (short-lived UDP probes such as game datacenter pings) is still carried.
+		return Decision{true, "bulk", "unverified_application"}
 	}
 	rule, ok := p.Rules[path]
 	if !ok {

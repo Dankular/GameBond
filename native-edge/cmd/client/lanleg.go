@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +21,6 @@ type lanManager struct {
 	devices  []lan.DeviceConfig
 	client   netip.Addr
 	mtu      int
-	dnsFn    func([]byte) []byte
 	open     func(lan.DeviceConfig) (lan.FrameIO, error)
 	outbound func([]byte) bool
 	direct   *directUDP // set by the client when a device has udp_direct
@@ -78,7 +78,7 @@ func newLanManager(raw json.RawMessage, client netip.Addr, uplinkIDs []string, u
 	if mtu == 0 {
 		mtu = 1280
 	}
-	return &lanManager{devices: devices, client: client, mtu: mtu, open: openFrameIO, now: time.Now,
+	return &lanManager{devices: devices, client: client, mtu: mtu, open: newSharedAdapters(openFrameIO).Open, now: time.Now,
 		gws: map[string]*runningGateway{}, byIP: map[[4]byte]*lan.Gateway{}, errs: map[string]string{}, retryAt: map[string]time.Time{},
 		out: func(map[string]any) {}}, nil
 }
@@ -105,6 +105,9 @@ func (m *lanManager) maintain(ctx context.Context) {
 		m.mu.Lock()
 		rg := m.gws[d.Name]
 		m.mu.Unlock()
+		if rg != nil && rg.alive() && m.sharedAdapter(d) {
+			continue // the shared reader recovers a stale adapter for everyone
+		}
 		if rg != nil && rg.alive() {
 			// Another handle on the same adapter (ProxiFyre restarting on a
 			// reconnect) can take the frames; the newest handle wins. When no
@@ -190,8 +193,7 @@ func (m *lanManager) start(ctx context.Context, d lan.DeviceConfig) (*runningGat
 			return
 		}
 		m.outbound(p)
-	},
-		DNSOverride: m.dnsFn}, io)
+	}}, io)
 	if err != nil {
 		io.Close()
 		return nil, err
@@ -264,7 +266,7 @@ func (m *lanManager) status() any {
 		c := rg.gw.Stats()
 		row := map[string]any{"name": d.Name, "tunnel_ip": d.TunnelIP.String(), "adapter_mac": rg.mac, "leased": rg.gw.IsLeased(), "present": rg.gw.Present(), "silent_s": rg.gw.SilentFor().Seconds(), "up": rg.alive(), "error": nil,
 			"frames_in": c.FramesIn, "frames_out": c.FramesOut, "packets_to_tunnel": c.PacketsToTunnel, "packets_from_tunnel": c.PacketsFromTunnel, "bytes_to_tunnel": c.BytesToTunnel, "bytes_from_tunnel": c.BytesFromTunnel,
-			"dhcp_offers": c.DHCPOffers, "dhcp_acks": c.DHCPAcks, "dns_overridden": c.DNSOverridden,
+			"dhcp_offers": c.DHCPOffers, "dhcp_acks": c.DHCPAcks,
 			"udp_direct": m.directStatus(d), "oversize_fragmented": c.Fragmented, "oversize_df_dropped": c.FragNeededSent, "tunnel_to_device_malformed": c.Malformed}
 		if mac, ok := rg.gw.DeviceMAC(); ok {
 			row["device_mac"] = fmtMAC(mac)
@@ -276,27 +278,6 @@ func (m *lanManager) status() any {
 		rows = append(rows, row)
 	}
 	return rows
-}
-
-// dnsStatus is dns_status: only while an override is applied to a live device.
-func (m *lanManager) dnsStatus() any {
-	if m == nil || m.dnsFn == nil {
-		return nil
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var n uint64
-	live := false
-	for _, rg := range m.gws {
-		if rg.alive() {
-			live = true
-			n += rg.gw.Stats().DNSOverridden
-		}
-	}
-	if !live {
-		return nil
-	}
-	return map[string]any{"scope": "connected_devices", "overrides": n}
 }
 
 func (m *lanManager) close() {
@@ -414,4 +395,15 @@ func (g *gapMeter) report() map[string]any {
 	return map[string]any{"small_le420": map[string]any{"samples": g.smallN, "over_40ms": g.smallOver40, "max_ms": g.smallMax},
 		"big_gt420":                            map[string]any{"samples": g.bigN, "over_40ms": g.bigOver40, "max_ms": g.bigMax},
 		"size_buckets_le200_420_800_1200_more": g.sizeBuckets, "samples": g.n, "mean_ms": mean, "max_ms": g.maxMS, "over_40ms": g.over40, "over_60ms": g.over60, "over_100ms": g.over100}
+}
+
+// sharedAdapter reports whether another configured device uses d's adapter.
+func (m *lanManager) sharedAdapter(d lan.DeviceConfig) bool {
+	n := 0
+	for _, o := range m.devices {
+		if strings.EqualFold(o.InterfaceID, d.InterfaceID) && o.InterfaceID != "" {
+			n++
+		}
+	}
+	return n > 1
 }
