@@ -46,6 +46,7 @@ type Budget struct {
 	hasMin, hasSent, hasAck                                                             bool
 	lastSent, lastAck                                                                   uint64
 	lastAckAt                                                                           float64 // time of the last accepted acknowledgement
+	ackGap                                                                              float64 // smoothed seconds between accepted acknowledgements (0: none yet)
 	lastSentAt                                                                          float64
 	pending                                                                             map[uint64]*list.Element
 	order                                                                               list.List
@@ -310,13 +311,21 @@ func (b *Budget) Sack(base uint64, bits []byte) []MissingPacket {
 const tailProbeLimit = 64
 
 // TailLost names the flow packets of frames that no acknowledgement has covered for
-// longer than a round trip plus the feedback interval. A later frame arriving would have
+// longer than a round trip plus a small feedback allowance. A later frame arriving would have
 // retired them (the cumulative acknowledgement covers everything below it), so the
 // frames at the front of the queue that are still pending are the tail of a burst, or
 // everything on a path that has stopped answering: the selective acknowledgement cannot
 // see them because nothing was sent after them. Each frame is reported once.
 func (b *Budget) TailLost(now float64) []MissingPacket {
-	limit := math.Max(.05, b.rawSRTT+4*b.rttVar+.03)
+	// One round trip, two deviations of it, and one and a half measured gaps between
+	// acknowledgements: the peer only reports every 20-100 ms, so a frame is not overdue
+	// until a report that could have covered it is itself late. Until the gap is known
+	// the slowest cadence (100 ms) is assumed. No fixed floor.
+	gap := b.ackGap
+	if gap == 0 {
+		gap = .1
+	}
+	limit := b.rawSRTT + 2*b.rttVar + 1.5*gap
 	var lost []MissingPacket
 	for e := b.order.Front(); e != nil && len(lost) < tailProbeLimit; e = e.Next() {
 		p := e.Value.(budgetPending)
@@ -395,6 +404,14 @@ func (b *Budget) Acknowledge(sequence, delivered uint64, now float64, delayUS ui
 	b.pressure(now, &active)
 	delta := delivered - b.deliveryCounter
 	b.deliveryCounter = delivered
+	if b.hasAck {
+		gap := math.Min(.12, math.Max(0, now-b.lastAckAt))
+		if b.ackGap == 0 {
+			b.ackGap = gap
+		} else {
+			b.ackGap += .25 * (gap - b.ackGap)
+		}
+	}
 	b.lastAck = sequence
 	b.hasAck = true
 	b.lastAckAt = now

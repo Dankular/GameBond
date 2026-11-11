@@ -22,7 +22,6 @@ type SessionOptions struct {
 	// Optional behaviours, all off by default like the Python server.
 	LossTracking, PathMTUDiscovery, FailoverReplay bool
 	FlowPinning, CoDel                             bool
-	Protection                                     string
 	ParityRowsMin, ParityRowsMax                   int
 	DelayControl, DelayAssertive                   bool
 }
@@ -70,9 +69,6 @@ func NewSession(key, session []byte, options SessionOptions) (*Session, error) {
 	sender.EnableFailover(options.FailoverReplay)
 	sender.SetFlowPinning(options.FlowPinning)
 	sender.SetParityRows(options.ParityRowsMin, options.ParityRowsMax)
-	if err = sender.SetProtection(options.Protection); err != nil {
-		return nil, err
-	}
 	sender.EnableLossTracking(options.LossTracking)
 	sender.EnableDelayControl(options.DelayControl)
 	sender.SetDelayAssertive(options.DelayAssertive)

@@ -41,6 +41,11 @@ const (
 	// answer.
 	repairAttempts   = 4
 	repairOriginBias = 0.015 // seconds added to the path that last carried the packet
+	// Bounded ARQ: a resend happens only when SACK (or the tail probe) shows a frame was lost
+	// or the peer asks, at most repairAttempts times, and repairs as a whole are limited to a
+	// rate and burst so a loss storm cannot turn into a repair storm. There is no age timer.
+	repairRate  = 3000. // resent packets per second
+	repairBurst = 512.
 )
 
 func repairable(packet []byte) bool {
@@ -167,6 +172,10 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 			delete(s.repairRequests, key)
 			s.requestOrder.Remove(e)
 			continue
+		}
+		if !s.takeRepairToken(now) {
+			s.stats.RepairThrottled++
+			break
 		}
 		size := len(cached.payload) + Overhead + 24
 		var target *receivePath

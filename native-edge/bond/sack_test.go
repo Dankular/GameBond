@@ -220,11 +220,11 @@ func TestTailOfABurstIsResentWhenNothingAcknowledgesIt(t *testing.T) {
 	for _, k := range a {
 		f.r.paths[pk(k)].hasFeedback = true
 	}
-	s.tailProbe(f.now.Add(10 * time.Millisecond))
+	s.tailProbe(f.now.Add(2 * time.Millisecond))
 	if s.Stats().TailProbed != 0 {
 		t.Fatalf("resent %d frames that were not yet overdue", s.Stats().TailProbed)
 	}
-	late := f.now.Add(400 * time.Millisecond)
+	late := f.now.Add(700 * time.Millisecond)
 	for _, k := range a {
 		f.r.paths[pk(k)].last = late
 	}

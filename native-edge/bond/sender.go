@@ -37,7 +37,7 @@ const (
 )
 
 type SenderStats struct {
-	PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, RepairUnavailableSent, RepairExhausted, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped, LossSteered, BulkDuplicates, BulkDupSkipped, ParitySent, FlowsPinned, FastReroutes, PinSpills uint64
+	PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, RepairUnavailableSent, RepairExhausted, RepairThrottled, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped, LossSteered, BulkDuplicates, BulkDupSkipped, ParitySent, FlowsPinned, FastReroutes, PinSpills uint64
 	// Selective-acknowledgement loss handling: frames seen lost on a path, answered by an
 	// immediate resend, held back because a sibling copy may still arrive, or not
 	// recoverable (no cached payload: UDP, or too old).
@@ -51,7 +51,6 @@ type Sender struct {
 	r                 *Receiver
 	flows             map[string]*sendFlow
 	parityOpen        map[*sendFlow]struct{} // flows holding a partly filled parity group
-	coverUntil        time.Time              // auto preset: full duplication until then
 	parityMin         int                    // parity rows per group: floor and ceiling (0 = built-in)
 	parityMax         int
 	heat              float64 // decaying count of recently lost frames
@@ -71,10 +70,11 @@ type Sender struct {
 	asked             map[MissingPacket]*askedRepair
 	askedOrder        list.List
 	nextRepairRequest time.Time
+	repairTokens      float64
+	repairTokensAt    time.Time
 	failover          bool
 	pinning           bool
-	protectName       string
-	fecAt, dupAt      float64
+	lossTiered        bool // tests only: loss-driven parity/duplication instead of always duplicating
 	lossTracking      bool
 	replayQueue       []replayItem
 	hints             map[int]pathHint
@@ -296,11 +296,6 @@ func (s *Sender) Controls(result ReceiveResult, now time.Time, writer DatagramWr
 	for _, key := range result.Lost {
 		s.sackLoss(key, now)
 	}
-	if len(result.Repairs) > 0 && s.protectName == "auto" {
-		// The peer is missing packets from us: something is dropping them right now,
-		// so every packet is copied for the next few seconds.
-		s.coverUntil = now.Add(autoCoverHold)
-	}
 	for i, key := range result.Repairs {
 		cached := s.repairs[key]
 		if cached == nil || now.Sub(cached.at) >= time.Second || cached.attempts >= repairAttempts {
@@ -342,6 +337,8 @@ func (s *Sender) Urgent(payload []byte, replicate bool, now time.Time, writer Da
 	if len(payload)+Overhead > s.r.mtu {
 		return 0, ErrFrame
 	}
+	// Priority traffic is copied onto every ready path from its first packet, like bulk.
+	replicate = replicate || !s.lossTiered
 	paths := s.fitPaths(s.eligible(now, true), len(payload)+Overhead)
 	sort.Slice(paths, func(i, j int) bool {
 		a, b := paths[i], paths[j]

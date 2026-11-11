@@ -18,6 +18,7 @@ func senderFixture(t *testing.T, paths int) (receiverFixture, *Sender, []netip.A
 	if err != nil {
 		t.Fatal(err)
 	}
+	sender.lossTiered = true // older tests count the loss-driven tiers; the always-duplicate tests set it false
 	var addresses []netip.AddrPort
 	for i := 0; i < paths; i++ {
 		a := netip.AddrPortFrom(f.endpoint.Addr(), uint16(1234+i))

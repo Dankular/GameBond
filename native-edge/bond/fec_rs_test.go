@@ -127,9 +127,6 @@ func TestReedSolomonNeverGuessesWithTooFewRows(t *testing.T) {
 // Loss makes the sender add rows, and the extra rows go out later than the first.
 func TestSenderAddsParityRowsWhileLossIsSeen(t *testing.T) {
 	f, s, a := senderFixture(t, 2)
-	if err := s.SetProtection("high"); err != nil {
-		t.Fatal(err)
-	}
 	p0 := f.r.paths[pk(a[0])]
 	ts := f.r.seconds(f.now)
 	p0.budget.lossSeen, p0.budget.lossAt, p0.budget.lossEWMA, p0.budget.lossEWSet = true, ts, .01, true

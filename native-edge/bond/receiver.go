@@ -47,6 +47,7 @@ type ReceiveResult struct {
 type ReceiverStats struct {
 	Authenticated, AuthenticationErrors, Malformed, Duplicates, FloorDrops, HandshakeRejected uint64
 	PayloadPackets, PayloadBytes, WireRX, WireTX, SendErrors                                  uint64
+	ReplayTooOld, ReplayTooFar                                                                uint64
 	PeerRestarts, PathMigrations                                                              uint64
 	// Data frames (replicated game traffic) are delivered at first arrival, so a
 	// frame with a lower sequence than one already delivered arrives out of order.
@@ -358,14 +359,21 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		r.stats.FloorDrops++
 		return out, nil
 	}
-	tooOld := r.replay.initialized && h.Sequence < r.replay.highest && r.replay.highest-h.Sequence >= replayWidth
-	if !r.replay.Accept(h.Sequence) {
+	verdict := r.replay.Check(h.Sequence)
+	if verdict != ReplayNew {
+		switch verdict {
+		case ReplayTooOld:
+			r.stats.ReplayTooOld++
+		case ReplayTooFar:
+			r.stats.ReplayTooFar++
+		}
 		r.stats.Duplicates++
-		if h.Kind == DataCopy && p != nil && !tooOld {
+		if h.Kind == DataCopy && p != nil && verdict == ReplayDuplicate {
 			r.noteCopy(p, key, h.Sequence, timestamp)
 		}
 		return out, nil
 	}
+	r.replay.Accept(h.Sequence)
 	valid := true
 	switch h.Kind {
 	case Probe, Pong:

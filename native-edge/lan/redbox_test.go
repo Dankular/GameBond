@@ -1,0 +1,118 @@
+package lan
+
+import (
+	"bytes"
+	"testing"
+	"time"
+
+	"gamebond.local/nativeedge/iec62439"
+)
+
+var (
+	rbMAC   = [6]byte{2, 0, 0, 0, 0, 1}
+	peerMAC = [6]byte{2, 0, 0, 0, 0, 2}
+)
+
+func frameFrom(src [6]byte, n int) []byte {
+	f := append([]byte{}, rbMAC[:]...)
+	f = append(f, src[:]...)
+	f = append(f, 0x08, 0x00)
+	return append(f, bytes.Repeat([]byte{7}, n)...)
+}
+
+func newRB(t *testing.T) (rb *RedBox, farA, farB *MemoryIO) {
+	nearA, farA := MemoryPair(rbMAC, peerMAC)
+	nearB, farB := MemoryPair(rbMAC, peerMAC)
+	rb = NewRedBox(nearA, nearB, nil)
+	t.Cleanup(func() { rb.Close() })
+	return rb, farA, farB
+}
+
+func TestRedBoxWritesBothLANsWithSameSequence(t *testing.T) {
+	rb, farA, farB := newRB(t)
+	if err := rb.Write(frameFrom(rbMAC, 80)); err != nil {
+		t.Fatal(err)
+	}
+	fa, _ := farA.Read(time.Second)
+	fb, _ := farB.Read(time.Second)
+	ra, oka := iec62439.ParseRCT(fa)
+	rbct, okb := iec62439.ParseRCT(fb)
+	if !oka || !okb || ra.Lan != iec62439.LANA || rbct.Lan != iec62439.LANB || ra.Seq != rbct.Seq {
+		t.Fatalf("A %+v %v B %+v %v", ra, oka, rbct, okb)
+	}
+}
+
+func TestRedBoxDeliversOnceAndSurvivesOneLANDown(t *testing.T) {
+	rb, farA, farB := newRB(t)
+	for i := 0; i < 20; i++ {
+		f := frameFrom(peerMAC, 60+i)
+		a, _ := iec62439.AppendRCT(f, uint16(i), iec62439.LANA)
+		b, _ := iec62439.AppendRCT(f, uint16(i), iec62439.LANB)
+		if i < 10 { // LAN A dies after ten frames
+			farA.Write(a)
+		}
+		farB.Write(b)
+	}
+	got := 0
+	for {
+		f, err := rb.Read(200 * time.Millisecond)
+		if err != nil || f == nil {
+			break
+		}
+		if bytes.Equal(f[6:12], peerMAC[:]) {
+			got++
+		}
+	}
+	if got != 20 {
+		t.Fatalf("delivered %d of 20", got)
+	}
+	if st := rb.Stats(); st.DuplicatesDropped != 10 {
+		t.Fatalf("%+v", st)
+	}
+}
+
+func TestRedBoxSupervisionIsConsumedAndReportsDeadLAN(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	nearA, farA := MemoryPair(rbMAC, peerMAC)
+	nearB, farB := MemoryPair(rbMAC, peerMAC)
+	rb := NewRedBox(nearA, nearB, clock)
+	defer rb.Close()
+	peer := &iec62439.Supervisor{MAC: peerMAC}
+	for i := 0; i < 6; i++ {
+		a, b := peer.Due(now)
+		if a != nil {
+			farA.Write(a)
+			if i < 2 {
+				farB.Write(b)
+			}
+		}
+		if f, _ := rb.Read(50 * time.Millisecond); f != nil {
+			t.Fatal("supervision frame reached the gateway")
+		}
+		now = now.Add(2 * time.Second)
+	}
+	if st := rb.Stats(); st.SupervisionReceived == 0 || st.SupervisionSent == 0 {
+		t.Fatalf("%+v", st)
+	}
+	downA, downB := rb.LANDown(peerMAC)
+	if downA || !downB {
+		t.Fatalf("A down %v B down %v", downA, downB)
+	}
+}
+
+func TestRedBoxPassesPlainFramesAndDropsOwnEcho(t *testing.T) {
+	rb, farA, _ := newRB(t)
+	farA.Write(frameFrom(peerMAC, 70))
+	farA.Write(frameFrom(rbMAC, 70)) // an echo of our own frame
+	f, _ := rb.Read(time.Second)
+	if f == nil || !bytes.Equal(f[6:12], peerMAC[:]) {
+		t.Fatal("plain frame not passed")
+	}
+	if g, _ := rb.Read(100 * time.Millisecond); g != nil {
+		t.Fatal("own frame passed")
+	}
+	if st := rb.Stats(); st.NoRCT != 1 || st.OwnFramesDropped != 1 {
+		t.Fatalf("%+v", st)
+	}
+}

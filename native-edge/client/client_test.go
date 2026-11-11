@@ -174,7 +174,9 @@ func TestPacedThroughputIsNotCappedByTimerGranularity(t *testing.T) {
 	seconds := float64(last.Load()-first.Load()) / 1e9
 	mbit := float64(total) * 8000 / seconds / 1e6
 	t.Logf("paced 2x100 Mbit/s policy -> %.1f Mbit/s over %.2fs", mbit, seconds)
-	if mbit < 120 {
+	// Every packet is duplicated, so two 100 Mbit/s lines carry about one line of payload;
+	// the point here is only that it is not stuck at the old ~60 Mbit/s ceiling.
+	if mbit < 80 {
 		t.Fatalf("throughput %.1f Mbit/s is at the old ~60 Mbit/s timer-granularity ceiling", mbit)
 	}
 }

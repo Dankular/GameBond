@@ -23,35 +23,29 @@ func (s *Sender) lossEstimate(p *receivePath, ts float64) float64 {
 	return p.budget.lossEWMA
 }
 
-// protectionLevel picks parity or duplication from the worst path, or from a
-// degraded hint (the Starlink dish reporting drops).
+// protectionLevel decides how a packet is protected. With two or more ready paths every
+// packet is duplicated on a second path from the first packet on, with no loss or delay
+// condition to wait for: whichever copy arrives first wins. lossTiered (tests only) restores
+// the older loss-driven parity/duplication tiers.
 func (s *Sender) protectionLevel(paths []*receivePath, now time.Time) protection {
 	if len(paths) < 2 {
 		return protectNone
 	}
-	if s.protectName == "off" {
-		return protectNone
-	}
-	fecAt, dupAt := s.thresholds()
-	ts := s.r.seconds(now)
-	worst := 0.
-	if s.protectName == "auto" && now.Before(s.coverUntil) {
+	if !s.lossTiered {
 		return protectDuplicate
 	}
+	ts := s.r.seconds(now)
+	worst := 0.
 	for _, p := range paths {
 		worst = math.Max(worst, s.lossEstimate(p, ts))
-		if s.protectName == "auto" && autoDelaySpike(p) {
-			s.coverUntil = now.Add(autoCoverHold)
-			return protectDuplicate
-		}
 		if s.hinted(p.local, now) || s.atRisk(p, now) {
 			return protectDuplicate
 		}
 	}
 	switch {
-	case worst >= dupAt:
+	case worst >= dupRatio:
 		return protectDuplicate
-	case worst >= fecAt:
+	case worst >= fecRatio:
 		return protectParity
 	}
 	return protectNone
@@ -62,28 +56,9 @@ func (s *Sender) protectionLevel(paths []*receivePath, now time.Time) protection
 func (s *Sender) bulkProtect(f *sendFlow, number uint64, payload []byte, used *receivePath, now time.Time, writer DatagramWriter) {
 	paths := s.eligible(now, true)
 	level := s.protectionLevel(paths, now)
-	// The tcp preset copies every TCP data packet and every small UDP packet (games,
-	// voice). A packet that cannot be copied because both links are saturated falls
-	// back to a parity group, so it is still recoverable from one loss.
-	tcpMode := s.protectName == "tcp" && len(paths) > 1
-	if tcpMode && level != protectDuplicate && (repairable(payload) || smallUDP(payload)) {
-		level = protectDuplicate
-	}
-	// The auto preset is the cheap version: TCP data rides in a parity group
-	// (about 1/fecK extra), small packets (ACKs, handshakes, games, voice) are
-	// copied outright, and only a failing or silent path earns full duplication.
-	autoMode := s.protectName == "auto" && len(paths) > 1
-	if autoMode && level != protectDuplicate {
-		switch {
-		case smallUDP(payload) || (repairable(payload) && len(payload) <= autoSmallPacket):
-			level = protectDuplicate
-		case repairable(payload):
-			level = protectParity
-		}
-	}
-	if autoMode {
-		tcpMode = true // failed copies fall back to parity
-	}
+	// A copy that cannot be placed falls back to a parity group, so the packet is still
+	// recoverable from one loss.
+	tcpMode := len(paths) > 1 && !s.lossTiered
 	if level != protectParity && !(tcpMode && level == protectDuplicate) {
 		f.fecMask = 0
 	}
@@ -128,7 +103,7 @@ func (s *Sender) other(used *receivePath, paths []*receivePath, size int, now ti
 
 func (s *Sender) duplicate(f *sendFlow, number uint64, payload []byte, used *receivePath, paths []*receivePath, now time.Time, writer DatagramWriter) bool {
 	size := len(payload) + Overhead + 24
-	ungated := s.protectName == "tcp" || s.protectName == "auto"
+	ungated := !s.lossTiered // a copy must not queue behind the traffic it protects
 	target := s.other(used, paths, size, now, ungated)
 	if target == nil {
 		s.stats.BulkDupSkipped++
@@ -161,19 +136,6 @@ func (s *Sender) duplicate(f *sendFlow, number uint64, payload []byte, used *rec
 	s.stats.BulkDupSkipped++
 	return false
 }
-
-// autoCoverHold is how long the auto preset keeps copying everything after it sees
-// trouble (the peer asking for repairs, or a path's queue delay jumping).
-const autoCoverHold = 5 * time.Second
-
-// autoDelaySpike reports a path whose delay has jumped well above its floor: a
-// hotspot or satellite link doing this is about to drop a burst.
-func autoDelaySpike(p *receivePath) bool {
-	return p.budget.hasMin && p.budget.srtt-p.budget.minRTT > .025
-}
-
-// autoSmallPacket is the largest TCP payload the auto preset copies outright.
-const autoSmallPacket = 160
 
 // parityFlushAfter is how long a partly filled parity group may wait for its next
 // packet before its parity goes out anyway. It covers the tail of a burst, which
@@ -259,7 +221,7 @@ func (s *Sender) emitParity(f *sendFlow, used *receivePath, paths []*receivePath
 	size := len(body) + Overhead
 	// Parity travels on a different path than the data when one is ready, so a
 	// single-path loss burst cannot take both.
-	target := s.other(used, paths, size, now, s.protectName == "tcp" || s.protectName == "auto")
+	target := s.other(used, paths, size, now, !s.lossTiered)
 	if target == nil {
 		target = used
 	}

@@ -174,7 +174,7 @@ func (s *Sender) sendDeferred(now time.Time, writer DatagramWriter) {
 // when nothing else is ready).
 func (s *Sender) writeParity(kind byte, body []byte, used *receivePath, paths []*receivePath, now time.Time, writer DatagramWriter) {
 	size := len(body) + Overhead
-	target := s.other(used, paths, size, now, s.protectName == "tcp" || s.protectName == "auto")
+	target := s.other(used, paths, size, now, !s.lossTiered)
 	if target == nil {
 		target = used
 	}

@@ -35,7 +35,6 @@ type Config struct {
 	Failover bool // suspect-path tracking and replay
 	FlowPinning bool // pin bulk flows to one path with fast reroute
 	CoDel       bool // per-flow CoDel with ECN marking on the bulk queue
-	Protection  string // off, low, normal, high or max (see bond/protection.go)
 	// ParityRowsMin and ParityRowsMax bound the adaptive Reed-Solomon parity rows per group
 	// of 8 packets (1 row = 12.5%, 3 rows = 37.5%); zero means 1 and 3.
 	ParityRowsMin, ParityRowsMax int
@@ -167,9 +166,6 @@ func New(cfg Config) (*Client, error) {
 	}
 	s.EnableFailover(cfg.Failover)
 	s.SetFlowPinning(cfg.FlowPinning)
-	if err := s.SetProtection(cfg.Protection); err != nil {
-		return nil, err
-	}
 	s.SetParityRows(cfg.ParityRowsMin, cfg.ParityRowsMax)
 	s.EnableLossTracking(cfg.LossTracking)
 	s.EnableDelayControl(cfg.DelayControl)

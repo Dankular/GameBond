@@ -19,11 +19,6 @@ type sentFrame struct {
 func sendProtected(t *testing.T, loss float64, n int, mode ...string) ([][]byte, []sentFrame, *Sender) {
 	t.Helper()
 	f, s, a := senderFixture(t, 2)
-	for _, m := range mode {
-		if err := s.SetProtection(m); err != nil {
-			t.Fatal(err)
-		}
-	}
 	p0 := f.r.paths[pk(a[0])]
 	ts := f.r.seconds(f.now)
 	p0.budget.lossSeen, p0.budget.lossAt, p0.budget.lossEWMA, p0.budget.lossEWSet = true, ts, loss, true
@@ -172,80 +167,34 @@ func TestNoProtectionWhenClean(t *testing.T) {
 	}
 }
 
-func TestProtectionPresetsMoveTheThresholds(t *testing.T) {
-	count := func(frames []sentFrame) (parity int) {
-		for _, fr := range frames {
-			if fr.kind == Parity {
-				parity++
-			}
-		}
-		return
-	}
-	// off: even 3% loss gets nothing extra.
-	_, frames, s := sendProtected(t, 0.03, 16, "off")
-	if count(frames) != 0 || s.Stats().BulkDuplicates != 0 {
-		t.Fatal("off still added redundancy")
-	}
-	// max: a clean path is still duplicated.
-	_, _, s = sendProtected(t, 0, 8, "max")
-	if s.Stats().BulkDuplicates == 0 {
-		t.Fatal("max did not duplicate on a clean path")
-	}
-	// 0.2% loss: normal does nothing, high sends parity.
-	_, frames, s = sendProtected(t, 0.002, 16, "normal")
-	if count(frames) != 0 {
-		t.Fatal("normal acted below its threshold")
-	}
-	_, frames, s = sendProtected(t, 0.002, 16, "high")
-	if count(frames) == 0 {
-		t.Fatal("high did not send parity at 0.2%")
-	}
-	if err := s.SetProtection("bogus"); err == nil {
-		t.Fatal("accepted an unknown preset")
-	}
-}
-
-func TestTCPPresetCopiesTCPAndSmallUDPOnly(t *testing.T) {
+// Every packet is copied from the first one, whatever it is and however clean the lines.
+func TestEveryPacketIsCopiedFromTheFirst(t *testing.T) {
 	f, s, a := senderFixture(t, 2)
-	if err := s.SetProtection("tcp"); err != nil {
-		t.Fatal(err)
-	}
-	for _, k := range a {
-		f.r.paths[pk(k)].last = f.now
-	}
-	udp := udpOfSize(600) // large UDP: bulk, not copied
-	send := func(payload []byte, i int) {
-		for tries := 0; tries < 500; tries++ {
-			now := f.now.Add(time.Duration(i*10+tries) * time.Millisecond)
-			for _, k := range a {
-				f.r.paths[pk(k)].last = now
+	s.lossTiered = false
+	udp := udpOfSize(600)
+	small := udpOfSize(40)
+	n := 0
+	for _, pkt := range [][]byte{tcpPacket("data"), udp, small, tcpPacket(string(make([]byte, 1000)))} {
+		for i := 0; i < 5; i++ {
+			n++
+			for tries := 0; ; tries++ {
+				if tries > 500 {
+					t.Fatal("never sent")
+				}
+				now := f.now.Add(time.Duration(n*10+tries) * time.Millisecond)
+				for _, k := range a {
+					f.r.paths[pk(k)].last = now
+				}
+				if ok, _, err := s.Bulk(pkt, "flow", now, func(Datagram) error { return nil }); err != nil {
+					t.Fatal(err)
+				} else if ok {
+					break
+				}
 			}
-			if ok, _, err := s.Bulk(payload, "flow", now, func(Datagram) error { return nil }); err != nil {
-				t.Fatal(err)
-			} else if ok {
-				return
+			if got := s.Stats().BulkDuplicates; got != uint64(n) {
+				t.Fatalf("packet %d: %d copies so far", n, got)
 			}
 		}
-		t.Fatal("never sent")
-	}
-	for i := 0; i < 5; i++ {
-		send(tcpPacket("data"), i)
-	}
-	if got := s.Stats().BulkDuplicates; got != 5 {
-		t.Fatalf("tcp preset copied %d of 5 TCP packets", got)
-	}
-	for i := 5; i < 10; i++ {
-		send(udp, i)
-	}
-	if got := s.Stats().BulkDuplicates; got != 5 {
-		t.Fatalf("tcp preset copied large UDP: %d duplicates", got)
-	}
-	small := udpOfSize(40)
-	for i := 10; i < 15; i++ {
-		send(small, i)
-	}
-	if got := s.Stats().BulkDuplicates; got != 10 {
-		t.Fatalf("tcp preset copied %d of 5 small UDP packets", got-5)
 	}
 }
 
@@ -253,9 +202,7 @@ func TestTCPPresetCopiesTCPAndSmallUDPOnly(t *testing.T) {
 // travelling alone.
 func TestTCPPresetFallsBackToParityWhenNoCopyFits(t *testing.T) {
 	f, s, a := senderFixture(t, 2)
-	if err := s.SetProtection("tcp"); err != nil {
-		t.Fatal(err)
-	}
+	s.lossTiered = false
 	// Both links look quiet, so no path may take a copy.
 	for _, k := range a {
 		f.r.paths[pk(k)].last = f.now.Add(-400 * time.Millisecond)
@@ -302,9 +249,7 @@ func udpOfSize(n int) []byte {
 // behind the traffic it protects.
 func TestTCPPresetCopiesOntoAFullWindow(t *testing.T) {
 	f, s, a := senderFixture(t, 2)
-	if err := s.SetProtection("tcp"); err != nil {
-		t.Fatal(err)
-	}
+	s.lossTiered = false
 	full := f.r.paths[pk(a[1])]
 	for i := 0; i < maxPending; i++ {
 		full.budget.Sent(uint64(1000+i), 1400, 0)
@@ -334,9 +279,7 @@ func TestTCPPresetCopiesOntoAFullWindow(t *testing.T) {
 // 100% feedback timeouts).
 func TestTCPPresetCopiesAreTrackedForFeedback(t *testing.T) {
 	f, s, a := senderFixture(t, 2)
-	if err := s.SetProtection("tcp"); err != nil {
-		t.Fatal(err)
-	}
+	s.lossTiered = false
 	sent := 0
 	for i := 0; i < 200 && sent < 20; i++ {
 		now := f.now.Add(time.Duration(i) * 10 * time.Millisecond)
@@ -358,86 +301,16 @@ func TestTCPPresetCopiesAreTrackedForFeedback(t *testing.T) {
 	}
 }
 
-func autoFixture(t *testing.T) (receiverFixture, *Sender, []netip.AddrPort) {
+// Priority traffic is copied onto both lines even when nothing asked for a copy.
+func TestUrgentPacketsAreAlwaysSentOnEveryReadyPath(t *testing.T) {
 	f, s, a := senderFixture(t, 2)
-	if err := s.SetProtection("auto"); err != nil {
-		t.Fatal(err)
-	}
-	return f, s, a
-}
-
-func autoSend(t *testing.T, f receiverFixture, s *Sender, a []netip.AddrPort, pkt []byte, n int) {
-	t.Helper()
-	for i := 0; i < n; i++ {
-		now := f.now.Add(time.Duration(i) * 10 * time.Millisecond)
-		for _, k := range a {
-			f.r.paths[pk(k)].last = now
-		}
-		if _, _, err := s.Bulk(pkt, "flow", now, func(Datagram) error { return nil }); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-// Large TCP data costs about 1/fecK extra, not a full copy; small packets are
-// copied outright.
-func TestAutoPresetCoversTCPWithParityAndCopiesSmallPackets(t *testing.T) {
-	f, s, a := autoFixture(t)
-	autoSend(t, f, s, a, tcpPacket(string(make([]byte, 1000))), 16)
-	st := s.Stats()
-	if st.BulkDuplicates != 0 || st.ParitySent != 2 {
-		t.Fatalf("large TCP: copies %d parity %d", st.BulkDuplicates, st.ParitySent)
-	}
-	f, s, a = autoFixture(t)
-	autoSend(t, f, s, a, tcpPacket("ack"), 8)
-	if s.Stats().BulkDuplicates != 8 {
-		t.Fatalf("small TCP not copied: %d", s.Stats().BulkDuplicates)
-	}
-}
-
-// The tail of a burst (a partly filled group) is covered once the flow goes quiet.
-func TestAutoPresetFlushesTheTailOfABurst(t *testing.T) {
-	f, s, a := autoFixture(t)
-	autoSend(t, f, s, a, tcpPacket(string(make([]byte, 1000))), 3)
-	if s.Stats().ParitySent != 0 {
-		t.Fatal("parity sent before the group was full or idle")
-	}
-	end := f.now.Add(25 * time.Millisecond)
+	s.lossTiered = false
 	for _, k := range a {
-		f.r.paths[pk(k)].last = end
+		f.r.paths[pk(k)].last = f.now
 	}
-	if err := s.Maintenance(end, func(Datagram) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if s.Stats().ParitySent != 1 || len(s.parityOpen) != 0 {
-		t.Fatalf("tail not flushed: parity %d open %d", s.Stats().ParitySent, len(s.parityOpen))
-	}
-}
-
-// Trouble switches the auto preset to full duplication for a few seconds: a repair
-// request from the peer, or a path whose delay jumps.
-func TestAutoPresetEscalatesToFullCopiesOnTrouble(t *testing.T) {
-	big := tcpPacket(string(make([]byte, 1000)))
-	f, s, a := autoFixture(t)
-	autoSend(t, f, s, a, big, 8)
-	if s.Stats().BulkDuplicates != 0 {
-		t.Fatalf("copied large TCP with no trouble: %d", s.Stats().BulkDuplicates)
-	}
-	f, s, a = autoFixture(t)
-	s.Controls(ReceiveResult{Repairs: []MissingPacket{{Flow: 1, Number: 1}}}, f.now, func(Datagram) error { return nil })
-	if !s.coverUntil.After(f.now) {
-		t.Fatal("repair request did not start cover")
-	}
-	autoSend(t, f, s, a, big, 8)
-	if got := s.Stats().BulkDuplicates; got != 8 {
-		t.Fatalf("copied %d of 8 during cover", got)
-	}
-
-	f, s, a = autoFixture(t)
-	slow := f.r.paths[pk(a[1])]
-	slow.budget.hasMin, slow.budget.minRTT, slow.budget.srtt = true, .05, .12
-	autoSend(t, f, s, a, big, 8)
-	if s.Stats().BulkDuplicates != 8 {
-		t.Fatalf("delay spike did not trigger full copies: %d", s.Stats().BulkDuplicates)
+	var to []netip.AddrPort
+	n, err := s.Urgent(udpOfSize(60), false, f.now, func(d Datagram) error { to = append(to, d.Endpoint); return nil })
+	if err != nil || n != 2 || len(to) != 2 || to[0] == to[1] {
+		t.Fatalf("sent %d on %v (%v)", n, to, err)
 	}
 }
