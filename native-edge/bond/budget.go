@@ -6,12 +6,22 @@ import (
 	"math"
 )
 
-const maxPending = 4096
+// The reference limits (kept for NewBudget so the behaviour vectors still hold) are
+// 4096 tracked packets and a 1 MiB window. A live path uses the larger limits, which
+// must cover rate x RTT at the configured ceiling (300 Mbps at 100 ms is 3.75 MB):
+// otherwise the window, not the link, limits throughput.
+const (
+	maxPending  = 4096
+	maxWindow   = 1 << 20
+	livePending = 16384
+	liveWindow  = 8 << 20
+)
 
 type budgetPending struct {
 	sequence uint64
 	size     int
 	at       float64
+	copy     bool // a redundancy copy: tracked for its acknowledgement, not counted in flight
 }
 
 // BaseRTTWindow is the seconds per bucket of the decaying delay baseline.
@@ -56,7 +66,13 @@ type Budget struct {
 	// reaches, so bulk sat in the bottleneck buffer and delayed game packets.
 	delayAssertive bool
 	startupExit    string
+	// pendingCap and windowCap are the tracked-packet and in-flight limits.
+	pendingCap int
+	windowCap  float64
 }
+
+// UseLiveLimits gives the budget the larger production window and tracking limits.
+func (b *Budget) UseLiveLimits() { b.pendingCap, b.windowCap = livePending, liveWindow }
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 func NewBudget(initial, maximum float64) (*Budget, error) {
@@ -64,7 +80,7 @@ func NewBudget(initial, maximum float64) (*Budget, error) {
 		return nil, errors.New("invalid path rates")
 	}
 	return &Budget{initial: initial, maximum: maximum, rate: initial * 125000, minimum: math.Min(initial, .05) * 125000,
-		srtt: .25, rawSRTT: .25, rtoBackoff: 1, pending: make(map[uint64]*list.Element), lastBackoff: math.Inf(-1),
+		srtt: .25, rawSRTT: .25, rtoBackoff: 1, pending: make(map[uint64]*list.Element), lastBackoff: math.Inf(-1), pendingCap: maxPending, windowCap: maxWindow,
 		growthAppLimited: true, appLimited: true, startup: true}, nil
 }
 func validTime(now float64) bool   { return finite(now) && now >= 0 }
@@ -84,7 +100,7 @@ func (b *Budget) AckStalled(now, limit float64) bool {
 }
 
 func (b *Budget) Window() int {
-	return int(math.Max(6000, math.Min(1048576, b.rate*math.Max(.02, b.rawSRTT)*2)))
+	return int(math.Max(6000, math.Min(b.windowCap, b.rate*math.Max(.02, b.rawSRTT)*2)))
 }
 func (b *Budget) RateMbps() float64 { return b.rate / 125000 }
 func (b *Budget) pressure(now float64, active *bool) {
@@ -107,7 +123,7 @@ func (b *Budget) ReadyAt(size int, now float64) (float64, error) {
 	}
 	b.observed = math.Max(b.observed, now)
 	b.expire(now, true)
-	active := len(b.pending) >= maxPending || b.inflight+float64(size) > math.Max(float64(size), float64(b.Window()))
+	active := len(b.pending) >= b.pendingCap || b.inflight+float64(size) > math.Max(float64(size), float64(b.Window()))
 	b.pressure(now, &active)
 	if !active {
 		return math.Max(now, b.next), nil
@@ -183,12 +199,41 @@ func (b *Budget) Sent(sequence uint64, size int, now float64) (bool, error) {
 	b.epochBulkWire += float64(size + 28)
 	b.observed = math.Max(b.observed, now)
 	b.next = math.Max(now-.002, b.next) + float64(size+28)/b.rate
-	if len(b.pending) >= maxPending {
+	if len(b.pending) >= b.pendingCap {
 		b.untracked++
 		return false, nil
 	}
-	b.pending[sequence] = b.order.PushBack(budgetPending{sequence, size, now})
+	b.pending[sequence] = b.order.PushBack(budgetPending{sequence, size, now, false})
 	b.inflight += float64(size)
+	return true, nil
+}
+
+// SentCopy records a redundancy copy. The receiver acknowledges the copy's sequence
+// like any other frame, so it must be tracked (an unknown sequence makes the path's
+// feedback get refused), but it is not window data: it neither fills the send window
+// nor waits behind it. The link still carries it, so it is charged as unpaced wire
+// and advances the pacing clock.
+func (b *Budget) SentCopy(sequence uint64, size int, now float64) (bool, error) {
+	if !validSize(size) || !validTime(now) || (b.hasSent && now < b.lastSentAt) {
+		return false, ErrFrame
+	}
+	if b.hasSent && sequence <= b.lastSent {
+		return false, nil
+	}
+	b.expire(now, true)
+	b.hasSent = true
+	b.lastSentAt = now
+	b.lastSent = sequence
+	b.sentBytes += uint64(size)
+	b.sentPackets++
+	if err := b.UnpacedSent(size, now, false); err != nil {
+		return false, err
+	}
+	if len(b.pending) >= b.pendingCap {
+		b.untracked++
+		return false, nil
+	}
+	b.pending[sequence] = b.order.PushBack(budgetPending{sequence, size, now, true})
 	return true, nil
 }
 func (b *Budget) Acknowledge(sequence, delivered uint64, now float64, delayUS uint32) bool {
@@ -240,7 +285,9 @@ func (b *Budget) Acknowledge(sequence, delivered uint64, now float64, delayUS ui
 		}
 		delete(b.pending, p.sequence)
 		b.order.Remove(entry)
-		b.inflight -= float64(p.size)
+		if !p.copy {
+			b.inflight -= float64(p.size)
+		}
 		b.ackedPackets++
 		b.epochRetired += float64(p.size)
 	}
@@ -417,7 +464,9 @@ func (b *Budget) expire(now float64, measure bool) int {
 		}
 		b.order.Remove(entry)
 		delete(b.pending, p.sequence)
-		b.inflight -= float64(p.size)
+		if !p.copy {
+			b.inflight -= float64(p.size)
+		}
 		b.expiredBytes += uint64(p.size)
 		b.expiredPackets++
 		expired++

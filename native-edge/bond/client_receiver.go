@@ -26,6 +26,7 @@ func (r *Receiver) freshPath(local int, endpoint netip.AddrPort, now time.Time) 
 	}
 	p := &receivePath{local: local, endpoint: endpoint, txEpoch: binary.BigEndian.Uint64(epoch[:]), last: now}
 	p.budget, _ = NewBudget(r.initialRate, r.maxRate)
+	p.budget.UseLiveLimits()
 	p.budget.delayControl = r.delayControl
 	p.budget.delayAssertive = r.delayAssertive
 	if r.mtuDiscovery {

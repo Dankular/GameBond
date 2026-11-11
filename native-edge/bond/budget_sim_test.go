@@ -120,3 +120,45 @@ func TestBudgetConvergesOnAThrottledLink(t *testing.T) {
 		}
 	}
 }
+
+// A redundancy copy is tracked for its acknowledgement but never fills the send
+// window: bulk must not queue behind the copies of itself.
+func TestCopiesAreAcknowledgedButDoNotFillTheWindow(t *testing.T) {
+	b, _ := NewBudget(10, 100)
+	window := b.Window()
+	var seq uint64
+	for sent := 0; sent <= 3*window; sent += 1400 {
+		seq++
+		b.SentCopy(seq, 1400, 0)
+	}
+	// Copies still cost wire time (the pacing clock), but bulk is never held for the
+	// timeout waiting for the window to drain.
+	if ready, _ := b.ReadyAt(1400, 0); ready >= b.Timeout()-1e-9 || ready > .1+1e-9 {
+		t.Fatalf("bulk held behind its own copies until %.3f", ready)
+	}
+	if b.inflight != 0 {
+		t.Fatalf("copies counted in flight: %.0f", b.inflight)
+	}
+	if !b.Acknowledge(seq, b.sentBytes, 0.05, 0) {
+		t.Fatal("acknowledgement of a copy was refused")
+	}
+	if b.inflight != 0 {
+		t.Fatalf("inflight went negative or non-zero after retiring copies: %.0f", b.inflight)
+	}
+}
+
+// A live path's window covers rate x RTT at the 300 Mbps ceiling.
+func TestLiveBudgetWindowCoversTheRateCeiling(t *testing.T) {
+	b, _ := NewBudget(10, 300)
+	b.UseLiveLimits()
+	b.rate = 300 * 125000
+	b.rawSRTT = .06
+	if w := b.Window(); w < 4_000_000 {
+		t.Fatalf("window %d cannot carry 300 Mbps at 60 ms", w)
+	}
+	ref, _ := NewBudget(10, 300)
+	ref.rate, ref.rawSRTT = 300*125000, .06
+	if ref.Window() != 1<<20 {
+		t.Fatalf("reference window changed: %d", ref.Window())
+	}
+}
