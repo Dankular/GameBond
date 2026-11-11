@@ -50,7 +50,10 @@ type ReorderStats struct {
 	SkippedTCP, SkippedUDP, LateTCP, LateUDP uint64
 	// Lost is Skipped minus the skipped packets that arrived afterwards: packets that
 	// never came. Computed in Stats.
-	Lost, LostTCP, LostUDP                                        uint64
+	Lost, LostTCP, LostUDP uint64
+	// How long a hole waits before it is declared lost, as currently adapted to the
+	// paths' RTT difference (milliseconds).
+	TimeoutMS, UDPTimeoutMS                                       float64
 	EvictedFlows, ExpiredFlows, DroppedPackets, DroppedBytes      uint64
 	BufferedPackets, BufferedBytes, Flows, PeakPackets, PeakBytes int
 }
@@ -74,6 +77,8 @@ func NewReorder(config ReorderConfig) (*Reorder, error) {
 func (r *Reorder) Stats() ReorderStats {
 	result := r.stats
 	result.Flows = len(r.flows)
+	result.TimeoutMS = r.config.Timeout.Seconds() * 1000
+	result.UDPTimeoutMS = r.config.UDPTimeout.Seconds() * 1000
 	sub := func(a, b uint64) uint64 {
 		if b >= a {
 			return 0

@@ -528,6 +528,11 @@ func (s *Sender) Bulk(payload []byte, key string, now time.Time, writer Datagram
 	s.bulkClock = math.Max(s.bulkClock, minimum)
 	sort.Slice(available, func(i, j int) bool {
 		a, b := available[i], available[j]
+		// A path that would deliver clearly sooner wins outright, whatever its
+		// share of the load; small gaps stay with the fair split below.
+		if gap := (ready[a] + transit[a]) - (ready[b] + transit[b]); math.Abs(gap) > arrivalGap(a, b) {
+			return gap < 0
+		}
 		fa, fb := math.Max(a.bulkFinish, s.bulkClock), math.Max(b.bulkFinish, s.bulkClock)
 		if fa != fb {
 			return fa < fb
@@ -645,4 +650,10 @@ func mtuStats(p *receivePath) *MTUStats {
 
 func isPayloadKind(frame []byte) bool {
 	return len(frame) > 36 && (frame[36] == Data || frame[36] == DataCopy || frame[36] == Striped || frame[36] == Parity)
+}
+
+// arrivalGap is how much sooner one path must deliver before it overrides the fair
+// split: more than the paths' jitter and a floor, so near-equal links still share.
+func arrivalGap(a, b *receivePath) float64 {
+	return math.Max(.02, 4*math.Max(a.jitter, b.jitter))
 }

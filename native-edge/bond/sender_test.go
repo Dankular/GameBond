@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"net/netip"
 	"testing"
@@ -224,5 +225,71 @@ func TestBlockedAndNeverPathsCannotInjectData(t *testing.T) {
 	f.receive(t, LinkPolicy, policyPayload(3, Primary, false, 0, 0), a[0])
 	if out := f.receive(t, Data, []byte("allowed"), a[0]); len(out.Deliver) != 1 {
 		t.Fatal("path did not recover after unblocking")
+	}
+}
+
+// bulkEndpoints sends n bulk packets (TCP data on distinct flows) and counts which
+// endpoint carried each.
+func bulkEndpoints(t *testing.T, f receiverFixture, s *Sender, a []netip.AddrPort, n int) map[netip.AddrPort]int {
+	t.Helper()
+	used := map[netip.AddrPort]int{}
+	for i := 0; i < n; i++ {
+		now := f.now.Add(time.Duration(i) * 5 * time.Millisecond)
+		for _, k := range a {
+			f.r.paths[pk(k)].last = now
+		}
+		if _, _, err := s.Bulk(tcpPacket("data"), fmt.Sprint("flow", i), now, func(d Datagram) error {
+			used[d.Endpoint]++
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return used
+}
+
+func TestBulkPrefersTheClearlyFasterPath(t *testing.T) {
+	f, s, a := senderFixture(t, 2)
+	slow, fast := f.r.paths[pk(a[0])], f.r.paths[pk(a[1])]
+	slow.rtt, slow.hasRTT = .120, true
+	fast.rtt, fast.hasRTT = .030, true
+	f.r.reorder.config.Timeout = time.Second // the old margin filter would let both through
+	used := bulkEndpoints(t, f, s, a, 20)
+	if used[a[0]] != 0 || used[a[1]] == 0 {
+		t.Fatalf("slow path carried bulk while the fast one was free: %v", used)
+	}
+}
+
+func TestBulkStillSharesNearEqualPaths(t *testing.T) {
+	f, s, a := senderFixture(t, 2)
+	for i, k := range a {
+		p := f.r.paths[pk(k)]
+		p.rtt, p.hasRTT = .050+float64(i)*.003, true
+	}
+	used := bulkEndpoints(t, f, s, a, 40)
+	if used[a[0]] == 0 || used[a[1]] == 0 {
+		t.Fatalf("near-equal paths did not share: %v", used)
+	}
+}
+
+// The reorder timeout follows the measured RTT difference between the paths: a
+// small one keeps game latency low, a large one waits for the slow path.
+func TestReorderTimeoutTracksTheRTTGapBetweenPaths(t *testing.T) {
+	f, _, a := senderFixture(t, 2)
+	set := func(r0, r1 float64) (time.Duration, time.Duration) {
+		for i, rtt := range []float64{r0, r1} {
+			p := f.r.paths[pk(a[i])]
+			p.rtt, p.hasRTT, p.ready = rtt, true, true
+		}
+		f.r.updateReorderBudget()
+		return f.r.reorder.config.Timeout, f.r.reorder.config.UDPTimeout
+	}
+	closeTCP, closeUDP := set(.050, .053)
+	farTCP, farUDP := set(.050, .200)
+	if farTCP <= closeTCP || farUDP <= closeUDP {
+		t.Fatalf("timeouts did not widen with the gap: tcp %v->%v udp %v->%v", closeTCP, farTCP, closeUDP, farUDP)
+	}
+	if closeUDP > closeTCP {
+		t.Fatalf("UDP waits longer than TCP: %v > %v", closeUDP, closeTCP)
 	}
 }

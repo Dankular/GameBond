@@ -28,6 +28,7 @@ type Budget struct {
 	hasBaseCur, hasBasePrev, hasBaseStarted                                             bool
 	hasMin, hasSent, hasAck                                                             bool
 	lastSent, lastAck                                                                   uint64
+	lastAckAt                                                                           float64 // time of the last accepted acknowledgement
 	lastSentAt                                                                          float64
 	pending                                                                             map[uint64]*list.Element
 	order                                                                               list.List
@@ -69,6 +70,18 @@ func NewBudget(initial, maximum float64) (*Budget, error) {
 func validTime(now float64) bool   { return finite(now) && now >= 0 }
 func validSize(size int) bool      { return size >= 1 && size <= 65535 }
 func (b *Budget) Timeout() float64 { return math.Min(2, math.Max(.25, 4*b.rawSRTT)*b.rtoBackoff) }
+// AckStalled reports a path that is sending but hearing nothing back: the oldest
+// unacknowledged packet is older than limit seconds and no acknowledgement has
+// been accepted for that long. It is a passive loss-of-path signal that needs no
+// probe, and fires in tens of milliseconds on a busy path.
+func (b *Budget) AckStalled(now, limit float64) bool {
+	front := b.order.Front()
+	if front == nil || !b.hasAck {
+		return false
+	}
+	return now-front.Value.(budgetPending).at > limit && now-b.lastAckAt > limit
+}
+
 func (b *Budget) Window() int {
 	return int(math.Max(6000, math.Min(1048576, b.rate*math.Max(.02, b.rawSRTT)*2)))
 }
@@ -236,6 +249,7 @@ func (b *Budget) Acknowledge(sequence, delivered uint64, now float64, delayUS ui
 	b.deliveryCounter = delivered
 	b.lastAck = sequence
 	b.hasAck = true
+	b.lastAckAt = now
 	b.epochDelivered += float64(delta)
 	elapsed := 0.
 	if b.hasEpoch {

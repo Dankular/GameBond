@@ -19,6 +19,7 @@ const (
 	// packet is also copied onto a healthy path so nothing sent into a dying link is
 	// lost while detection catches up.
 	riskFloor         = 150 * time.Millisecond
+	ackStallFloor     = 60 * time.Millisecond // least silence that marks a busy path stalled
 	failoverPathLimit = 1.5 // seconds; half of the 3s eligibility timeout
 )
 
@@ -40,7 +41,21 @@ func (s *Sender) atRisk(p *receivePath, now time.Time) bool {
 		return false
 	}
 	after := math.Max(riskFloor.Seconds(), 1.5*s.r.probeInterval.Seconds()+4*p.jitter)
-	return now.Sub(p.last) >= time.Duration(after*float64(time.Second))
+	if now.Sub(p.last) >= time.Duration(after*float64(time.Second)) {
+		return true
+	}
+	// Passive: traffic is going out but no acknowledgement has come back for a few
+	// round trips, long before the probe clock would notice.
+	return p.hasFeedback && p.budget.AckStalled(s.r.seconds(now), ackStallLimit(p))
+}
+
+// ackStallLimit is how long a busy path may go without an acknowledgement.
+func ackStallLimit(p *receivePath) float64 {
+	rtt := p.budget.rawSRTT
+	if rtt <= 0 {
+		rtt = p.rtt
+	}
+	return math.Max(ackStallFloor.Seconds(), 3*rtt+4*p.budget.rttVar)
 }
 
 func (s *Sender) pathSuspect(p *receivePath, now time.Time) bool {

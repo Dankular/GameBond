@@ -396,11 +396,37 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 	}
 	go func() { errs <- bridge.Pump(stdout) }()
 	go func() {
-		for ctx.Err() == nil {
+		var health bond.Health
+		var metrics *metricsLog
+		if *statusPath != "" {
+			metrics = newMetricsLog(filepath.Join(filepath.Dir(*statusPath), "metrics.jsonl"))
+		}
+		lastAlarms := ""
+		for tick := 0; ctx.Err() == nil; tick++ {
 			time.Sleep(time.Second)
 			s := c.Snapshot()
 			if s.Ready > 0 {
 				readyOnce.Do(ready)
+			}
+			quality, _ := s.QoS["path_quality"].([]bond.PathQuality)
+			timeouts := make([]float64, len(quality))
+			for i, q := range quality {
+				timeouts[i] = q.FeedbackTimeoutRatio
+			}
+			alarms := health.Observe(s.Receiver.FeedbackReceived, s.Receiver.FeedbackRejected, timeouts)
+			if text := fmt.Sprint(alarms); text != lastAlarms {
+				lastAlarms = text
+				if len(alarms) == 0 {
+					fmt.Fprintln(logOut, "transport health: alarms cleared")
+				}
+				for _, a := range alarms {
+					fmt.Fprintf(logOut, "transport health ALARM %s link=%d: %s\n", a.Kind, a.Link, a.Detail)
+				}
+			}
+			if tick%5 == 0 {
+				if err := metrics.Append(metricsSample(s, time.Now(), alarms)); err != nil {
+					fmt.Fprintln(logOut, "metrics write failed:", err)
+				}
 			}
 			if meter != nil {
 				wire := make([][2]uint64, len(specs))
@@ -421,7 +447,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 				fmt.Fprintln(logOut, "application history write failed:", err)
 			}
 			if *statusPath != "" {
-				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture, c.DFEnforced())); err != nil {
+				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture, c.DFEnforced(), alarms)); err != nil {
 					fmt.Fprintln(logOut, "status write failed:", err)
 				}
 			}
@@ -504,7 +530,7 @@ func main() {
 
 // statusDocument is the Python-compatible subset of userspace-status.json the
 // control tooling reads: identity, state, peer, per-path transport and counters.
-func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState, l *lanManager, capture *appCapture, df []bool) map[string]any {
+func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState, l *lanManager, capture *appCapture, df []bool, alarms []bond.Alarm) map[string]any {
 	state := "connecting"
 	if s.Ready > 0 {
 		state = "running"
@@ -519,7 +545,7 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
 		"transport": map[string]any{"paths": paths, "receive": s.Receiver, "send": s.Sender, "reorder": s.Reorder, "queue": s.Queue, "loop": s.Loop},
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status()}
+		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "alarms": alarms}
 	if capture != nil {
 		capture.status(doc)
 	}
