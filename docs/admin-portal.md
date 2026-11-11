@@ -10,8 +10,8 @@ the container refuses that combination.
 ## Setup
 
 ```sh
-python -m gamebond admin-cert secrets/admin --host vps.example.com   # self-signed; use a CA cert for real use
-printf '%s' 'a long password' | python -m gamebond admin-passwd      # prints password_hash
+gamebond-adminctl cert secrets/admin -host vps.example.com   # self-signed; use a CA cert for real use
+printf '%s' 'a long password' | gamebond-adminctl passwd            # prints password_hash
 ```
 
 Add to the server config, with the hash from above (paths are inside the container):

@@ -307,6 +307,9 @@ func TestPythonClientInterop(t *testing.T) {
 		t.Skip("python not installed")
 	}
 	root, _ := filepath.Abs("../..")
+	if _, err := os.Stat(filepath.Join(root, "gamebond")); err != nil {
+		t.Skip("python implementation retired")
+	}
 	r := start(t, Options{})
 	pub, _ := dial(t, r, authLine(r, `"role":"publish"`), "alpha\nbeta\n")
 	_ = pub

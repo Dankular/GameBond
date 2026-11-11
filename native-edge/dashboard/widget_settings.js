@@ -38,52 +38,6 @@ function numberValue(el, label, integer = false) {
   return n;
 }
 
-// DNS record editing keeps worker/queue settings which are not part of this form.
-$('dnsconfig').hidden = true;
-const dnsEditor = element('div'); $('dnsconfig').before(dnsEditor);
-const dnsFields = element('div'); dnsFields.className = 'fields'; dnsEditor.append(dnsFields);
-const dnsEnabled = input('checkbox', '', 'Custom DNS');
-field('Custom DNS', dnsEnabled, dnsFields);
-const dnsTTL = field('Record TTL (seconds)', input('number', 15, 'Record TTL', { min: 0, max: 300 }), dnsFields);
-const dnsBind = field('Listen address', input('text', '10.77.0.2', 'DNS listen address'), dnsFields);
-const dnsPort = field('Listen port', input('number', 53, 'DNS listen port', { min: 0, max: 65535 }), dnsFields);
-const dnsUpstreamEnabled = input('checkbox', '', 'Forward other names');
-field('Forward other names', dnsUpstreamEnabled, dnsFields);
-const dnsUpstream = field('Upstream resolver IPv4', input('text', '1.1.1.1', 'Upstream resolver IPv4'), dnsFields);
-const dnsUpstreamPort = field('Upstream resolver port', input('number', 53, 'Upstream resolver port', { min: 1, max: 65535 }), dnsFields);
-const dnsTable = element('table'); dnsTable.innerHTML = '<thead><tr><th>Name</th><th>Type</th><th>IP addresses</th><th></th></tr></thead><tbody id="dnsrecords"></tbody>';
-dnsEditor.append(element('p', 'Use a full website name. Separate multiple IP addresses with commas.'), dnsTable, action('Add DNS record', () => addDNSRecord()));
-let dnsDraft = {};
-function addDNSRecord(name = '', kind = 'A', addresses = []) {
-  const tr = element('tr'), host = input('text', name, 'DNS record name'), family = select(['A', 'AAAA'], kind, 'DNS record type'), ips = input('text', addresses.join(', '), 'DNS record IP addresses');
-  for (const el of [host, family, ips, action('Remove', () => tr.remove())]) { const td = element('td'); td.append(el); tr.append(td); }
-  $('dnsrecords').append(tr);
-}
-loadDNS = async function () {
-  dnsDraft = (await api('dns')).dns || {};
-  dnsEnabled.checked = dnsDraft.enabled ?? Object.keys(dnsDraft.records || {}).length > 0;
-  dnsTTL.value = dnsDraft.ttl ?? 15; dnsBind.value = dnsDraft.bind?.[0] ?? '10.77.0.2'; dnsPort.value = dnsDraft.bind?.[1] ?? 53;
-  dnsUpstreamEnabled.checked = Boolean(dnsDraft.upstream); dnsUpstream.value = dnsDraft.upstream?.[0] ?? '1.1.1.1'; dnsUpstreamPort.value = dnsDraft.upstream?.[1] ?? 53;
-  $('dnsrecords').replaceChildren();
-  for (const [name, types] of Object.entries(dnsDraft.records || {})) for (const [kind, addresses] of Object.entries(types)) addDNSRecord(name, kind, addresses);
-};
-$('savedns').onclick = async () => {
-  try {
-	$('dnsmsg').textContent = 'Saving…';
-    const records = Object.create(null);
-    for (const tr of $('dnsrecords').children) {
-      const fields = tr.querySelectorAll('input'), kind = tr.querySelector('select').value, name = fields[0].value.trim().toLowerCase().replace(/\.$/, '');
-      if (!name) throw new Error('Enter a DNS record name');
-      const addresses = fields[1].value.split(/[,;\s]+/).filter(Boolean);
-      if (records[name]?.[kind]) throw new Error('Duplicate ' + kind + ' record for ' + name);
-      (records[name] ||= Object.create(null))[kind] = addresses;
-    }
-    const next = { ...dnsDraft, enabled: dnsEnabled.checked, ttl: numberValue(dnsTTL, 'Record TTL', true), bind: [dnsBind.value.trim(), numberValue(dnsPort, 'Listen port', true)], records };
-    if (dnsUpstreamEnabled.checked) next.upstream = [dnsUpstream.value.trim(), numberValue(dnsUpstreamPort, 'Upstream port', true)]; else delete next.upstream;
-    await api('dns', 'PUT', next); $('dnsmsg').textContent = 'Saved; reconnect to apply.'; await loadDNS();
-  } catch (e) { $('dnsmsg').textContent = e.message; }
-};
-loadDNS().catch(e => $('dnsmsg').textContent = e.message);
 
 // Per-link form: display caps in decimal GB, save validated integer byte caps.
 $('linkconfig').hidden = true;
@@ -269,7 +223,7 @@ $('saveapps').onclick = async () => {
 };
 document.querySelector('.network-actions').append(action('Connected devices', openDevices), action('OpenMPTCProuter', openOMR));
 const settingsDialog = modal('settingsdialog', 'Settings'), settingsMenu = element('div'); settingsMenu.className = 'settings-menu'; settingsDialog.append(settingsMenu);
-for (const [label, handler] of [['Application routing', () => $('capturedapps').click()], ['Select networks', () => $('selectnetworks').click()], ['Link roles and limits', () => $('linklimits').click()], ['Connected devices', openDevices], ['OpenMPTCProuter', openOMR], ['DNS settings', () => selectTab('dns')]]) settingsMenu.append(action(label, () => { settingsDialog.close(); handler(); }));
+for (const [label, handler] of [['Application routing', () => $('capturedapps').click()], ['Select networks', () => $('selectnetworks').click()], ['Link roles and limits', () => $('linklimits').click()], ['Connected devices', openDevices], ['OpenMPTCProuter', openOMR]]) settingsMenu.append(action(label, () => { settingsDialog.close(); handler(); }));
 $('settings').onclick = () => showDialog('settingsdialog');
 
 // Stable identities keep an unplugged selection distinct from an adapter that

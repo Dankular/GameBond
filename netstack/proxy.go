@@ -29,6 +29,7 @@ func proxyStack() error {
 		return err
 	}
 	bridgeDevices(device)
+	startStreamTransport(stack)
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return err

@@ -14,7 +14,7 @@ cleanup() {
     rm -f /tmp/gamebond-ready /tmp/gamebond.pid
     if [[ -n "$child" ]]; then
         kill -TERM "$child" 2>/dev/null || true
-        # Give the Python signal handler time to close packet workers and TUN.
+        # Give the edge signal handler time to close packet workers and TUN.
         for ((attempt=0; attempt<50; attempt++)); do
             if ! kill -0 "$child" 2>/dev/null; then break; fi
             sleep 0.1
@@ -38,26 +38,17 @@ trap 'exit 130' INT
 # sources from the current config. Runs at start and again on every portal restart,
 # so a configuration saved from the admin portal is checked before it is used.
 plan() {
-    python - "$CONFIG" "$KEY" <<'PY'
-import sys
-from pathlib import Path
-from gamebond.app import load_config
-c = load_config(sys.argv[1])
-if (c['role'] != 'server' or c['bind'] != [['0.0.0.0', 4433]] or
-        c.get('tun_name', 'GameBond') != 'gamebond0' or
-        c.get('mtu', 1280) != 1280 or c['client_tunnel_ip'] != '10.77.0.2'):
-    raise SystemExit('Container config must use server, 0.0.0.0:4433, gamebond0, MTU1280 and client 10.77.0.2')
-if len(Path(sys.argv[2]).read_bytes()) != 32:
-    raise SystemExit('The read-only shared key must contain exactly 32 bytes')
-PY
+    jq -e '.role == "server" and .bind == [["0.0.0.0", 4433]]
+        and (.tun_name // "GameBond") == "gamebond0" and (.mtu // 1280) == 1280
+        and .client_tunnel_ip == "10.77.0.2"' "$CONFIG" >/dev/null || {
+        echo 'Container config must use server, 0.0.0.0:4433, gamebond0, MTU1280 and client 10.77.0.2' >&2; exit 1;
+    }
+    [[ $(stat -c %s "$KEY") == 32 ]] || {
+        echo 'The read-only shared key must contain exactly 32 bytes' >&2; exit 1;
+    }
     # Attached LAN devices (for example a console behind a client USB adapter) each get their
     # own tunnel address. Without any, the original lone-client /30 and single-source NAT stay.
-    LAN_IPS=$(python - "$CONFIG" <<'PY'
-import sys
-from gamebond.app import load_config
-print(' '.join(load_config(sys.argv[1]).get('lan_tunnel_ips', [])))
-PY
-)
+    LAN_IPS=$(jq -r '(.lan_tunnel_ips // []) | join(" ")' "$CONFIG")
     TUNNEL_PREFIX=30
     NAT_SOURCES='10.77.0.2/32'
     if [[ -n "$LAN_IPS" ]]; then
@@ -82,11 +73,7 @@ PY
 }
 
 launch() {
-    if [[ ${GAMEBOND_NATIVE_EDGE:-0} == 1 ]]; then
-        /usr/local/bin/gamebond-native-edge --config "$CONFIG" --key "$KEY" &
-    else
-        python -m gamebond run "$CONFIG" --key "$KEY" &
-    fi
+    /usr/local/bin/gamebond-native-edge --config "$CONFIG" --key "$KEY" &
     child=$!
     printf '%s\n' "$child" > /tmp/gamebond.pid
     # The packet process creates TUN. Bound startup wait to ten seconds and fail

@@ -79,3 +79,11 @@ Read the ledger tables (sections 1 to 3 and 5). Several rows are PART with expli
 - The admin password was reset this session; a backup of the old config is `configs/local-server.json.bak-pw` in the live release dir. A first attempt mangled the hash and the container was down for about 90 s; it was fixed.
 - Latest observed local state (2026-11-09 20:15 UTC): Go supervisor PID 31396 reports `stopped` after the cold Connect/Disconnect test; no active session children remain. It uses persistent `configs/local-client.json` and all-absolute launch arguments from `configs/local-desktop.json`. The six pre-existing netstacks (300, 1084, 6828, 9104, 14620, 17368) remain. The test widget was closed after verification; the updated build is installed at `build/gamebond-widget.exe`. `start-widget.cmd` opens it without automatically connecting. Autostart was off and remains off. Control: `build/gamebond-desktopctl.exe status|ensure|connect|stop -root .`.
 - Benchmark evidence (Go about 4x the Python userspace client on the same link, and lower CPU) is in the git-ignored `evidence/` and summarised in the ledger (criterion 3).
+
+## Python retirement (2026-11-11)
+
+The Python code (`gamebond/`, `tests/`, `tools/*.py`, `pyproject.toml`) was removed at the user's
+request after the Go client and edge were running live. It is in git history. The vector generators
+are frozen in `native-edge/testdata-gen/`. The root `Dockerfile` now builds the Go edge and the
+entrypoint no longer needs Python. The VPS Python rollback release was not touched. The ledger
+statuses above describe the state at migration time.

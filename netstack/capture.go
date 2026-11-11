@@ -115,7 +115,7 @@ func serveSOCKS(conn net.Conn, stack *netstack.Net, restricted ...bool) error {
 			conn.Write([]byte{5, 2, 0, 1, 0, 0, 0, 0, 0, 0})
 			return fmt.Errorf("application policy denied connection")
 		}
-		remote, err := stack.DialContextTCPAddrPort(ctx, target)
+		remote, err := dialTCP(ctx, stack, target)
 		if err != nil {
 			conn.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
 			return err

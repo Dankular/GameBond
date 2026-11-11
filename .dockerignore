@@ -1,13 +1,7 @@
-# Whitelist the app build inputs. Keys, local configs, drivers, evidence,
-# decompilation exports and private SSH material never enter the build context.
+# Whitelist the build inputs. Keys, local configs, drivers, evidence and private material never enter the build context.
 **
 !Dockerfile
-!pyproject.toml
-!gamebond/
-!gamebond/*.py
-!gamebond/admin/
-!gamebond/admin/*.py
-!gamebond/admin/static/
-!gamebond/admin/static/*
+!native-edge/
 !tools/
 !tools/container-entrypoint.sh
+native-edge/**/*.exe

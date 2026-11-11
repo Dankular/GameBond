@@ -13,31 +13,99 @@ Stripes bulk traffic across IPv4 uplinks and duplicates selected traffic for res
 
 ## Client
 
-Requires Python 3.11+, ProxiFyre/Windows Packet Filter, and built Go helpers.
-This is a source checkout; a packaged installer is not available.
+Windows, with ProxiFyre and the Windows Packet Filter driver. This is a source
+checkout; there is no installer. Everything is Go (Go 1.25+); Python is not used.
 
 ```powershell
-python -m pip install -e ".[widget]"
-.\start-client.cmd
+$env:GOFLAGS = "-buildvcs=false"
+go -C native-edge build -o ../build/gamebond-native-client.exe ./cmd/client
+go -C native-edge build -o ../build/gamebond-desktopctl.exe ./cmd/desktopctl
+go -C native-edge build -ldflags "-H=windowsgui" -o ../build/gamebond-widget.exe ./cmd/tray
+go -C netstack build -o ../build/gamebond-netstack.exe .
+.\start-widget.cmd
 ```
 
 Configure `configs/local-client.json` from [the example](configs/client.example.json).
-Choose **Connect** in the dashboard. **Manage apps** controls capture;
-**Link roles & limits** controls uplinks. Reconnect after settings changes.
-Closing the window hides it in the tray; **Quit (stop tunnel)** exits.
+Choose **Connect** in the widget. Closing the window hides it in the tray;
+**Quit (stop tunnel)** exits. `build\gamebond-desktopctl.exe status|ensure|connect|stop -root .`
+controls the supervisor from a shell. Rebuild `desktopctl` and the widget whenever
+config validation changes, because they embed the validators.
 
 For several Starlinks, see [multiple uplinks](docs/multiple-uplinks.md).
-For a PS5 or other device on a USB adapter, see [connected devices](docs/lan-devices.md).
+For a PS5, laptop or phone behind a USB adapter or a Wi-Fi access point on it,
+see [connected devices](docs/lan-devices.md).
 
-The default uses a userspace network stack. Administrator/Wintun commands
-belong to a separate legacy backend.
+## Desktop walkthrough
+
+Start the widget with `start-widget.cmd`. The status strip at the top shows each
+uplink (adapter, address, live rates, Starlink dish and Wi-Fi signal where
+available) and a chip for every connected device. The **Connect/Disconnect**
+button starts and stops the tunnel. The footer shows the exit server and link count.
+
+**Traffic Monitor** is the home page. It graphs live adapter traffic (or VPN-only
+counters) per application or for everything, over a selectable window.
+
+![Traffic Monitor](docs/screenshots/traffic.png)
+
+**Applications & hosts** lists what each app is talking to.
+
+![Applications and hosts](docs/screenshots/traffic-apps.png)
+
+**Issues** is the health page: per-link loss, jitter and RTT, packets the receiver
+gave up on, bursts and stalls, and the PS5 gateway probe loss. Start here when a
+game feels bad.
+
+![Issues](docs/screenshots/issues.png)
+
+**Protect** controls which applications use the tunnel. All traffic is included by
+default (unverified applications are allowed). Per app you can allow or block, set a
+traffic profile, and see hosts and rates.
+
+![Protect](docs/screenshots/protect.png)
+
+**Log Analysis** is the event journal: connection changes and first-seen apps, with
+filters and read markers.
+
+![Log Analysis](docs/screenshots/logs.png)
+
+**Network Scanner** reads the local neighbour cache per adapter and can run a
+bounded ICMP scan of a private subnet. It never probes without being asked.
+
+![Network Scanner](docs/screenshots/scanner.png)
+
+**Hardware Resources** shows CPU, memory, GPU and network load on the PC.
+
+![Hardware Resources](docs/screenshots/hardware.png)
+
+The buttons under the uplink strip open dialogs:
+
+- **Select networks** chooses which adapters are bonded (1 to 8).
+
+  ![Select networks](docs/screenshots/networks.png)
+
+- **Link roles & limits** sets each link's role (primary, secondary, backup, never),
+  speed limits and daily/monthly caps.
+
+  ![Link roles and limits](docs/screenshots/links.png)
+
+- **Connected devices** gives a console, laptop or phone its own bond address. Several
+  devices can share one adapter, for example a router in access-point mode on a
+  USB Ethernet adapter. See [lan-devices.md](docs/lan-devices.md).
+
+  ![Connected devices](docs/screenshots/devices.png)
+
+- **OpenMPTCProuter** optionally sends non-game traffic through an OMR server.
+
+  ![OpenMPTCProuter](docs/screenshots/omr.png)
+
+Screenshots mask public IP and MAC addresses.
 
 ## Server
 
 Requires Linux, Docker Compose, and `/dev/net/tun`.
 
 1. Copy [the server example](configs/server.example.json) to `configs/local-server.json`.
-2. Generate a key: `python -m gamebond keygen secrets/gamebond.key`.
+2. Create a 32-byte key: `head -c 32 /dev/urandom > secrets/gamebond.key`.
 3. Configure matching keys, session IDs, and bonding settings on both endpoints.
 4. Set `GAMEBOND_SERVER_CONFIG=./configs/local-server.json` and
    `GAMEBOND_KEY_FILE=./secrets/gamebond.key` in `deploy.env`.
@@ -47,7 +115,8 @@ docker compose --env-file deploy.env up -d --build
 docker compose --env-file deploy.env logs --tail 30
 ```
 
-The Python server owns TUN/NAT inside its container and publishes UDP4433.
+The Go edge owns TUN/NAT inside its container and publishes UDP 4433. Addresses
+for attached LAN devices go in the server config as `lan_tunnel_ips`.
 Keep keys and live configs private. Server restarts require matching session handling.
 
 An optional HTTPS admin portal (status, config editing, restart) is described in [admin-portal.md](docs/admin-portal.md).
@@ -89,24 +158,18 @@ The client's LAN gateway fragments oversized device packets without DF, and
 sends ICMP frag-needed for DF ones. Watch `oversize_fragmented` and
 `oversize_df_dropped` in the status file.
 
-## Remaining gaps
-
-Live HTTPS, QUIC, persistent connections, and Codex traffic have passed checks.
-Combined-link speed gains and sustained game/call performance under real outages
-still need validation. DNS/IPv6 coverage, a kill switch, full wire accounting,
-and production fallback/native-server integration remain incomplete.
-See [current status](docs/local-status.md).
-
 ## Development
 
 ```powershell
-python -m unittest discover -s tests
+$env:GOFLAGS = "-buildvcs=false"
 go -C netstack test ./...
 go -C native-edge test ./...
 ```
 
 - [netstack/](netstack/): Windows userspace proxy.
-- [native-edge/](native-edge/): experimental Go server.
-- [tools/](tools/): builds, deployments, and diagnostics.
+- [native-edge/](native-edge/): the Go client, server edge, widget and tools.
+- [native-edge/testdata-gen/](native-edge/testdata-gen/): frozen Python scripts that generated the test vectors. Python is not needed to run the tests.
+- [tools/](tools/): container entrypoint, deploy and diagnostic scripts.
 
+The Python implementation was retired; it remains in git history.
 GameBond uses its own protocol and does not interoperate with Speedify.
