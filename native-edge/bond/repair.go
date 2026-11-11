@@ -14,6 +14,10 @@ type repairEntry struct {
 	attempts int
 	order    *list.Element
 	origin   *receivePath // path that last carried this packet (failover replay)
+	// sent counts the frames put on the wire for this packet (original, copies,
+	// resends) and lost how many of them the peer's selective acknowledgement showed
+	// were dropped. When every one is lost the packet is gone unless we send it again.
+	sent, lost int
 }
 type askedRepair struct {
 	key      MissingPacket
@@ -47,7 +51,7 @@ func (s *Sender) cacheRepair(key MissingPacket, payload []byte, now time.Time, o
 	if len(payload) > 2048 || !(s.failover || repairable(payload)) {
 		return
 	}
-	entry := &repairEntry{key: key, payload: append([]byte(nil), payload...), at: now, origin: origin}
+	entry := &repairEntry{key: key, payload: append([]byte(nil), payload...), at: now, origin: origin, sent: 1}
 	entry.order = s.repairOrder.PushBack(entry)
 	s.repairs[key] = entry
 	for len(s.repairs) > repairCacheMax {
@@ -78,7 +82,9 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 		delete(s.asked, old.key)
 		s.askedOrder.Remove(old.order)
 	}
+	s.tailProbe(now)
 	s.flushParity(now, writer)
+	s.sendDeferred(now, writer)
 	if s.failover {
 		if err := s.failoverStep(now, writer); err != nil {
 			return err
@@ -200,7 +206,10 @@ func (s *Sender) Maintenance(now time.Time, writer DatagramWriter) error {
 			return err
 		}
 		if s.written(Datagram{Endpoint: target.endpoint, Frame: frame, Local: target.local}, target, now, writer) {
-			target.budget.Sent(binary.BigEndian.Uint64(frame[37:]), len(frame), timestamp)
+			sequence := binary.BigEndian.Uint64(frame[37:])
+			target.budget.Sent(sequence, len(frame), timestamp)
+			target.budget.Tag(sequence, key)
+			cached.sent++
 			cached.attempts++
 			cached.origin = target
 			delete(s.repairRequests, key)

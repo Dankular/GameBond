@@ -22,6 +22,13 @@ type budgetPending struct {
 	size     int
 	at       float64
 	copy     bool // a redundancy copy: tracked for its acknowledgement, not counted in flight
+	// key names the flow packet this frame carries, so a loss seen in the selective
+	// acknowledgement can be answered with that packet's payload.
+	key   MissingPacket
+	keyed bool
+	// lost: the peer's selective acknowledgement showed later frames arriving without
+	// this one. It stays tracked until the cumulative acknowledgement retires it.
+	lost bool
 }
 
 // BaseRTTWindow is the seconds per bucket of the decaying delay baseline.
@@ -69,6 +76,8 @@ type Budget struct {
 	// pendingCap and windowCap are the tracked-packet and in-flight limits.
 	pendingCap int
 	windowCap  float64
+	// Selective-acknowledgement loss counters (see Sack).
+	sackLost, sackReports, tailLost uint64
 }
 
 // UseLiveLimits gives the budget the larger production window and tracking limits.
@@ -203,7 +212,7 @@ func (b *Budget) Sent(sequence uint64, size int, now float64) (bool, error) {
 		b.untracked++
 		return false, nil
 	}
-	b.pending[sequence] = b.order.PushBack(budgetPending{sequence, size, now, false})
+	b.pending[sequence] = b.order.PushBack(budgetPending{sequence: sequence, size: size, at: now})
 	b.inflight += float64(size)
 	return true, nil
 }
@@ -233,9 +242,100 @@ func (b *Budget) SentCopy(sequence uint64, size int, now float64) (bool, error) 
 		b.untracked++
 		return false, nil
 	}
-	b.pending[sequence] = b.order.PushBack(budgetPending{sequence, size, now, true})
+	b.pending[sequence] = b.order.PushBack(budgetPending{sequence: sequence, size: size, at: now, copy: true})
 	return true, nil
 }
+
+// Tag records which flow packet the tracked frame with this sequence carries.
+func (b *Budget) Tag(sequence uint64, key MissingPacket) {
+	if e := b.pending[sequence]; e != nil {
+		p := e.Value.(budgetPending)
+		p.key, p.keyed = key, true
+		e.Value = p
+	}
+}
+
+// sackThreshold is how many later frames on the same path must arrive before an
+// earlier one that did not is called lost. One path delivers in order, so a small
+// threshold is enough to ride out a swap while still reacting within a few packets.
+const sackThreshold = 3
+
+// Sack applies the peer's selective acknowledgement: bits is a bitmap over the 8*len(bits)
+// frame sequences starting at base, set where the peer received that frame on this path.
+// A tracked frame inside the window that is clear, with at least sackThreshold later
+// tracked frames of this path received, is lost. It returns the flow packets those
+// frames carried (each frame is reported once). It must run before Acknowledge, which
+// retires the entries.
+func (b *Budget) Sack(base uint64, bits []byte) []MissingPacket {
+	end := base + uint64(len(bits))*8
+	type seen struct {
+		e   *list.Element
+		got bool
+	}
+	var window []seen
+	for e := b.order.Front(); e != nil; e = e.Next() {
+		p := e.Value.(budgetPending)
+		if p.sequence < base {
+			continue
+		}
+		if p.sequence >= end {
+			break
+		}
+		i := p.sequence - base
+		window = append(window, seen{e, bits[i/8]&(1<<(i%8)) != 0})
+	}
+	b.sackReports++
+	var lost []MissingPacket
+	later := 0
+	for i := len(window) - 1; i >= 0; i-- {
+		if window[i].got {
+			later++
+			continue
+		}
+		p := window[i].e.Value.(budgetPending)
+		if p.lost || later < sackThreshold {
+			continue
+		}
+		p.lost = true
+		window[i].e.Value = p
+		b.sackLost++
+		if p.keyed {
+			lost = append(lost, p.key)
+		}
+	}
+	return lost
+}
+
+// tailProbeLimit bounds how many silent frames one call can declare lost.
+const tailProbeLimit = 64
+
+// TailLost names the flow packets of frames that no acknowledgement has covered for
+// longer than a round trip plus the feedback interval. A later frame arriving would have
+// retired them (the cumulative acknowledgement covers everything below it), so the
+// frames at the front of the queue that are still pending are the tail of a burst, or
+// everything on a path that has stopped answering: the selective acknowledgement cannot
+// see them because nothing was sent after them. Each frame is reported once.
+func (b *Budget) TailLost(now float64) []MissingPacket {
+	limit := math.Max(.05, b.rawSRTT+4*b.rttVar+.03)
+	var lost []MissingPacket
+	for e := b.order.Front(); e != nil && len(lost) < tailProbeLimit; e = e.Next() {
+		p := e.Value.(budgetPending)
+		if now-p.at < limit {
+			break
+		}
+		if p.lost {
+			continue
+		}
+		p.lost = true
+		e.Value = p
+		b.tailLost++
+		if p.keyed {
+			lost = append(lost, p.key)
+		}
+	}
+	return lost
+}
+
 func (b *Budget) Acknowledge(sequence, delivered uint64, now float64, delayUS uint32) bool {
 	element := b.pending[sequence]
 	if !validTime(now) || delayUS > 1000000 || element == nil || (b.hasAck && sequence <= b.lastAck) || delivered <= b.deliveryCounter || delivered > b.sentBytes {

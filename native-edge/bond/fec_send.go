@@ -147,7 +147,13 @@ func (s *Sender) duplicate(f *sendFlow, number uint64, payload []byte, used *rec
 		// Always tracked: the receiver acknowledges this frame's sequence, and an
 		// untracked sequence makes that path's feedback get rejected (everything
 		// then times out and the feedback-timeout ratio reads 100%).
-		target.budget.SentCopy(binary.BigEndian.Uint64(frame[37:]), len(frame), s.r.seconds(now))
+		sequence := binary.BigEndian.Uint64(frame[37:])
+		target.budget.SentCopy(sequence, len(frame), s.r.seconds(now))
+		key := MissingPacket{f.id, number}
+		target.budget.Tag(sequence, key)
+		if cached := s.repairs[key]; cached != nil {
+			cached.sent++
+		}
 		s.stats.Copies++
 		s.stats.BulkDuplicates++
 		return true
@@ -209,6 +215,7 @@ func (s *Sender) accumulateParity(f *sendFlow, number uint64, payload []byte, us
 	}
 	if f.fecMask == 0 {
 		f.fecBase, f.fecXor = base, f.fecXor[:0]
+		f.rsReset()
 	}
 	if need := 2 + len(payload); need > len(f.fecXor) {
 		f.fecXor = append(f.fecXor, make([]byte, need-len(f.fecXor))...)
@@ -220,6 +227,7 @@ func (s *Sender) accumulateParity(f *sendFlow, number uint64, payload []byte, us
 	for i, b := range payload {
 		f.fecXor[2+i] ^= b
 	}
+	f.rsAccumulate(int(number-base), payload)
 	f.fecMask |= 1 << (number - base)
 	f.fecPath = used
 	if s.parityOpen == nil {
@@ -233,6 +241,12 @@ func (s *Sender) accumulateParity(f *sendFlow, number uint64, payload []byte, us
 
 func (s *Sender) emitParity(f *sendFlow, used *receivePath, paths []*receivePath, now time.Time, writer DatagramWriter) {
 	if f.fecMask == 0 {
+		return
+	}
+	if rows := s.parityRows(now); rows > 1 {
+		s.emitParityRS(f, rows, used, paths, now, writer)
+		f.fecMask, f.fecXor = 0, f.fecXor[:0]
+		delete(s.parityOpen, f)
 		return
 	}
 	body := make([]byte, parityHeader+len(f.fecXor))

@@ -42,6 +42,7 @@ type fecGroup struct {
 	parityMask uint8
 	parity     []byte
 	order      *list.Element
+	rs         rsRows
 }
 type fecState struct {
 	groups     map[fecKey]*fecGroup
@@ -75,18 +76,22 @@ func (r *Receiver) fecGroup(k fecKey) *fecGroup {
 
 // fecData records a received striped payload (only while parity is arriving) and
 // returns a payload rebuilt from it, if that completes a group.
-func (r *Receiver) fecData(flow, number uint64, payload []byte, now time.Time) fecHit {
+func (r *Receiver) fecData(flow, number uint64, payload []byte, now time.Time) []fecHit {
 	if !r.fecEnabled(now) {
-		return fecHit{}
+		return nil
 	}
 	idx := number % fecK
 	g := r.fecGroup(fecKey{flow, number - idx})
 	if g.have&(1<<idx) != 0 {
-		return fecHit{}
+		return nil
 	}
 	g.have |= 1 << idx
 	g.data[idx] = append([]byte(nil), payload...)
-	return r.fecTry(g)
+	var hits []fecHit
+	if hit := r.fecTry(g); hit.payload != nil {
+		hits = append(hits, hit)
+	}
+	return append(hits, r.fecTryRS(g)...)
 }
 
 func (r *Receiver) fecParity(body []byte, now time.Time) fecHit {

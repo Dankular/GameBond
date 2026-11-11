@@ -23,6 +23,7 @@ type SessionOptions struct {
 	LossTracking, PathMTUDiscovery, FailoverReplay bool
 	FlowPinning, CoDel                             bool
 	Protection                                     string
+	ParityRowsMin, ParityRowsMax                   int
 	DelayControl, DelayAssertive                   bool
 }
 
@@ -68,6 +69,7 @@ func NewSession(key, session []byte, options SessionOptions) (*Session, error) {
 	}
 	sender.EnableFailover(options.FailoverReplay)
 	sender.SetFlowPinning(options.FlowPinning)
+	sender.SetParityRows(options.ParityRowsMin, options.ParityRowsMax)
 	if err = sender.SetProtection(options.Protection); err != nil {
 		return nil, err
 	}

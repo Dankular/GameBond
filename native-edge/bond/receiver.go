@@ -34,6 +34,9 @@ type ReceiveResult struct {
 	RepairPaths []PathKey
 	// Unavailable lists repairs the peer answered with REPAIR_NA.
 	Unavailable []MissingPacket
+	// Lost lists flow packets the peer's selective acknowledgement shows were
+	// dropped on a path: later frames of that path arrived, these did not.
+	Lost []MissingPacket
 	// Authenticated is true when the datagram proved a live peer on a ready path
 	// (the point where Python calls sock.note_authenticated()).
 	Authenticated bool
@@ -51,7 +54,7 @@ type ReceiverStats struct {
 	DataReorderMaxMS                                           float64
 	FeedbackReceived, FeedbackRejected, FeedbackDuplicates     uint64
 	PolicyDrops                                                uint64
-	FECParity, FECRecovered                                    uint64
+	FECParity, FECRecovered, FECRecoveredRS                    uint64
 	ReorderScale                                               float64
 	BFDSent, BFDReceived, BFDUp, BFDDown                       uint64
 }
@@ -70,6 +73,7 @@ type receivePath struct {
 	txEpoch, rxEpoch                 uint64
 	hasEpoch                         bool
 	stripeBytes, stripeHighest       uint64
+	sack                             sackWindow
 	stripeAt                         time.Time
 	feedbackDue                      bool
 	lastFeedback                     time.Time
@@ -369,7 +373,7 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 	case Striped:
 		valid = len(payload) >= 24
 	case Feedback:
-		valid = len(payload) == 28 && binary.BigEndian.Uint32(payload[24:]) <= 1000000
+		valid = (len(payload) == 28 || len(payload) == feedbackSackSize) && binary.BigEndian.Uint32(payload[24:]) <= 1000000
 	case Repair:
 		valid = len(payload) == 16
 	case LinkPolicy:
@@ -386,6 +390,8 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		valid = len(payload) == 24
 	case Parity:
 		valid = len(payload) >= parityHeader+2
+	case ParityRS:
+		valid = len(payload) >= rsHeader+2
 	case BFD:
 		valid = len(payload) == bfdPayload
 	}
@@ -405,7 +411,7 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		p.wireRX += uint64(len(frame) + 28)
 		r.stats.PathMigrations++
 	}
-	if (h.Kind == Data || h.Kind == Striped || h.Kind == Parity) && p.policy != nil && (p.policy.Blocked || p.policy.Role == Never) {
+	if (h.Kind == Data || h.Kind == Striped || h.Kind == Parity || h.Kind == ParityRS) && p.policy != nil && (p.policy.Blocked || p.policy.Role == Never) {
 		r.stats.PolicyDrops++
 		return out, nil
 	}
@@ -444,7 +450,7 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		epoch, sequence, delivered := binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:]), binary.BigEndian.Uint64(payload[16:])
 		if epoch == p.txEpoch && p.hasFeedback && sequence == p.acceptedSequence && delivered == p.acceptedBytes {
 			r.stats.FeedbackDuplicates++
-		} else if epoch == p.txEpoch && p.budget.Acknowledge(sequence, delivered, timestamp, binary.BigEndian.Uint32(payload[24:])) {
+		} else if epoch == p.txEpoch && r.acknowledge(p, payload, &out, sequence, delivered, timestamp) {
 			p.hasFeedback = true
 			p.acceptedSequence = sequence
 			p.acceptedBytes = delivered
@@ -508,12 +514,17 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		r.stats.PayloadBytes += uint64(len(payload) - 24)
 		flow, number := binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:])
 		out.Deliver = r.reorder.Push(flow, number, payload[24:], now)
-		if hit := r.fecData(flow, number, payload[24:], now); hit.payload != nil {
+		for _, hit := range r.fecData(flow, number, payload[24:], now) {
 			out.Deliver = append(out.Deliver, r.reorder.Push(hit.flow, hit.number, hit.payload, now)...)
 		}
 	case Parity:
 		r.stats.FECParity++
 		if hit := r.fecParity(payload, now); hit.payload != nil {
+			out.Deliver = append(out.Deliver, r.reorder.Push(hit.flow, hit.number, hit.payload, now)...)
+		}
+	case ParityRS:
+		r.stats.FECParity++
+		for _, hit := range r.fecParityRS(payload, now) {
 			out.Deliver = append(out.Deliver, r.reorder.Push(hit.flow, hit.number, hit.payload, now)...)
 		}
 	case MTUProbeKind:

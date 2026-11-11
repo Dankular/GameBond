@@ -36,6 +36,9 @@ type Config struct {
 	FlowPinning bool // pin bulk flows to one path with fast reroute
 	CoDel       bool // per-flow CoDel with ECN marking on the bulk queue
 	Protection  string // off, low, normal, high or max (see bond/protection.go)
+	// ParityRowsMin and ParityRowsMax bound the adaptive Reed-Solomon parity rows per group
+	// of 8 packets (1 row = 12.5%, 3 rows = 37.5%); zero means 1 and 3.
+	ParityRowsMin, ParityRowsMax int
 	// InitialMbps and MaxMbps seed the per-uplink congestion budget.
 	InitialMbps, MaxMbps float64
 	QueuePackets         int // 0 means 40000
@@ -167,6 +170,7 @@ func New(cfg Config) (*Client, error) {
 	if err := s.SetProtection(cfg.Protection); err != nil {
 		return nil, err
 	}
+	s.SetParityRows(cfg.ParityRowsMin, cfg.ParityRowsMax)
 	s.EnableLossTracking(cfg.LossTracking)
 	s.EnableDelayControl(cfg.DelayControl)
 	q, err := bond.NewTransmitQueue(s, cfg.QueuePackets, cfg.QueueBytes)

@@ -23,6 +23,7 @@ type sendFlow struct {
 	fecMask uint8
 	fecXor  []byte
 	fecPath *receivePath // path the group's newest packet used
+	fecRS   [fecMaxRows][]byte
 	// flow pinning (pin.go)
 	pin, backup *receivePath
 }
@@ -35,7 +36,14 @@ const (
 	lossSteerHold  = 3.0  // seconds a path stays out once steered away
 )
 
-type SenderStats struct{ PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, RepairUnavailableSent, RepairExhausted, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped, LossSteered, BulkDuplicates, BulkDupSkipped, ParitySent, FlowsPinned, FastReroutes, PinSpills uint64 }
+type SenderStats struct {
+	PayloadPackets, PayloadBytes, Copies, StripedPackets, PriorityCopies, TCPControlPackets, WireLimited, SocketErrors, RepairCopies, RepairRequests, RepairUnavailableSent, RepairExhausted, MTUNoFit, FailoverSuspected, FailoverRecovered, FailoverReplayed, FailoverReplayDropped, LossSteered, BulkDuplicates, BulkDupSkipped, ParitySent, FlowsPinned, FastReroutes, PinSpills uint64
+	// Selective-acknowledgement loss handling: frames seen lost on a path, answered by an
+	// immediate resend, held back because a sibling copy may still arrive, or not
+	// recoverable (no cached payload: UDP, or too old).
+	SackLost, SackResent, SackHeld, SackUnrecoverable uint64
+	TailProbed, ParityRSSent                          uint64
+}
 
 // Sender is the actor-owned transmit half. A caller retries a pending bulk
 // packet at the returned time, servicing Receive/Tick/urgent queues meanwhile.
@@ -44,6 +52,11 @@ type Sender struct {
 	flows             map[string]*sendFlow
 	parityOpen        map[*sendFlow]struct{} // flows holding a partly filled parity group
 	coverUntil        time.Time              // auto preset: full duplication until then
+	parityMin         int                    // parity rows per group: floor and ceiling (0 = built-in)
+	parityMax         int
+	heat              float64 // decaying count of recently lost frames
+	heatAt            time.Time
+	deferred          []deferredFrame // staggered parity rows waiting for their time
 	lru               list.List
 	bulkClock         float64
 	peer              [16]byte
@@ -144,6 +157,7 @@ func (s *Sender) syncPeer() {
 	if s.r.handshake.hasPeer && (!s.hasPeer || s.peer != s.r.handshake.peer) {
 		clear(s.flows)
 		clear(s.parityOpen)
+		s.deferred = nil
 		s.lru.Init()
 		s.bulkClock = 0
 		s.peer = s.r.handshake.peer
@@ -279,6 +293,9 @@ func (s *Sender) cancelProbe(d Datagram) {
 // A denied control write is retried by protocol timers, as in the Python Node.
 func (s *Sender) Controls(result ReceiveResult, now time.Time, writer DatagramWriter) {
 	s.syncPeer()
+	for _, key := range result.Lost {
+		s.sackLoss(key, now)
+	}
 	if len(result.Repairs) > 0 && s.protectName == "auto" {
 		// The peer is missing packets from us: something is dropping them right now,
 		// so every packet is copied for the next few seconds.
@@ -582,6 +599,7 @@ func (s *Sender) Bulk(payload []byte, key string, now time.Time, writer Datagram
 		if s.written(Datagram{Endpoint: p.endpoint, Frame: frame, Local: p.local}, p, now, writer) {
 			sequence := binary.BigEndian.Uint64(frame[37:])
 			p.budget.Sent(sequence, len(frame), timestamp)
+			p.budget.Tag(sequence, MissingPacket{f.id, f.number})
 			p.bulkFinish = math.Max(p.bulkFinish, s.bulkClock) + float64(len(frame)+28)/p.budget.rate
 			s.cacheRepair(MissingPacket{f.id, f.number}, payload, now, p)
 			s.bulkProtect(f, f.number, payload, p, now, writer)
@@ -635,7 +653,10 @@ func (s *Sender) Paths(now time.Time) []PathSnapshot {
 			copy := *p.policy
 			policy = &copy
 		}
-		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, p.budget.Stats(), mtuStats(p), p.mtuAcks, p.mtuSkips, p.policyConfirmed, p.suspect, p.bfdStatus(now), p.local})
+		budget := p.budget.Stats()
+		// Kept out of Stats so the reference vectors still compare field for field.
+		budget["sack_reports"], budget["sack_lost"], budget["tail_lost"] = p.budget.sackReports, p.budget.sackLost, p.budget.tailLost
+		out = append(out, PathSnapshot{p.endpoint, p.ready, p.ready && now.Sub(p.last) < 3*time.Second, p.rtt * 1000, p.jitter * 1000, p.wireTX, p.wireRX, p.probeSent, p.probeAcked, p.probeLost, policy, budget, mtuStats(p), p.mtuAcks, p.mtuSkips, p.policyConfirmed, p.suspect, p.bfdStatus(now), p.local})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if c := out[i].Endpoint.Compare(out[j].Endpoint); c != 0 {
@@ -655,7 +676,7 @@ func mtuStats(p *receivePath) *MTUStats {
 }
 
 func isPayloadKind(frame []byte) bool {
-	return len(frame) > 36 && (frame[36] == Data || frame[36] == DataCopy || frame[36] == Striped || frame[36] == Parity)
+	return len(frame) > 36 && (frame[36] == Data || frame[36] == DataCopy || frame[36] == Striped || frame[36] == Parity || frame[36] == ParityRS)
 }
 
 // arrivalGap is how much sooner one path must deliver before it overrides the fair

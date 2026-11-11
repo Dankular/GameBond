@@ -135,7 +135,10 @@ func (s *Sender) failoverStep(now time.Time, writer DatagramWriter) error {
 		if !s.written(Datagram{Endpoint: target.endpoint, Frame: frame, Local: target.local}, target, now, writer) {
 			break
 		}
-		target.budget.Sent(binary.BigEndian.Uint64(frame[37:]), len(frame), timestamp)
+		sequence := binary.BigEndian.Uint64(frame[37:])
+		target.budget.Sent(sequence, len(frame), timestamp)
+		target.budget.Tag(sequence, item.key)
+		cached.sent++
 		cached.origin = target
 		s.replayQueue = s.replayQueue[1:]
 		s.stats.FailoverReplayed++

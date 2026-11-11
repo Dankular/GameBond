@@ -50,6 +50,8 @@ type fileConfig struct {
 	FlowPinning    bool                         `json:"flow_pinning"`
 	CoDel          bool                         `json:"codel"`
 	Protection     string                       `json:"protection"`
+	ParityRowsMin  int                          `json:"parity_rows_min"`
+	ParityRowsMax  int                          `json:"parity_rows_max"`
 	LinkPolicies   map[string]linkpolicy.Policy `json:"link_policies"` // keyed by interface index, as in Python
 	GameUDPPorts   []uint16                     `json:"game_udp_ports"`
 	LossTracking   bool                         `json:"loss_tracking"`
@@ -92,7 +94,7 @@ func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
 		if err != nil {
 			return c, nil, netip.AddrPort{}, fmt.Errorf("invalid bind %d: %v", i, err)
 		}
-		spec := uplink.Spec{Addr: a, Buffer: 4 << 20}
+		spec := uplink.Spec{Addr: a, Buffer: 8 << 20}
 		if i < len(c.InterfaceIndex) {
 			spec.InterfaceIndex = c.InterfaceIndex[i]
 		}
@@ -302,7 +304,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		specs, available = adapterwatch.PlanInventory(slots, rows, uplink.InterfaceFor)
 	}
 	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs, Available: available,
-		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay, FlowPinning: cfg.FlowPinning, CoDel: cfg.CoDel, Protection: cfg.Protection,
+		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay, FlowPinning: cfg.FlowPinning, CoDel: cfg.CoDel, Protection: cfg.Protection, ParityRowsMin: cfg.ParityRowsMin, ParityRowsMax: cfg.ParityRowsMax,
 		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking, DelayControl: cfg.DelayControl})
 	if err != nil {
 		return err
@@ -545,7 +547,7 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
 		"transport": map[string]any{"paths": paths, "receive": s.Receiver, "send": s.Sender, "reorder": s.Reorder, "queue": s.Queue, "loop": s.Loop},
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "alarms": alarms}
+		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "alarms": alarms, "loss_causes": lossCauses(s)}
 	if capture != nil {
 		capture.status(doc)
 	}

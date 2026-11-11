@@ -43,6 +43,8 @@ type Config struct {
 	FlowPinning     bool                        `json:"flow_pinning"`
 	CoDel           bool                        `json:"codel"`
 	Protection      string                      `json:"protection"`
+	ParityRowsMin   int                         `json:"parity_rows_min"`
+	ParityRowsMax   int                         `json:"parity_rows_max"`
 }
 
 func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []byte, error) {
@@ -110,6 +112,10 @@ func DecodeConfig(data []byte) (Config, bond.SessionOptions, netip.AddrPort, []b
 	options.LossTracking, options.PathMTUDiscovery, options.FailoverReplay = c.LossTracking, c.PathMTU, c.Failover
 	options.FlowPinning, options.CoDel = c.FlowPinning, c.CoDel
 	options.Protection = c.Protection
+	if c.ParityRowsMin < 0 || c.ParityRowsMax < 0 || c.ParityRowsMax > 3 || (c.ParityRowsMax != 0 && c.ParityRowsMin > c.ParityRowsMax) {
+		return fail(fmt.Errorf("parity_rows_min/max must satisfy 0 <= min <= max <= 3"))
+	}
+	options.ParityRowsMin, options.ParityRowsMax = c.ParityRowsMin, c.ParityRowsMax
 	options.DelayControl = c.DelayControl
 	options.DelayAssertive = c.DelayAssertive
 	if c.PriorityHostMax < 0 || c.PriorityHostMax > 1280 {
