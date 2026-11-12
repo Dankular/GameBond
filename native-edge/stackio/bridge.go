@@ -3,7 +3,7 @@ package stackio
 import (
 	"bytes"
 	"encoding/json"
-	"gamebond.local/nativeedge/bond"
+	"github.com/Dankular/GameBond.Core/bond"
 	"io"
 	"sync"
 	"sync/atomic"

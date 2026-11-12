@@ -12,7 +12,7 @@ import (
 	"os"
 	"time"
 
-	"gamebond.local/nativeedge/bond"
+	"github.com/Dankular/GameBond.Core/bond"
 	"gamebond.local/nativeedge/hrclock"
 )
 

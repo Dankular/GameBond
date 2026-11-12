@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"gamebond.local/nativeedge/bond"
+	"github.com/Dankular/GameBond.Core/bond"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/uplink"
 )

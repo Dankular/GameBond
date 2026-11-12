@@ -1,6 +1,6 @@
 package linkpolicy
 
-import "gamebond.local/nativeedge/bond"
+import "github.com/Dankular/GameBond.Core/bond"
 
 // Meter turns cumulative per-uplink wire counters into ledger usage and the
 // operational policy each uplink should run under. It mirrors

@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"gamebond.local/nativeedge/bond"
-	"gamebond.local/nativeedge/buildinfo"
+	"github.com/Dankular/GameBond.Core/bond"
+	"github.com/Dankular/GameBond.Core/buildinfo"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/uplink"
 )

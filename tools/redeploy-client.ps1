@@ -1,6 +1,5 @@
 # Full client restart: client, netstack and ProxiFyre are replaced. Every wait polls the real
-# condition instead of sleeping. If .runtime\deploy-pending exists (deploy.sh, server restarting) the
-# final connect waits until it is removed, so the client swap overlaps the server restart.
+# condition instead of sleeping.
 Set-Location 'D:\Dev Proj\Speedify'
 $t0 = [DateTime]::UtcNow
 function Lap($n) { Write-Output ('  {0,6:N0} ms {1}' -f ([DateTime]::UtcNow - $t0).TotalMilliseconds, $n) }
@@ -20,6 +19,5 @@ Lap 'binaries swapped'
 Lap 'ensure returned'
 WaitFor { (.\build\gamebond-desktopctl.exe status) -match '"ok":true' } 5000
 Lap 'supervisor status ok'
-WaitFor { -not (Test-Path .runtime\deploy-pending) } 60000
 .\build\gamebond-desktopctl.exe connect | Out-Null
 Lap 'connect returned'

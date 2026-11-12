@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"gamebond.local/nativeedge/bond"
+	"github.com/Dankular/GameBond.Core/bond"
 )
 
 func TestMTUStatusShape(t *testing.T) {

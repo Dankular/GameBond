@@ -19,7 +19,7 @@ import (
 	"gamebond.local/nativeedge/dashboard"
 	"gamebond.local/nativeedge/desktopruntime"
 	"gamebond.local/nativeedge/eventjournal"
-	"gamebond.local/nativeedge/hwmon"
+	"github.com/Dankular/GameBond.Core/hwmon"
 	"gamebond.local/nativeedge/tray"
 	"gamebond.local/nativeedge/ttyrelay"
 	"gamebond.local/nativeedge/uplink"

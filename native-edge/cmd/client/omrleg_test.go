@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gamebond.local/nativeedge/bond"
+	"github.com/Dankular/GameBond.Core/bond"
 	"gamebond.local/nativeedge/nat"
 	"gamebond.local/nativeedge/omr"
 	"gamebond.local/nativeedge/router"

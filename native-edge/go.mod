@@ -20,3 +20,7 @@ require (
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 )
+
+require github.com/Dankular/GameBond.Core v0.1.0
+
+replace github.com/Dankular/GameBond.Core => ../../GameBond.Core

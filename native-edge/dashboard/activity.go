@@ -1,7 +1,7 @@
 package dashboard
 
 import (
-	"gamebond.local/nativeedge/hwmon"
+	"github.com/Dankular/GameBond.Core/hwmon"
 	"gamebond.local/nativeedge/uplink"
 	"time"
 )

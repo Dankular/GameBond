@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"gamebond.local/nativeedge/adapterwatch"
-	"gamebond.local/nativeedge/bond"
+	"github.com/Dankular/GameBond.Core/bond"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/client"
 	"gamebond.local/nativeedge/linkpolicy"
