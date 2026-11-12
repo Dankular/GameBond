@@ -53,7 +53,7 @@ else
 fi
 [ $SERVER = deploy ] && { wait $SB || true; grep -q DEPLOYED .runtime/deploy-server.out || { echo "SERVER DEPLOY FAILED"; exit 1; }; T 'server ready'; }
 if same build/gamebond-widget.new.exe build/gamebond-widget.exe; then rm -f build/gamebond-widget.new.exe; T 'widget unchanged: not relaunched'; else
-powershell -NoProfile -Command "Get-Process gamebond-widget -ErrorAction SilentlyContinue | Stop-Process -Force; Move-Item -Force build/gamebond-widget.new.exe build/gamebond-widget.exe; Start-Process -FilePath ./start-widget.cmd -WindowStyle Hidden"
+powershell -NoProfile -Command "Get-Process gamebond-widget -ErrorAction SilentlyContinue | Stop-Process -Force; while (Get-Process gamebond-widget -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 20 }; Move-Item -Force build/gamebond-widget.new.exe build/gamebond-widget.exe; Start-Process -FilePath ./start-widget.cmd -WindowStyle Hidden"
 T 'widget done'
 fi
 echo WIDGET-RELAUNCHED
