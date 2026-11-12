@@ -19,6 +19,8 @@ import (
 // unsupported adapter never stops the tunnel.
 type lanManager struct {
 	devices  []lan.DeviceConfig
+	access   *lanAccess
+	shared   *sharedAdapters
 	client   netip.Addr
 	mtu      int
 	open     func(lan.DeviceConfig) (lan.FrameIO, error)
@@ -81,7 +83,8 @@ func newLanManager(raw json.RawMessage, client netip.Addr, uplinkIDs []string, u
 	if mtu == 0 {
 		mtu = 1280
 	}
-	return &lanManager{devices: devices, client: client, mtu: mtu, open: newSharedAdapters(openRedundant(openFrameIO)).Open, now: time.Now,
+	shared := newSharedAdapters(openRedundant(openFrameIO))
+	return &lanManager{devices: devices, client: client, mtu: mtu, shared: shared, open: shared.Open, now: time.Now,
 		gws: map[string]*runningGateway{}, byIP: map[[4]byte]*lan.Gateway{}, errs: map[string]string{}, retryAt: map[string]time.Time{},
 		out: func(map[string]any) {}}, nil
 }
@@ -99,8 +102,9 @@ func (m *lanManager) deviceIPs() []netip.Addr {
 	if m == nil {
 		return nil
 	}
-	out := make([]netip.Addr, 0, len(m.devices))
-	for _, d := range m.devices {
+	devs := m.all()
+	out := make([]netip.Addr, 0, len(devs))
+	for _, d := range devs {
 		out = append(out, d.TunnelIP)
 	}
 	return out
@@ -112,7 +116,8 @@ func fmtMAC(m [6]byte) string {
 
 // maintain starts missing gateways and replaces dead ones.
 func (m *lanManager) maintain(ctx context.Context) {
-	for _, d := range m.devices {
+	m.processAccess()
+	for _, d := range m.all() {
 		m.mu.Lock()
 		rg := m.gws[d.Name]
 		m.mu.Unlock()
@@ -262,10 +267,11 @@ func (m *lanManager) status() any {
 	if m == nil {
 		return []any{}
 	}
-	rows := make([]map[string]any, 0, len(m.devices))
+	devs := m.all()
+	rows := make([]map[string]any, 0, len(devs))
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, d := range m.devices {
+	for _, d := range devs {
 		rg := m.gws[d.Name]
 		if rg == nil {
 			e := m.errs[d.Name]
@@ -419,7 +425,7 @@ func (g *gapMeter) report() map[string]any {
 // sharedAdapter reports whether another configured device uses d's adapter.
 func (m *lanManager) sharedAdapter(d lan.DeviceConfig) bool {
 	n := 0
-	for _, o := range m.devices {
+	for _, o := range m.all() {
 		if strings.EqualFold(o.InterfaceID, d.InterfaceID) && o.InterfaceID != "" {
 			n++
 		}

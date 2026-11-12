@@ -269,6 +269,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		lanMgr.outbound = bridge.Send
 		if *statusPath != "" {
 			lanMgr.useLeaseTable(filepath.Join(filepath.Dir(*statusPath), "lan-leases.json"))
+			lanMgr.useAccess(filepath.Dir(*statusPath))
 		}
 		for _, d := range lanMgr.devices {
 			if d.UDPDirect && len(specs) > 0 {
@@ -571,7 +572,7 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 		"versions": map[string]any{"client": s.ClientVersion, "server": s.ServerVersion, "server_state": s.ServerState},
 		"runtime": runtimeStats(), "stack_write": b.Out.Timing(),
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "alarms": alarms, "loss_causes": lossCauses(s)}
+		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "lan_access": l.accessStatus(), "alarms": alarms, "loss_causes": lossCauses(s)}
 	if capture != nil {
 		capture.status(doc)
 	}

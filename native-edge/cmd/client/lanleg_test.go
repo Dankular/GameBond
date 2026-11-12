@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -164,5 +165,51 @@ func TestOpenRedundantBuildsRedBoxOnlyWhenConfigured(t *testing.T) {
 			t.Fatalf("%s: %T opened %v", mode, io, opened)
 		}
 		io.Close()
+	}
+}
+
+func TestUnknownDeviceAskAcceptBlockAndAuto(t *testing.T) {
+	dir := t.TempDir()
+	m := &lanManager{devices: []lan.DeviceConfig{{Name: "PS5", TunnelIP: netip.MustParseAddr("10.77.0.3"), InterfaceID: "{X}"}},
+		client: netip.MustParseAddr("10.77.0.2"), gws: map[string]*runningGateway{}, byIP: map[[4]byte]*lan.Gateway{}, errs: map[string]string{}, retryAt: map[string]time.Time{}}
+	m.useAccess(dir)
+	mac := [6]byte{2, 0, 0, 0, 0, 9}
+	m.noteUnknown(mac, nil)
+	m.processAccess()
+	st := m.accessStatus().(map[string]any)
+	if p := st["pending"].([]lan.Pending); len(p) != 1 || p[0].MAC != "02:00:00:00:00:09" {
+		t.Fatalf("closed mode should still list the attempt: %+v", st)
+	}
+	path := filepath.Join(dir, "lan-access.json")
+	lan.UpdateAccess(path, func(a *lan.Access) error {
+		a.Accept(lan.AccessEntry{MAC: "02:00:00:00:00:09", Name: "Guest", IP: "10.77.0.10"})
+		return nil
+	})
+	m.access.mtime = time.Time{}
+	m.processAccess()
+	if all := m.all(); len(all) != 2 || all[1].Name != "Guest" || all[1].DeviceMAC != "02:00:00:00:00:09" || all[1].InterfaceID != "{X}" {
+		t.Fatalf("accepted device not added: %+v", all)
+	}
+	if len(m.accessStatus().(map[string]any)["pending"].([]lan.Pending)) != 0 {
+		t.Fatal("decided device still pending")
+	}
+	lan.UpdateAccess(path, func(a *lan.Access) error { a.Block(lan.AccessEntry{MAC: "02:00:00:00:00:09", Name: "Guest"}); return nil })
+	m.access.mtime = time.Time{}
+	m.processAccess()
+	if len(m.all()) != 1 {
+		t.Fatal("blocked device still served")
+	}
+	m.noteUnknown(mac, nil)
+	m.processAccess()
+	if m.access.blockedAttempts != 1 {
+		t.Fatal("blocked attempt not counted")
+	}
+	lan.UpdateAccess(path, func(a *lan.Access) error { a.Mode = lan.AccessAuto; return nil })
+	m.access.mtime = time.Time{}
+	m.noteUnknown([6]byte{2, 0, 0, 0, 0, 7}, nil)
+	m.processAccess()
+	m.processAccess()
+	if all := m.all(); len(all) != 2 || all[1].TunnelIP.String() != "10.77.0.10" {
+		t.Fatalf("auto mode did not accept: %+v", all)
 	}
 }

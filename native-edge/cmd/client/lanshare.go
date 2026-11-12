@@ -14,10 +14,14 @@ import (
 // sharing an adapter must each set device_mac. A device without device_mac
 // receives every frame (the single-device behaviour).
 type sharedAdapters struct {
+	unknown unknownHook
 	open func(lan.DeviceConfig) (lan.FrameIO, error)
 	mu   sync.Mutex
 	m    map[string]*sharedAdapter
 }
+
+// unknownHook is told about a DHCP request from a device no view owns.
+type unknownHook func(src [6]byte, frame []byte)
 
 func newSharedAdapters(open func(lan.DeviceConfig) (lan.FrameIO, error)) *sharedAdapters {
 	return &sharedAdapters{open: open, m: map[string]*sharedAdapter{}}
@@ -176,6 +180,8 @@ func (sa *sharedAdapter) fanout(f []byte) {
 		for v := range sa.views {
 			if v.pin == nil || *v.pin == src {
 				v.push(f)
+			} else {
+				sa.noteUnknown(src, f)
 			}
 		}
 		return
@@ -189,6 +195,9 @@ func (sa *sharedAdapter) fanout(f []byte) {
 	ip := ipv4Src(f)
 	if !isDHCPRequest(f) && !sa.isViewIP(ip) {
 		return
+	}
+	if isDHCPRequest(f) && !sa.hasUnpinnedView() {
+		sa.noteUnknown(src, f)
 	}
 	var pick *adapterView
 	for v := range sa.views {
@@ -207,6 +216,23 @@ func (sa *sharedAdapter) fanout(f []byte) {
 		pick.claimed = &src
 		pick.push(f)
 	}
+}
+
+// noteUnknown reports a DHCP request from a device that is not any view's. sa.mu is held,
+// so the hook must only record the observation.
+func (sa *sharedAdapter) noteUnknown(src [6]byte, f []byte) {
+	if sa.owner.unknown != nil && isDHCPRequest(f) && src[0]&1 == 0 && src != [6]byte{} {
+		sa.owner.unknown(src, f)
+	}
+}
+
+func (sa *sharedAdapter) hasUnpinnedView() bool {
+	for v := range sa.views {
+		if v.pin == nil && v.claimed == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *adapterView) owns(src [6]byte) bool {

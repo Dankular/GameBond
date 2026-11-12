@@ -222,8 +222,51 @@ $('saveapps').onclick = async () => {
   catch (e) { $('appmsg').textContent = e.message; }
 };
 document.querySelector('.network-actions').append(action('Connected devices', openDevices), action('OpenMPTCProuter', openOMR));
+// Network access: devices that are not configured can be accepted, declined (blacklisted) or
+// let in automatically. A new device raises a banner with Accept and Decline buttons.
+const accessStyle = document.createElement('style');
+accessStyle.textContent = '#accessbanner{position:fixed;left:50%;transform:translateX(-50%);top:54px;z-index:30;display:grid;gap:6px;max-width:92vw}.accesscard{display:flex;align-items:center;gap:10px;background:#fff7e0;border:1px solid #e0b84a;border-radius:8px;padding:8px 12px;box-shadow:0 4px 14px rgba(0,0,0,.18);font-size:13px}.accesscard b{font-weight:600}.accesslist{display:grid;gap:6px;margin:8px 0}.accessrow{display:flex;align-items:center;gap:8px;border:1px solid #e1e5eb;border-radius:6px;padding:6px 10px}.accessrow span.grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}';
+document.head.append(accessStyle);
+const accessBanner = element('div', null, { id: 'accessbanner', role: 'alert' }); document.body.append(accessBanner);
+const accessDialog = modal('accessdialog', 'Network access');
+accessDialog.append(element('p', 'Choose what happens when a device that is not in your list asks for an address. Blocked devices are always refused.', { class: 'help' }));
+const accessMode = element('select', null, { 'aria-label': 'New device policy' });
+for (const [v, t] of [['closed', 'Closed: only devices I have added'], ['ask', 'Ask me: notify me and let me accept or decline'], ['auto', 'Automatic: accept every new device (private network)']]) accessMode.append(element('option', t, { value: v }));
+const accessBody = element('div'), accessMsg = element('p', '', { role: 'status' });
+accessDialog.append(accessMode, accessBody, accessMsg);
+let accessState = { mode: 'closed', accepted: [], blocked: [], pending: [] };
+const accessLabel = e => (e.name || e.hostname || 'Unknown device') + ' · ' + e.mac;
+async function accessCall(body) {
+  try { accessState = await api('lan-access', 'POST', body); accessMsg.textContent = ''; } catch (e) { accessMsg.textContent = e.message; }
+  renderAccess();
+}
+function accessRow(e, buttons) {
+  const row = element('div'); row.className = 'accessrow';
+  const label = element('span', accessLabel(e) + (e.ip ? ' · ' + e.ip : '') + (e.attempts ? ' · ' + e.attempts + ' request' + (e.attempts > 1 ? 's' : '') : '')); label.className = 'grow';
+  row.append(label, ...buttons.map(([text, act]) => action(text, () => accessCall({ action: act, mac: e.mac, name: e.name || e.hostname || '' })))); return row;
+}
+function renderAccess() {
+  if (document.activeElement !== accessMode) accessMode.value = accessState.mode;
+  accessBanner.replaceChildren();
+  if (accessState.mode === 'ask') for (const p of accessState.pending) {
+    const card = element('div'); card.className = 'accesscard';
+    const text = element('span'); text.append(element('b', 'New device wants to connect: '), document.createTextNode((p.hostname || 'unknown name') + ' (' + p.mac + ')'));
+    card.append(text, action('Accept', () => accessCall({ action: 'accept', mac: p.mac, name: p.hostname || '' })), action('Decline', () => accessCall({ action: 'decline', mac: p.mac, name: p.hostname || '' })));
+    accessBanner.append(card);
+  }
+  accessBody.replaceChildren();
+  const section = (title, rows, empty) => { accessBody.append(element('h3', title)); const box = element('div'); box.className = 'accesslist'; if (rows.length) box.append(...rows); else box.append(element('p', empty, { class: 'help' })); accessBody.append(box); };
+  section('Waiting for a decision', accessState.pending.map(p => accessRow(p, [['Accept', 'accept'], ['Decline', 'decline']])), accessState.mode === 'closed' ? 'Closed mode lists attempts here without notifying you.' : 'No devices waiting.');
+  section('Allowed devices', accessState.accepted.map(e => accessRow(e, [['Remove', 'remove'], ['Block', 'block']])), 'None added yet.');
+  section('Blocked devices (blacklist)', accessState.blocked.map(e => accessRow(e, [['Unblock', 'unblock']])), 'No blocked devices.');
+}
+accessMode.onchange = () => accessCall({ action: 'mode', mode: accessMode.value });
+async function refreshAccess() { try { accessState = await api('lan-access'); renderAccess(); } catch (e) { /* the GUI keeps its last view */ } }
+async function openAccess() { await refreshAccess(); showDialog('accessdialog'); }
+refreshAccess(); setInterval(refreshAccess, 3000);
+document.querySelector('.network-actions').append(action('Network access', openAccess));
 const settingsDialog = modal('settingsdialog', 'Settings'), settingsMenu = element('div'); settingsMenu.className = 'settings-menu'; settingsDialog.append(settingsMenu);
-for (const [label, handler] of [['Application routing', () => $('capturedapps').click()], ['Select networks', () => $('selectnetworks').click()], ['Link roles and limits', () => $('linklimits').click()], ['Connected devices', openDevices], ['OpenMPTCProuter', openOMR]]) settingsMenu.append(action(label, () => { settingsDialog.close(); handler(); }));
+for (const [label, handler] of [['Application routing', () => $('capturedapps').click()], ['Select networks', () => $('selectnetworks').click()], ['Link roles and limits', () => $('linklimits').click()], ['Connected devices', openDevices], ['Network access', openAccess], ['OpenMPTCProuter', openOMR]]) settingsMenu.append(action(label, () => { settingsDialog.close(); handler(); }));
 $('settings').onclick = () => showDialog('settingsdialog');
 
 // Stable identities keep an unplugged selection distinct from an adapter that
