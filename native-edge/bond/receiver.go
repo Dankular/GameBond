@@ -131,6 +131,8 @@ type Receiver struct {
 	lastProbe            time.Time
 	probes               map[[24]byte]pendingProbe
 	reorderBase          time.Duration
+	expected             []PathKey // see expectedCopyPaths
+	expectedAt           time.Time
 	mtuDiscovery         bool
 	delayControl         bool
 	delayAssertive       bool
@@ -552,11 +554,7 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		p.peerCopy = [3]uint64{binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:]), binary.BigEndian.Uint64(payload[16:])}
 	case Data, DataCopy:
 		if h.Kind == DataCopy {
-			expected := make([]PathKey, 0, 4)
-			for _, e := range (&Sender{r: r}).eligible(now, true) {
-				expected = append(expected, e.key())
-			}
-			r.copies.First(h.Sequence, p.key(), expected, timestamp)
+			r.copies.First(h.Sequence, p.key(), r.expectedCopyPaths(now), timestamp)
 		}
 		r.stats.PayloadPackets++
 		r.stats.PayloadBytes += uint64(len(payload))
@@ -755,6 +753,22 @@ func newCopyLedger() *CopyLedger[PathKey] {
 }
 
 const copyReportInterval = 500 * time.Millisecond
+
+// expectedCopyPaths lists the paths a replicated packet should arrive on. It is rebuilt at
+// most every expectedRefresh rather than for every packet: a game flow sends thousands of
+// copies a second and the set of ready paths changes far more slowly.
+const expectedRefresh = 20 * time.Millisecond
+
+func (r *Receiver) expectedCopyPaths(now time.Time) []PathKey {
+	if r.expectedAt.IsZero() || now.Sub(r.expectedAt) >= expectedRefresh || now.Before(r.expectedAt) {
+		r.expected = r.expected[:0]
+		for _, e := range (&Sender{r: r}).eligible(now, true) {
+			r.expected = append(r.expected, e.key())
+		}
+		r.expectedAt = now
+	}
+	return r.expected
+}
 
 // noteCopy is Node._note_copy: a further copy of a replicated packet arrived.
 func (r *Receiver) noteCopy(p *receivePath, key PathKey, sequence uint64, now float64) {

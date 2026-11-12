@@ -175,9 +175,19 @@ func (s *Sender) syncPeer() {
 	}
 }
 func (s *Sender) eligible(now time.Time, boost bool) []*receivePath {
+	// A path BFD has declared down gets no data: copies sent into a dead line are wasted
+	// and its pending frames only raise false loss. If that would leave nothing to send on,
+	// the down paths are used anyway (sending and hoping beats silence).
+	if paths := s.eligibleWith(now, boost, true); len(paths) > 0 {
+		return paths
+	}
+	return s.eligibleWith(now, boost, false)
+}
+
+func (s *Sender) eligibleWith(now time.Time, boost, skipDown bool) []*receivePath {
 	var all, primary, secondary, backup []*receivePath
 	for _, p := range s.r.paths {
-		if !p.ready || now.Sub(p.last) >= 3*time.Second {
+		if !p.ready || now.Sub(p.last) >= 3*time.Second || (skipDown && p.bfdDown()) {
 			continue
 		}
 		if !s.r.policyEnabled {

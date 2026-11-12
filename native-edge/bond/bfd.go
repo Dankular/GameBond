@@ -6,13 +6,19 @@ import "time"
 // each bfdInterval. A path is Up only while this end hears the peer within
 // bfdMultiplier intervals AND the peer reports hearing us, so a one-way failure is
 // detected by both ends in about 300 ms instead of waiting for the probe timeout.
-// After any failure the path must stay healthy for bfdHoldDown before it carries bulk
+// After any failure the path must stay healthy for its hold-down (see bfdHold) before it carries bulk
 // again, which damps flapping. Peers that never send BFD keep the older silence timer.
 
 const (
 	bfdInterval   = 100 * time.Millisecond
 	bfdMultiplier = 5
-	bfdHoldDown   = 2 * time.Second
+	// Hold-down after a failure: short the first time, doubling for each further failure
+	// within bfdFlapWindow, so a flapping line is kept out longer but one blip is not. Every
+	// packet is also copied onto the other line, so letting a recovering line back early
+	// costs only copies, never delivery.
+	bfdHoldMin    = 250 * time.Millisecond
+	bfdHoldMax    = 4 * time.Second
+	bfdFlapWindow = 30 * time.Second
 	bfdPayload    = 8
 )
 
@@ -26,8 +32,21 @@ type bfdState struct {
 	lastTx    time.Time
 	// flap accounting, reported in the status
 	downs, ups uint64
+	flaps      int // failures within bfdFlapWindow of each other
 	lastDown   time.Time
 	cause      string // why the last failure was declared
+}
+
+// hold is how long the path must stay healthy before it is trusted again.
+func (b *bfdState) hold() time.Duration {
+	h := bfdHoldMin
+	for i := 1; i < b.flaps && h < bfdHoldMax; i++ {
+		h *= 2
+	}
+	if h > bfdHoldMax {
+		h = bfdHoldMax
+	}
+	return h
 }
 
 func (b *bfdState) hears(now time.Time) bool {
@@ -55,6 +74,10 @@ func (r *Receiver) bfdEvaluate(p *receivePath, now time.Time) {
 			r.stats.BFDDown++
 			b.failed = true
 			b.downs++
+			if now.Sub(b.lastDown) > bfdFlapWindow {
+				b.flaps = 0
+			}
+			b.flaps++
 			b.lastDown = now
 			b.cause = "peer_not_hearing_us"
 			if !b.hears(now) {
@@ -67,7 +90,7 @@ func (r *Receiver) bfdEvaluate(p *receivePath, now time.Time) {
 		if b.goodSince.IsZero() {
 			b.goodSince = now
 		}
-		if !b.failed || now.Sub(b.goodSince) >= bfdHoldDown {
+		if !b.failed || now.Sub(b.goodSince) >= b.hold() {
 			b.up = true
 			b.ups++
 			r.stats.BFDUp++
