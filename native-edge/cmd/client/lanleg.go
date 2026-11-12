@@ -81,7 +81,7 @@ func newLanManager(raw json.RawMessage, client netip.Addr, uplinkIDs []string, u
 	if mtu == 0 {
 		mtu = 1280
 	}
-	return &lanManager{devices: devices, client: client, mtu: mtu, open: newSharedAdapters(openFrameIO).Open, now: time.Now,
+	return &lanManager{devices: devices, client: client, mtu: mtu, open: newSharedAdapters(openRedundant(openFrameIO)).Open, now: time.Now,
 		gws: map[string]*runningGateway{}, byIP: map[[4]byte]*lan.Gateway{}, errs: map[string]string{}, retryAt: map[string]time.Time{},
 		out: func(map[string]any) {}}, nil
 }
@@ -425,4 +425,30 @@ func (m *lanManager) sharedAdapter(d lan.DeviceConfig) bool {
 		}
 	}
 	return n > 1
+}
+
+// openRedundant wraps an adapter opener: a device configured with a second adapter is
+// attached through a RedBox (PRP or HSR) over both, otherwise through the one adapter.
+func openRedundant(open func(lan.DeviceConfig) (lan.FrameIO, error)) func(lan.DeviceConfig) (lan.FrameIO, error) {
+	return func(d lan.DeviceConfig) (lan.FrameIO, error) {
+		if d.Redundancy == "" {
+			return open(d)
+		}
+		a, err := open(d)
+		if err != nil {
+			return nil, err
+		}
+		second := d
+		second.InterfaceID, second.InterfaceName = d.RedundantInterfaceID, d.RedundantInterfaceName
+		second.Redundancy = ""
+		b, err := open(second)
+		if err != nil {
+			a.Close()
+			return nil, err
+		}
+		if d.Redundancy == "hsr" {
+			return lan.NewHSRRedBox(a, b, nil), nil
+		}
+		return lan.NewRedBox(a, b, nil), nil
+	}
 }

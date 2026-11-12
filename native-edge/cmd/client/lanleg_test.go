@@ -139,3 +139,30 @@ func TestLANManagerConfig(t *testing.T) {
 		t.Fatal("nil manager must be inert")
 	}
 }
+
+func TestOpenRedundantBuildsRedBoxOnlyWhenConfigured(t *testing.T) {
+	opened := []string{}
+	open := func(d lan.DeviceConfig) (lan.FrameIO, error) {
+		opened = append(opened, d.InterfaceName)
+		a, _ := lan.MemoryPair([6]byte{2, 0, 0, 0, 0, 1}, [6]byte{2, 0, 0, 0, 0, 2})
+		return a, nil
+	}
+	plain, err := openRedundant(open)(lan.DeviceConfig{InterfaceName: "eth0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, isBox := plain.(*lan.RedBox); isBox {
+		t.Fatal("single adapter wrapped in a RedBox")
+	}
+	for _, mode := range []string{"prp", "hsr"} {
+		opened = nil
+		io, err := openRedundant(open)(lan.DeviceConfig{InterfaceName: "eth0", Redundancy: mode, RedundantInterfaceName: "eth1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, isBox := io.(*lan.RedBox); !isBox || len(opened) != 2 || opened[1] != "eth1" {
+			t.Fatalf("%s: %T opened %v", mode, io, opened)
+		}
+		io.Close()
+	}
+}

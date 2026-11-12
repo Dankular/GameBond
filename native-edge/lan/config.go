@@ -41,6 +41,11 @@ type DeviceConfig struct {
 	// UDPDirect sends the device's public UDP straight out the first uplink
 	// (workstation-side NAT) instead of through the tunnel; TCP stays tunneled.
 	UDPDirect bool
+	// Redundancy attaches the device through two adapters as a RedBox: "prp" (two parallel
+	// LANs, RCT trailer) or "hsr" (ring ends, HSR tag). The second adapter is named by
+	// RedundantInterfaceID (Windows) or RedundantInterfaceName (Linux). Empty: one adapter.
+	Redundancy                                      string
+	RedundantInterfaceID, RedundantInterfaceName string
 }
 
 // Identity is the adapter identity, case-folded.
@@ -82,7 +87,7 @@ func LoadDevices(raw json.RawMessage, client netip.Addr, uplinkIDs []string, upl
 	for _, e := range entries {
 		for k := range e {
 			switch k {
-			case "name", "tunnel_ip", "interface_id", "interface_index", "interface_name", "device_mac", "dns", "udp_direct":
+			case "name", "tunnel_ip", "interface_id", "interface_index", "interface_name", "device_mac", "dns", "udp_direct", "redundancy", "redundant_interface_id", "redundant_interface_name":
 			default:
 				return nil, fmt.Errorf("Unknown lan_devices field: %s", k)
 			}
@@ -97,7 +102,7 @@ func LoadDevices(raw json.RawMessage, client netip.Addr, uplinkIDs []string, upl
 		var tip string
 		var dns []string
 		idx := 0
-		for key, into := range map[string]any{"name": &d.Name, "tunnel_ip": &tip, "interface_id": &d.InterfaceID, "interface_name": &d.InterfaceName, "device_mac": &d.DeviceMAC, "interface_index": &idx} {
+		for key, into := range map[string]any{"name": &d.Name, "tunnel_ip": &tip, "interface_id": &d.InterfaceID, "interface_name": &d.InterfaceName, "device_mac": &d.DeviceMAC, "interface_index": &idx, "redundancy": &d.Redundancy, "redundant_interface_id": &d.RedundantInterfaceID, "redundant_interface_name": &d.RedundantInterfaceName} {
 			if err := get(key, into); err != nil {
 				return nil, fmt.Errorf("invalid lan_devices %s", key)
 			}
@@ -132,6 +137,20 @@ func LoadDevices(raw json.RawMessage, client netip.Addr, uplinkIDs []string, upl
 		}
 		if d.InterfaceName != "" && !ifaRe.MatchString(d.InterfaceName) {
 			return nil, errors.New("LAN device interface_name must be a valid Linux interface name")
+		}
+		if d.RedundantInterfaceID != "" || d.RedundantInterfaceName != "" {
+			if d.Redundancy == "" {
+				d.Redundancy = "prp"
+			}
+			if strings.EqualFold(d.RedundantInterfaceID, d.InterfaceID) && strings.EqualFold(d.RedundantInterfaceName, d.InterfaceName) {
+				return nil, errors.New("LAN device redundant adapter must differ from its first adapter")
+			}
+		}
+		if d.Redundancy != "" && d.Redundancy != "prp" && d.Redundancy != "hsr" {
+			return nil, errors.New("LAN device redundancy must be \"prp\" or \"hsr\"")
+		}
+		if d.Redundancy != "" && d.RedundantInterfaceID == "" && d.RedundantInterfaceName == "" {
+			return nil, errors.New("LAN device redundancy needs redundant_interface_id or redundant_interface_name")
 		}
 		if d.InterfaceIndex < 0 {
 			return nil, errors.New("LAN device interface_index must be a nonnegative integer")
