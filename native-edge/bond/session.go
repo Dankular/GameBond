@@ -7,7 +7,9 @@ import (
 
 type SessionOptions struct {
 	// Version is the build id (git commit) reported to the client.
-	Version  string
+	Version string
+	// State, when set, is polled for a word announced to clients ("updating").
+	State   func() string
 	MTU      int
 	ClientIP netip.Addr
 	// DeviceIPs are extra tunnel addresses (consoles behind a client LAN adapter)
@@ -59,6 +61,7 @@ func NewSession(key, session []byte, options SessionOptions) (*Session, error) {
 		return nil, err
 	}
 	r.SetVersion(options.Version)
+	r.SetStateFunc(options.State)
 	if err = r.SetReorderTimeout(options.ReorderTimeout); err != nil {
 		return nil, err
 	}

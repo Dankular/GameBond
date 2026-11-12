@@ -32,3 +32,25 @@ func TestVersionFramesAreHarmlessToAnOlderPeer(t *testing.T) {
 		t.Fatal("paths not ready")
 	}
 }
+
+func TestServerAnnouncesAPlannedRestartToConnectedClients(t *testing.T) {
+	p := newClientServerPair(t)
+	p.client.SetVersion("c")
+	p.server.SetVersion("s")
+	state := ""
+	p.server.SetStateFunc(func() string { return state })
+	for i := 0; i < 12; i++ {
+		p.step()
+	}
+	if p.client.PeerState() != "" {
+		t.Fatalf("unexpected state %q", p.client.PeerState())
+	}
+	state = "updating"
+	p.step() // pushed at the next server tick, no request needed
+	if p.client.PeerState() != "updating" {
+		t.Fatalf("client state %q, want updating", p.client.PeerState())
+	}
+	if _, v := p.client.Versions(); v != "s" {
+		t.Fatalf("version corrupted by the state suffix: %q", v)
+	}
+}

@@ -28,10 +28,12 @@ if [ $SERVER = deploy ]; then
     # The server-side probe owns the update (flock, readiness wait, rollback); here it is just told which commit.
     # Start the update detached: the container recreate can leave an SSH session hanging, so poll on short fresh sessions instead.
     timeout 20 plink -batch -T -i $K -hostkey $HK $H "nohup /usr/local/bin/gamebond-probe update $COMMIT </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
-    for _ in $(seq 1 120); do
+    echo "[+${SECONDS}s] update triggered"
+    for i in $(seq 1 120); do
       timeout 15 plink -batch -T -i $K -hostkey $HK $H "grep -q '^GAMEBOND_IMAGE=$IMG\$' /opt/gamebond/releases/native-live/deploy.env && docker exec gamebond-native-1 sh -c 'test -e /tmp/gamebond-ready && test -d /sys/class/net/gamebond0' && echo DEPLOYED" 2>/dev/null | tail -1 > .runtime/deploy-server.out
       grep -q DEPLOYED .runtime/deploy-server.out && break; sleep 0.5
     done
+    echo "[+${SECONDS}s] server poll done after $i polls"
     rm -f .runtime/deploy-pending
   ) & SB=$!
 else

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"time"
 
 	"gamebond.local/nativeedge/bond"
@@ -43,6 +44,14 @@ func openTun(name string) (int, error) {
 // Address, link-up and NAT setup belong to the container's existing entrypoint.
 func Run(ctx context.Context, c Config, options bond.SessionOptions, address netip.AddrPort, session, key []byte, output io.Writer, observers ...func(map[string]any)) error {
 	options.Version = buildinfo.Commit
+	// The update probe drops this file just before it replaces the container, so clients can
+	// tell a planned restart from an outage.
+	options.State = func() string {
+		if _, err := os.Stat("/tmp/gamebond-updating"); err == nil {
+			return "updating"
+		}
+		return ""
+	}
 	engine, err := bond.NewSession(key, session, options)
 	if err != nil {
 		return err

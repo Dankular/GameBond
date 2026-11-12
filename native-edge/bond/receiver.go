@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"math"
 	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -114,6 +115,9 @@ type Receiver struct {
 	role                 string
 	version              string    // this side's build id (commit)
 	peerVersion          string    // the other side's build id, once it has said
+	peerState            string    // the server's announced state ("updating"), client side
+	stateFn              func() string // server side: current state to announce
+	lastState            string
 	versionAsked         time.Time // last VersionReq sent (client)
 	codec                *Codec
 	handshake            *ServerHandshake
@@ -502,13 +506,13 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 			break
 		}
 		r.peerVersion = string(payload)
-		err = r.write(VersionInfo, []byte(r.version), local, endpoint, &out)
+		err = r.write(VersionInfo, r.versionInfo(), local, endpoint, &out)
 	case VersionInfo:
 		if r.role != "client" {
 			r.stats.Malformed++
 			break
 		}
-		r.peerVersion = string(payload)
+		r.peerVersion, r.peerState, _ = strings.Cut(string(payload), "|")
 	case LinkPolicyAck:
 		// Only a client with a policy of its own can be acknowledged.
 		revision, epoch := binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:])
@@ -600,6 +604,9 @@ func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 	r.tuneReorder(now)
 	out := ReceiveResult{Deliver: r.reorder.Poll(now)}
 	if err := r.resolveCopies(now, &out); err != nil {
+		return out, err
+	}
+	if err := r.announceState(now, &out); err != nil {
 		return out, err
 	}
 	for _, p := range r.paths {

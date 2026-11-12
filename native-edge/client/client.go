@@ -125,6 +125,8 @@ type Snapshot struct {
 	// ClientVersion is this build's commit; ServerVersion is what the server reported (empty
 	// until it answers, or forever for a server built before the version frames).
 	ClientVersion, ServerVersion string
+	// ServerState is what the server announced ("updating" just before a planned restart).
+	ServerState string
 }
 
 var ErrConfig = errors.New("client: invalid configuration")
@@ -445,6 +447,7 @@ func (c *Client) Run(ctx context.Context) error {
 			c.snapshot.Reorder = c.recv.ReorderStats()
 			c.snapshot.Outages = c.recv.Outages()
 			c.snapshot.ClientVersion, c.snapshot.ServerVersion = c.recv.Versions()
+			c.snapshot.ServerState = c.recv.PeerState()
 			c.snapshot.Loop = c.loop
 			c.snapshot.Queue, c.snapshot.Paths = c.queue.Stats(), c.sender.Paths(now)
 			if c.qos != nil {

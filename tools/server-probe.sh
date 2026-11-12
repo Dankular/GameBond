@@ -72,6 +72,8 @@ update_to() {
   log "updating $prev -> $want"
   local t0=$SECONDS
   if ! docker pull -q "$want" >/dev/null; then log "pull failed; nothing changed"; return 1; fi
+  # Tell connected clients first, so their UI shows "updating" rather than "down".
+  docker exec "$CONTAINER" touch /tmp/gamebond-updating 2>/dev/null && sleep 1.5
   set_image "$want"
   recreate
   if wait_ready; then
