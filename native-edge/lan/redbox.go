@@ -11,6 +11,8 @@ import (
 // RedBoxCounters count what the PRP layer did.
 type RedBoxCounters struct {
 	Sent, Received, DuplicatesDropped, NoRCT, WrongLAN, OwnFramesDropped, SupervisionSent, SupervisionReceived, WriteErrors uint64
+	// HSR ring mode: frames passed on to the next ring node.
+	Forwarded uint64
 }
 
 // RedBox presents two LAN ports (PRP LAN A and LAN B) to the gateway as one FrameIO.
@@ -33,6 +35,7 @@ type RedBox struct {
 	disc  *iec62439.Discard
 	nodes *iec62439.Nodes
 	sup   iec62439.Supervisor
+	hsr   bool
 	c     RedBoxCounters
 }
 
@@ -53,6 +56,17 @@ func NewRedBox(a, b FrameIO, now func() time.Time) *RedBox {
 	r.wg.Add(2)
 	go r.pump(a, iec62439.LANA)
 	go r.pump(b, iec62439.LANB)
+	return r
+}
+
+// NewHSRRedBox is a RedBox that sits in an HSR ring instead of on two PRP LANs: ports A
+// and B are the ring ends. Frames it sends carry an HSR tag and go out both ways round
+// the ring; frames arriving from the ring are de-duplicated on (source, sequence), handed
+// to the gateway when addressed to it, and otherwise (or if multicast) forwarded to the
+// opposite port, as an HSR node does. A frame that comes back to its source is dropped.
+func NewHSRRedBox(a, b FrameIO, now func() time.Time) *RedBox {
+	r := NewRedBox(a, b, now)
+	r.hsr = true
 	return r
 }
 
@@ -91,11 +105,15 @@ func (r *RedBox) Write(frame []byte) error {
 	seq := r.seq
 	r.seq++
 	r.wmu.Unlock()
-	fa, err := iec62439.AppendRCT(frame, seq, iec62439.LANA)
+	tag := iec62439.AppendRCT
+	if r.hsr {
+		tag = func(f []byte, seq uint16, lan uint8) ([]byte, error) { return iec62439.AddHSRTag(f, lan, seq) }
+	}
+	fa, err := tag(frame, seq, iec62439.LANA)
 	if err != nil {
 		return err
 	}
-	fb, _ := iec62439.AppendRCT(frame, seq, iec62439.LANB)
+	fb, _ := tag(frame, seq, iec62439.LANB)
 	ea, eb := r.a.Write(fa), r.b.Write(fb)
 	r.mu.Lock()
 	r.c.Sent++
@@ -120,6 +138,20 @@ func (r *RedBox) Read(timeout time.Duration) ([]byte, error) {
 	for {
 		select {
 		case pf := <-r.in:
+			if r.hsr {
+				out, to, fwd := r.acceptHSR(pf)
+				if fwd != nil {
+					if err := to.Write(fwd); err != nil {
+						r.mu.Lock()
+						r.c.WriteErrors++
+						r.mu.Unlock()
+					}
+				}
+				if out != nil {
+					return out, nil
+				}
+				continue
+			}
 			if out := r.accept(pf); out != nil {
 				return out, nil
 			}
@@ -191,6 +223,65 @@ func (r *RedBox) accept(pf portFrame) []byte {
 		return nil
 	}
 	return body
+}
+
+// acceptHSR applies the HSR receive rules. It returns the frame for the gateway (or nil)
+// and, separately, a frame to forward out of the other ring port.
+func (r *RedBox) acceptHSR(pf portFrame) (deliver []byte, to FrameIO, forward []byte) {
+	f := pf.frame
+	if len(f) < 14 {
+		return nil, nil, nil
+	}
+	now := r.now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var src, dst [6]byte
+	copy(dst[:], f[:6])
+	copy(src[:], f[6:12])
+	if src == r.mac {
+		r.c.OwnFramesDropped++ // our frame has been all the way round
+		return nil, nil, nil
+	}
+	body, tag, ok := iec62439.StripHSRTag(f)
+	if !ok {
+		r.c.NoRCT++
+		r.c.Received++
+		if sup, isSup := iec62439.ParseSupervision(f); isSup {
+			r.c.SupervisionReceived++
+			r.nodes.Supervision(sup, pf.lan, now)
+			return nil, nil, nil
+		}
+		r.nodes.Observe(src, pf.lan, now)
+		return f, nil, nil
+	}
+	if tag.Path != pf.lan {
+		r.c.WrongLAN++
+	}
+	r.nodes.Observe(src, pf.lan, now)
+	if !r.disc.Accept(src, tag.Seq, now) {
+		r.c.DuplicatesDropped++
+		return nil, nil, nil
+	}
+	r.c.Received++
+	toUs, multicast := dst == r.mac, dst[0]&1 != 0
+	if !toUs {
+		r.c.Forwarded++
+		if pf.lan == iec62439.LANA {
+			to = r.b
+		} else {
+			to = r.a
+		}
+		forward = f
+	}
+	if sup, isSup := iec62439.ParseSupervision(body); isSup {
+		r.c.SupervisionReceived++
+		r.nodes.Supervision(sup, pf.lan, now)
+		return nil, to, forward
+	}
+	if toUs || multicast {
+		deliver = body
+	}
+	return deliver, to, forward
 }
 
 // Stats returns a snapshot of the counters.

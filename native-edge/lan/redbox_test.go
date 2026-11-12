@@ -116,3 +116,54 @@ func TestRedBoxPassesPlainFramesAndDropsOwnEcho(t *testing.T) {
 		t.Fatalf("%+v", st)
 	}
 }
+
+func TestHSRRedBoxTagsBothWaysAndDeliversOnce(t *testing.T) {
+	nearA, farA := MemoryPair(rbMAC, peerMAC)
+	nearB, farB := MemoryPair(rbMAC, peerMAC)
+	rb := NewHSRRedBox(nearA, nearB, nil)
+	t.Cleanup(func() { rb.Close() })
+	if err := rb.Write(frameFrom(rbMAC, 80)); err != nil {
+		t.Fatal(err)
+	}
+	fa, _ := farA.Read(time.Second)
+	fb, _ := farB.Read(time.Second)
+	ta, oka := iec62439.ParseHSRTag(fa)
+	tb, okb := iec62439.ParseHSRTag(fb)
+	if !oka || !okb || ta.Path != iec62439.LANA || tb.Path != iec62439.LANB || ta.Seq != tb.Seq {
+		t.Fatalf("tags %+v %+v %v %v", ta, tb, oka, okb)
+	}
+	// A frame for the gateway arrives round both sides of the ring: delivered once.
+	in := frameFrom(peerMAC, 80)
+	toUs := append(append([]byte{}, rbMAC[:]...), in[6:]...)
+	ga, _ := iec62439.AddHSRTag(toUs, iec62439.LANA, 9)
+	gb, _ := iec62439.AddHSRTag(toUs, iec62439.LANB, 9)
+	farA.Write(ga)
+	farB.Write(gb)
+	got, _ := rb.Read(time.Second)
+	if got == nil || !bytes.Equal(got[:6], rbMAC[:]) {
+		t.Fatal("frame for the gateway not delivered")
+	}
+	if again, _ := rb.Read(200 * time.Millisecond); again != nil {
+		t.Fatal("ring duplicate delivered twice")
+	}
+	if c := rb.Stats(); c.DuplicatesDropped != 1 || c.Forwarded != 0 {
+		t.Fatalf("%+v", c)
+	}
+	// A frame for another node is forwarded to the opposite port, not delivered.
+	other := append([]byte{2, 0, 0, 0, 0, 9}, in[6:]...)
+	of, _ := iec62439.AddHSRTag(other, iec62439.LANA, 10)
+	farA.Write(of)
+	if d, _ := rb.Read(300 * time.Millisecond); d != nil {
+		t.Fatal("transit frame delivered to the gateway")
+	}
+	var fw []byte
+	for i := 0; i < 4; i++ { // skip supervision the box sent meanwhile
+		fw, _ = farB.Read(time.Second)
+		if bytes.Equal(fw, of) {
+			break
+		}
+	}
+	if fw == nil || !bytes.Equal(fw, of) {
+		t.Fatalf("transit frame not forwarded unchanged: got %d bytes want %d, stats %+v", len(fw), len(of), rb.Stats())
+	}
+}

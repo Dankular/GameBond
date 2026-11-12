@@ -563,7 +563,7 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 	for _, p := range s.Paths {
 		paths = append(paths, map[string]any{"slot": p.Local, "ready": p.Ready, "healthy": p.Healthy, "suspect": p.Suspect,
 			"rtt_ms": p.RTTMilliseconds, "rtt_jitter_ms": p.JitterMilliseconds, "wire_tx_bytes": p.WireTX, "wire_rx_bytes": p.WireRX,
-			"bfd": p.BFD, "policy_confirmed": p.PolicyConfirmed, "remote": p.Endpoint.String(), "mtu": mtuStatus(p, df)})
+			"bfd": p.BFD, "frer": frerStatus(p), "policy_confirmed": p.PolicyConfirmed, "remote": p.Endpoint.String(), "mtu": mtuStatus(p, df)})
 	}
 	doc := map[string]any{"pid": os.Getpid(), "created": float64(created.UnixNano()) / 1e9, "updated_at": float64(time.Now().UnixNano()) / 1e9,
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
@@ -576,6 +576,18 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 		capture.status(doc)
 	}
 	return doc
+}
+
+// frerStatus is the 802.1CB / IEC 62439-3 view of a path: which path delivered first, how
+// far behind the second copy lands, what the peer says about its own paths.
+func frerStatus(p bond.PathSnapshot) map[string]any {
+	out := map[string]any{}
+	for _, k := range []string{"first_wins", "late_copies", "skew_ms", "skew_max_ms", "first_share", "latent_error", "supervision"} {
+		if v, ok := p.Budget[k]; ok {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // mtuStatus is a path's `mtu` entry (nil without discovery): the prober's
