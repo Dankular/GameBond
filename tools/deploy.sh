@@ -11,8 +11,7 @@ LD="-X gamebond.local/nativeedge/buildinfo.Commit=$COMMIT"
 wait $WB $CB
 T 'go build done'
 # Server: skip upload, image build and container recreate when the binary is unchanged.
-SHA=$(sha256sum build/gamebond-native-edge-linux | cut -d' ' -f1)
-if [ "$(cat build/.server-sha 2>/dev/null)" = "$SHA" ]; then SERVER=skip; else SERVER=deploy; fi
+SERVER=deploy
 if [ $SERVER = deploy ]; then
   # The server image is built by GitHub Actions from the pushed commit; nothing is uploaded.
   git -c safe.directory='*' diff --quiet HEAD -- native-edge Dockerfile tools compose.yaml || { echo "uncommitted server changes: commit first, the server runs the pushed commit"; exit 1; }
@@ -25,18 +24,13 @@ if [ $SERVER = deploy ]; then
       sleep 1
     done
     echo "[+${SECONDS}s] image built"
-    timeout 110 plink -batch -T -i $K -hostkey $HK $H "set -eu
-R=/opt/gamebond/releases/native-live
-docker pull -q $IMG >/dev/null
-cd \$R && (grep -q '^GAMEBOND_IMAGE=' deploy.env && sed -i 's|^GAMEBOND_IMAGE=.*|GAMEBOND_IMAGE=$IMG|' deploy.env || echo 'GAMEBOND_IMAGE=$IMG' >> deploy.env)
-docker compose --env-file deploy.env up -d --no-build --force-recreate >/dev/null 2>&1
-n=0; until docker exec gamebond-native-1 sh -c 'test -e /tmp/gamebond-ready && test -d /sys/class/net/gamebond0 && kill -0 \$(cat /tmp/gamebond.pid)' 2>/dev/null; do n=\$((n+1)); [ \$n -ge 300 ] && { echo FAILED; exit 1; }; sleep 0.1; done; echo DEPLOYED" 2>&1 | tail -1 | tee .runtime/deploy-server.out
+    # The server-side probe owns the update (flock, readiness wait, rollback); here it is just told which commit.
+    timeout 110 plink -batch -T -i $K -hostkey $HK $H "/usr/local/bin/gamebond-probe update $COMMIT >/dev/null 2>&1; grep -q '^GAMEBOND_IMAGE=$IMG\$' /opt/gamebond/releases/native-live/deploy.env && docker exec gamebond-native-1 sh -c 'test -e /tmp/gamebond-ready && test -d /sys/class/net/gamebond0' && echo DEPLOYED" 2>&1 | tail -1 | tee .runtime/deploy-server.out
     # The recreate can drop this SSH session; re-check readiness on a fresh one before calling it failed.
     grep -q DEPLOYED .runtime/deploy-server.out || for _ in 1 2 3 4 5 6 7 8; do
       timeout 20 plink -batch -T -i $K -hostkey $HK $H "docker exec gamebond-native-1 sh -c 'test -e /tmp/gamebond-ready && test -d /sys/class/net/gamebond0' && echo DEPLOYED" 2>/dev/null | tail -1 > .runtime/deploy-server.out
       grep -q DEPLOYED .runtime/deploy-server.out && break; sleep 1
     done
-    grep -q DEPLOYED .runtime/deploy-server.out && echo "$SHA" > build/.server-sha
     rm -f .runtime/deploy-pending
   ) & SB=$!
 else
