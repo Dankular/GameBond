@@ -35,6 +35,8 @@ type Config struct {
 	Discover    bool // per-path MTU discovery
 	Failover    bool // suspect-path tracking and replay
 	FlowPinning bool // pin bulk flows to one path with fast reroute
+	// StripeAbove is the sustained Mbit/s above which a bulk flow is striped, not duplicated.
+	StripeAbove float64
 	CoDel       bool // per-flow CoDel with ECN marking on the bulk queue
 	// ParityRowsMin and ParityRowsMax bound the adaptive Reed-Solomon parity rows per group
 	// of 8 packets (1 row = 12.5%, 3 rows = 37.5%); zero means 1 and 3.
@@ -178,6 +180,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	s.EnableFailover(cfg.Failover)
 	s.SetFlowPinning(cfg.FlowPinning)
+	s.SetStripeAbove(cfg.StripeAbove)
 	s.SetParityRows(cfg.ParityRowsMin, cfg.ParityRowsMax)
 	s.EnableLossTracking(cfg.LossTracking)
 	s.EnableDelayControl(cfg.DelayControl)

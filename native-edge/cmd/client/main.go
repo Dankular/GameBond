@@ -48,6 +48,7 @@ type fileConfig struct {
 	MaxMbps        float64                      `json:"bonding_max_rate_mbps"`
 	FailoverReplay bool                         `json:"failover_replay"`
 	FlowPinning    bool                         `json:"flow_pinning"`
+	StripeAbove    float64                      `json:"stripe_above_mbps"`
 	CoDel          bool                         `json:"codel"`
 	Protection     string                       `json:"protection"` // ignored: every packet is always duplicated
 	ParityRowsMin  int                          `json:"parity_rows_min"`
@@ -305,7 +306,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		specs, available = adapterwatch.PlanInventory(slots, rows, uplink.InterfaceFor)
 	}
 	clientCfg := client.Config{Key: key, Session: session, Server: peer, Uplinks: specs, Available: available,
-		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay, FlowPinning: cfg.FlowPinning, CoDel: cfg.CoDel, ParityRowsMin: cfg.ParityRowsMin, ParityRowsMax: cfg.ParityRowsMax,
+		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay, FlowPinning: cfg.FlowPinning, StripeAbove: cfg.StripeAbove, CoDel: cfg.CoDel, ParityRowsMin: cfg.ParityRowsMin, ParityRowsMax: cfg.ParityRowsMax,
 		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking, DelayControl: cfg.DelayControl}
 	c, err := client.New(clientCfg)
 	if err != nil {
