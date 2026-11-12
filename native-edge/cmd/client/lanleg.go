@@ -279,7 +279,7 @@ func (m *lanManager) status() any {
 		row := map[string]any{"name": d.Name, "tunnel_ip": d.TunnelIP.String(), "adapter_mac": rg.mac, "leased": rg.gw.IsLeased(), "present": rg.gw.Present(), "silent_s": rg.gw.SilentFor().Seconds(), "up": rg.alive(), "error": nil,
 			"frames_in": c.FramesIn, "frames_out": c.FramesOut, "packets_to_tunnel": c.PacketsToTunnel, "packets_from_tunnel": c.PacketsFromTunnel, "bytes_to_tunnel": c.BytesToTunnel, "bytes_from_tunnel": c.BytesFromTunnel,
 			"dhcp_offers": c.DHCPOffers, "dhcp_acks": c.DHCPAcks,
-			"udp_direct": m.directStatus(d), "oversize_fragmented": c.Fragmented, "oversize_df_dropped": c.FragNeededSent, "tunnel_to_device_malformed": c.Malformed}
+			"udp_direct": m.directStatus(d), "oversize_fragmented": c.Fragmented, "oversize_df_dropped": c.FragNeededSent, "tunnel_to_device_malformed": c.Malformed, "delivery_timing": rg.gw.DeliveryTiming()}
 		if mac, ok := rg.gw.DeviceMAC(); ok {
 			row["device_mac"] = fmtMAC(mac)
 		} else {

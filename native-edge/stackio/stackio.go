@@ -13,6 +13,8 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 const (
@@ -52,6 +54,9 @@ func Read(r io.Reader) (Frame, error) {
 type Writer struct {
 	mu sync.Mutex
 	w  io.Writer
+	// Timing of the writes, to tell a busy lock (other writers) from a slow pipe (the
+	// reader is not draining): worst case in nanoseconds and counts over 10 ms.
+	lockMax, writeMax, lockOver10, writeOver10, writes atomic.Int64
 }
 
 func NewWriter(w io.Writer) *Writer { return &Writer{w: w} }
@@ -64,8 +69,34 @@ func (w *Writer) Write(kind byte, payload []byte) error {
 	buf[0] = kind
 	binary.BigEndian.PutUint16(buf[1:], uint16(len(payload)))
 	copy(buf[3:], payload)
+	t0 := time.Now()
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	t1 := time.Now()
 	_, err := w.w.Write(buf)
+	t2 := time.Now()
+	w.writes.Add(1)
+	noteMax(&w.lockMax, &w.lockOver10, t1.Sub(t0))
+	noteMax(&w.writeMax, &w.writeOver10, t2.Sub(t1))
 	return err
+}
+
+func noteMax(max, over10 *atomic.Int64, d time.Duration) {
+	if d > 10*time.Millisecond {
+		over10.Add(1)
+	}
+	for {
+		cur := max.Load()
+		if int64(d) <= cur || max.CompareAndSwap(cur, int64(d)) {
+			return
+		}
+	}
+}
+
+// Timing reports the write timings: how long a call waited for the lock and how long
+// the pipe write itself took.
+func (w *Writer) Timing() map[string]any {
+	ms := func(v int64) float64 { return float64(v) / 1e6 }
+	return map[string]any{"writes": w.writes.Load(), "lock_wait_max_ms": ms(w.lockMax.Load()), "lock_wait_over_10ms": w.lockOver10.Load(),
+		"pipe_write_max_ms": ms(w.writeMax.Load()), "pipe_write_over_10ms": w.writeOver10.Load()}
 }

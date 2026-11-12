@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,6 +60,9 @@ type Counters struct {
 // Gateway serves one device on one adapter. Methods are safe for concurrent
 // use; HandleFrame calls are serialised.
 type Gateway struct {
+	// Timing of tunnel-to-device delivery: time waiting for mu and time inside the
+	// adapter write, worst case in ns and counts over 10 ms (see Timing).
+	delivLockMax, delivWriteMax, delivLockOver10, delivWriteOver10 atomic.Int64
 	mu        sync.Mutex
 	cfg       Config
 	io        IO
@@ -508,8 +512,10 @@ func (g *Gateway) dhcpReply(message byte, xid, flags []byte, chaddr [6]byte, yia
 
 // Deliver sends a packet received from the VPS to the device.
 func (g *Gateway) Deliver(packet []byte) bool {
+	t0 := time.Now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	noteDeliveryMax(&g.delivLockMax, &g.delivLockOver10, time.Since(t0))
 	_, _, _, dst, total, ok := parseIPv4(packet)
 	if !ok {
 		g.c.Malformed++
@@ -535,7 +541,30 @@ func (g *Gateway) Deliver(packet []byte) bool {
 	}
 	g.c.PacketsFromTunnel++
 	g.c.BytesFromTunnel += uint64(len(p))
-	return g.sendFrame(*g.deviceMAC, ethIPv4, p)
+	t1 := time.Now()
+	ok = g.sendFrame(*g.deviceMAC, ethIPv4, p)
+	noteDeliveryMax(&g.delivWriteMax, &g.delivWriteOver10, time.Since(t1))
+	return ok
+}
+
+func noteDeliveryMax(max, over10 *atomic.Int64, d time.Duration) {
+	if d > 10*time.Millisecond {
+		over10.Add(1)
+	}
+	for {
+		cur := max.Load()
+		if int64(d) <= cur || max.CompareAndSwap(cur, int64(d)) {
+			return
+		}
+	}
+}
+
+// DeliveryTiming reports worst-case milliseconds spent waiting for the gateway lock and
+// inside the adapter write on the tunnel-to-device path, and how often each passed 10 ms.
+func (g *Gateway) DeliveryTiming() map[string]any {
+	ms := func(v int64) float64 { return float64(v) / 1e6 }
+	return map[string]any{"lock_wait_max_ms": ms(g.delivLockMax.Load()), "lock_wait_over_10ms": g.delivLockOver10.Load(),
+		"adapter_write_max_ms": ms(g.delivWriteMax.Load()), "adapter_write_over_10ms": g.delivWriteOver10.Load()}
 }
 
 func (g *Gateway) fragNeeded(original []byte) {
