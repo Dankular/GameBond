@@ -25,11 +25,11 @@ if [ $SERVER = deploy ]; then
     done
     echo "[+${SECONDS}s] image built"
     # The server-side probe owns the update (flock, readiness wait, rollback); here it is just told which commit.
-    timeout 110 plink -batch -T -i $K -hostkey $HK $H "/usr/local/bin/gamebond-probe update $COMMIT >/dev/null 2>&1; grep -q '^GAMEBOND_IMAGE=$IMG\$' /opt/gamebond/releases/native-live/deploy.env && docker exec gamebond-native-1 sh -c 'test -e /tmp/gamebond-ready && test -d /sys/class/net/gamebond0' && echo DEPLOYED" 2>&1 | tail -1 | tee .runtime/deploy-server.out
-    # The recreate can drop this SSH session; re-check readiness on a fresh one before calling it failed.
-    grep -q DEPLOYED .runtime/deploy-server.out || for _ in 1 2 3 4 5 6 7 8; do
-      timeout 20 plink -batch -T -i $K -hostkey $HK $H "docker exec gamebond-native-1 sh -c 'test -e /tmp/gamebond-ready && test -d /sys/class/net/gamebond0' && echo DEPLOYED" 2>/dev/null | tail -1 > .runtime/deploy-server.out
-      grep -q DEPLOYED .runtime/deploy-server.out && break; sleep 1
+    # Start the update detached: the container recreate can leave an SSH session hanging, so poll on short fresh sessions instead.
+    timeout 20 plink -batch -T -i $K -hostkey $HK $H "nohup /usr/local/bin/gamebond-probe update $COMMIT </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
+    for _ in $(seq 1 120); do
+      timeout 15 plink -batch -T -i $K -hostkey $HK $H "grep -q '^GAMEBOND_IMAGE=$IMG\$' /opt/gamebond/releases/native-live/deploy.env && docker exec gamebond-native-1 sh -c 'test -e /tmp/gamebond-ready && test -d /sys/class/net/gamebond0' && echo DEPLOYED" 2>/dev/null | tail -1 > .runtime/deploy-server.out
+      grep -q DEPLOYED .runtime/deploy-server.out && break; sleep 0.5
     done
     rm -f .runtime/deploy-pending
   ) & SB=$!
@@ -47,7 +47,7 @@ else
 fi
 [ $SERVER = deploy ] && { wait $SB || true; grep -q DEPLOYED .runtime/deploy-server.out || { echo "SERVER DEPLOY FAILED"; exit 1; }; T 'server ready'; }
 if same build/gamebond-widget.new.exe build/gamebond-widget.exe; then rm -f build/gamebond-widget.new.exe; T 'widget unchanged: not relaunched'; else
-powershell -NoProfile -Command "Get-Process gamebond-widget -ErrorAction SilentlyContinue | Stop-Process -Force; while (Get-Process gamebond-widget -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 20 }; Move-Item -Force build/gamebond-widget.new.exe build/gamebond-widget.exe; Start-Process -FilePath ./start-widget.cmd -WindowStyle Hidden"
+powershell -NoProfile -Command "Remove-Item -Force build/gamebond-widget.old.exe -ErrorAction SilentlyContinue; if (Test-Path build/gamebond-widget.exe) { Move-Item -Force build/gamebond-widget.exe build/gamebond-widget.old.exe }; Move-Item -Force build/gamebond-widget.new.exe build/gamebond-widget.exe; Get-Process gamebond-widget -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Process -FilePath ./start-widget.cmd -WindowStyle Hidden"
 T 'widget done'
 fi
 echo WIDGET-RELAUNCHED
