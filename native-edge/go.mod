@@ -21,4 +21,4 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 )
 
-require github.com/Dankular/GameBond.Core v0.1.0
+require github.com/Dankular/GameBond.Core v0.1.1
