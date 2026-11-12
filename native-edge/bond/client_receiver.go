@@ -60,6 +60,10 @@ func (r *Receiver) clientPoll(p *receivePath, now time.Time, out *ReceiveResult)
 		return err
 	}
 	if restarted {
+		if p.ready {
+			p.ready = false
+			r.noteLine(p, now, OutageLinkLost, "handshake_restart", 0)
+		}
 		p.ready = false
 	}
 	return r.write(kind, payload, p.local, p.endpoint, out)
@@ -82,8 +86,12 @@ func (r *Receiver) clientHandshake(p *receivePath, packet Packet, now time.Time)
 		if err := r.adoptClientPeer(peer, packet.Header.Sequence, now); err != nil {
 			return out, err
 		}
+		wasReady := p.ready
 		p.ready = true
 		p.last = now
+		if !wasReady {
+			r.noteLine(p, now, OutageLinkReady, "", 0)
+		}
 		if p.policy != nil {
 			return out, r.sendPolicy(p, now, &out)
 		}

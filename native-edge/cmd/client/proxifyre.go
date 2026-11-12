@@ -170,6 +170,7 @@ func (p *proxifyre) supervise(ctx context.Context, socks string, fail func(error
 		if err != nil {
 			failures++
 			fmt.Fprintln(p.log, "application capture restart failed:", err)
+			reportHealth("cap:proxifyre", false, "start_failed")
 			if failures >= 5 {
 				fail(fmt.Errorf("application capture: %w", err))
 				return
@@ -184,6 +185,7 @@ func (p *proxifyre) supervise(ctx context.Context, socks string, fail func(error
 			p.proc = proc
 			p.mu.Unlock()
 			fmt.Fprintln(p.log, "application capture running:", proc)
+			reportHealth("cap:proxifyre", true, "")
 			started := time.Now()
 			select {
 			case <-proc.Done():
@@ -193,6 +195,7 @@ func (p *proxifyre) supervise(ctx context.Context, socks string, fail func(error
 			if p.isClosed() {
 				return
 			}
+			reportHealth("cap:proxifyre", false, "exited")
 			fmt.Fprintf(p.log, "application capture: ProxiFyre exited after %s (%v); restarting\n", time.Since(started).Round(time.Second), proc.ExitError())
 			proc.Stop()
 			if time.Since(started) > time.Minute {

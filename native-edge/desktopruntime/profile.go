@@ -26,7 +26,7 @@ type Profile struct {
 
 type Plan struct {
 	Root, Client, Config, Key, Netstack, Metadata, Status, Usage string
-	Proxifyre                                                    bool
+	Proxifyre                                         bool
 }
 
 func Resolve(root, path string) string {
@@ -52,6 +52,9 @@ func Load(root, profilePath, config, metadata, status string) (Plan, error) {
 
 func (p Plan) Validate() error {
 	for label, path := range map[string]string{"client binary": p.Client, "client config": p.Config, "shared key": p.Key, "netstack binary": p.Netstack} {
+		if path == "" {
+			continue // optional
+		}
 		st, err := os.Stat(path)
 		if err != nil {
 			return fmt.Errorf("%s is unavailable: %w", label, err)

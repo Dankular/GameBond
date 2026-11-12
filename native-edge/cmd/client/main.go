@@ -303,9 +303,10 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		}
 		specs, available = adapterwatch.PlanInventory(slots, rows, uplink.InterfaceFor)
 	}
-	c, err := client.New(client.Config{Key: key, Session: session, Server: peer, Uplinks: specs, Available: available,
+	clientCfg := client.Config{Key: key, Session: session, Server: peer, Uplinks: specs, Available: available,
 		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay, FlowPinning: cfg.FlowPinning, CoDel: cfg.CoDel, ParityRowsMin: cfg.ParityRowsMin, ParityRowsMax: cfg.ParityRowsMax,
-		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking, DelayControl: cfg.DelayControl})
+		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking, DelayControl: cfg.DelayControl}
+	c, err := client.New(clientCfg)
 	if err != nil {
 		return err
 	}
@@ -359,6 +360,27 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		case <-ctx.Done():
 		}
 	}()
+	if *statusPath != "" {
+		if err := c.OpenOutageLog(absPath(filepath.Join(filepath.Dir(*statusPath), "outages"))); err != nil {
+			fmt.Fprintln(os.Stderr, "outage log:", err)
+		} else {
+			defer c.CloseOutageLog()
+		}
+	}
+	{
+		sink := func(source string, ok bool, note string) { c.NoteComponent(source, ok, note) }
+		healthSink.Store(&sink)
+		ids := append([]string(nil), cfg.InterfaceIDs...)
+		var lanIDs []struct {
+			ID string `json:"interface_id"`
+		}
+		if json.Unmarshal(cfg.LANDevices, &lanIDs) == nil {
+			for _, d := range lanIDs {
+				ids = append(ids, d.ID)
+			}
+		}
+		go startDriverHealth(ctx, c, ids)
+	}
 	go func() { errs <- c.Run(ctx) }()
 	startDishWatch(ctx, cfg.Dish, c)
 	updateAdapters := func(sp []uplink.Spec, avail []bool) error {
@@ -545,7 +567,7 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 	}
 	doc := map[string]any{"pid": os.Getpid(), "created": float64(created.UnixNano()) / 1e9, "updated_at": float64(time.Now().UnixNano()) / 1e9,
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
-		"transport": map[string]any{"paths": paths, "receive": s.Receiver, "send": s.Sender, "reorder": s.Reorder, "queue": s.Queue, "loop": s.Loop},
+		"transport": map[string]any{"paths": paths, "receive": s.Receiver, "send": s.Sender, "reorder": s.Reorder, "queue": s.Queue, "loop": s.Loop, "outages": s.Outages},
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
 		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "alarms": alarms, "loss_causes": lossCauses(s)}
 	if capture != nil {
@@ -565,4 +587,11 @@ func mtuStatus(p bond.PathSnapshot, df []bool) any {
 	enforced := p.Local >= 0 && p.Local < len(df) && df[p.Local]
 	return map[string]any{"path_mtu": p.MTU.PathMTU, "ceiling": p.MTU.Ceiling, "confirmed": p.MTU.Confirmed, "capable": p.MTU.Capable,
 		"rounds": p.MTU.Rounds, "acks": p.MTU.Acks, "failed_sizes": failed, "skips": p.MTUSkips, "df_enforced": enforced}
+}
+
+func absPath(p string) string {
+	if a, err := filepath.Abs(p); err == nil {
+		return a
+	}
+	return p
 }

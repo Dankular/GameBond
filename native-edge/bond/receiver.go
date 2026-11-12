@@ -119,6 +119,7 @@ type Receiver struct {
 	dataHighAt           time.Time
 	floor                uint64
 	paths                map[PathKey]*receivePath
+	outages              *OutageJournal
 	recovery             map[int]recoveryState
 	copies               *CopyLedger[PathKey]
 	reorder              *Reorder
@@ -149,7 +150,7 @@ func NewReceiver(codec *Codec, mtu int) (*Receiver, error) {
 		return nil, ErrFrame
 	}
 	r, _ := NewReorder(DefaultReorderConfig())
-	return &Receiver{role: codec.role, codec: codec, handshake: NewServerHandshake(), paths: make(map[PathKey]*receivePath), reorder: r, mtu: mtu, initialRate: 1, maxRate: 100, probes: make(map[[24]byte]pendingProbe), reorderBase: 30 * time.Millisecond, copies: newCopyLedger()}, nil
+	return &Receiver{role: codec.role, codec: codec, handshake: NewServerHandshake(), paths: make(map[PathKey]*receivePath), reorder: r, mtu: mtu, initialRate: 1, maxRate: 100, probes: make(map[[24]byte]pendingProbe), reorderBase: 30 * time.Millisecond, copies: newCopyLedger(), outages: newOutageJournal()}, nil
 }
 func (r *Receiver) SetReorderTimeout(timeout time.Duration) error {
 	if len(r.paths) > 0 || timeout < time.Millisecond || timeout > 200*time.Millisecond {

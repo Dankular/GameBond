@@ -63,14 +63,14 @@ type rxKey struct {
 }
 
 type Codec struct {
-	key      [32]byte
-	Session  [16]byte
-	Prefix   [16]byte
-	role     string
-	tx       cipher.AEAD
-	sequence atomic.Uint64
-	rxMutex  sync.Mutex
-	rx       []rxKey
+	key       [32]byte
+	Session   [16]byte
+	Prefix    [16]byte
+	role      string
+	tx        cipher.AEAD
+	sequence  atomic.Uint64
+	rxMutex   sync.Mutex
+	rx        []rxKey
 }
 
 func NewCodec(key, session []byte, role string) (*Codec, error) {

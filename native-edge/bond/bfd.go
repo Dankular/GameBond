@@ -68,9 +68,11 @@ func (r *Receiver) bfdEvaluate(p *receivePath, now time.Time) {
 		return
 	}
 	both := b.hears(now) && b.peerHears
+	wentDown, cameUp := false, false
 	switch {
 	case !both:
 		if b.up {
+			wentDown = true
 			r.stats.BFDDown++
 			b.failed = true
 			b.downs++
@@ -94,7 +96,13 @@ func (r *Receiver) bfdEvaluate(p *receivePath, now time.Time) {
 			b.up = true
 			b.ups++
 			r.stats.BFDUp++
+			cameUp = true
 		}
+	}
+	if wentDown {
+		r.noteLine(p, now, OutageLinkDown, b.cause, 0)
+	} else if cameUp && !b.lastDown.IsZero() { // a recovery, not the first exchange
+		r.noteLine(p, now, OutageLinkUp, "", now.Sub(b.lastDown))
 	}
 }
 

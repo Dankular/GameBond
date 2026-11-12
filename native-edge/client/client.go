@@ -29,10 +29,10 @@ type Config struct {
 	// Available parks initially offline slots; nil means all are available.
 	Available []bool
 	// Policies has one entry per uplink; nil means no LINK_POLICY is sent.
-	Policies []bond.PathPolicy
-	MTU      int  // 0 means 1400
-	Discover bool // per-path MTU discovery
-	Failover bool // suspect-path tracking and replay
+	Policies    []bond.PathPolicy
+	MTU         int  // 0 means 1400
+	Discover    bool // per-path MTU discovery
+	Failover    bool // suspect-path tracking and replay
 	FlowPinning bool // pin bulk flows to one path with fast reroute
 	CoDel       bool // per-flow CoDel with ECN marking on the bulk queue
 	// ParityRowsMin and ParityRowsMax bound the adaptive Reed-Solomon parity rows per group
@@ -56,6 +56,7 @@ type Config struct {
 	LossTracking bool
 	// DelayControl cuts a path's bulk rate when a standing queue builds (config delay_control).
 	DelayControl bool
+
 }
 
 type inbound struct {
@@ -66,28 +67,28 @@ type inbound struct {
 }
 
 type Client struct {
-	cfg      Config
-	recv     *bond.Receiver
-	sender   *bond.Sender
-	queue    *bond.TransmitQueue
-	qos      *bond.AdaptiveQoS
-	conns    []*net.UDPConn
-	socks    []*carrier.Socket // nil entry: plain UDP
-	lastRec  []time.Time
-	loop     LoopStats
-	incoming chan inbound
-	submit   chan bond.QueuedPacket
-	policies chan []bond.PathPolicy
-	hints    chan pathHintMsg
-	once     sync.Once
-	mu       sync.Mutex
-	snapshot Snapshot
-	specs    []uplink.Spec
-	avail    []bool
-	rebind   chan rebindRequest
-	runCtx   context.Context
-	done     chan struct{}
-	rebinds  uint64
+	cfg       Config
+	recv      *bond.Receiver
+	sender    *bond.Sender
+	queue     *bond.TransmitQueue
+	qos       *bond.AdaptiveQoS
+	conns     []*net.UDPConn
+	socks     []*carrier.Socket // nil entry: plain UDP
+	lastRec   []time.Time
+	loop      LoopStats
+	incoming  chan inbound
+	submit    chan bond.QueuedPacket
+	policies  chan []bond.PathPolicy
+	hints     chan pathHintMsg
+	once      sync.Once
+	mu        sync.Mutex
+	snapshot  Snapshot
+	specs     []uplink.Spec
+	avail     []bool
+	rebind    chan rebindRequest
+	runCtx    context.Context
+	done      chan struct{}
+	rebinds   uint64
 }
 
 // Snapshot is a copy of the loop's counters, safe to read from any goroutine.
@@ -118,6 +119,8 @@ type Snapshot struct {
 	Carrier []carrier.Stats
 	// QoS is AdaptiveQoS.Stats; nil when adaptive QoS is not configured.
 	QoS map[string]any
+	// Outages is the timestamped journal of line failures and full outages.
+	Outages bond.OutageSummary
 }
 
 var ErrConfig = errors.New("client: invalid configuration")
@@ -149,7 +152,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.MaxMbps == 0 {
 		cfg.MaxMbps = 100
 	}
-	codec, err := bond.NewCodec(cfg.Key, cfg.Session, "client")
+	var codec *bond.Codec
+	var err error
+	codec, err = bond.NewCodec(cfg.Key, cfg.Session, "client")
 	if err != nil {
 		return nil, err
 	}
@@ -258,6 +263,21 @@ func (c *Client) Submit(p bond.QueuedPacket) bool {
 		return false
 	}
 }
+
+// OpenOutageLog starts the durable, size-capped outage log in dir (see bond.OpenOutageLog).
+func (c *Client) OpenOutageLog(dir string) error {
+	return c.recv.OpenOutageLog(dir)
+}
+
+// NoteComponent journals a driver, adapter or process state change; polling it with an
+// unchanged state records nothing. NoteComponentError journals error-counter growth.
+func (c *Client) NoteComponent(source string, ok bool, note string) {
+	c.recv.NoteComponent(source, ok, note)
+}
+func (c *Client) NoteComponentError(source, note string) { c.recv.NoteComponentError(source, note) }
+
+// CloseOutageLog flushes and stops the durable outage log.
+func (c *Client) CloseOutageLog() { c.recv.CloseOutageLog() }
 
 func (c *Client) Snapshot() Snapshot {
 	c.mu.Lock()
@@ -418,6 +438,7 @@ func (c *Client) Run(ctx context.Context) error {
 			c.snapshot.Ready, c.snapshot.Uplinks = c.recv.ReadyPaths(now), len(c.conns)
 			c.snapshot.Receiver, c.snapshot.Sender = c.recv.Stats(), c.sender.Stats()
 			c.snapshot.Reorder = c.recv.ReorderStats()
+			c.snapshot.Outages = c.recv.Outages()
 			c.snapshot.Loop = c.loop
 			c.snapshot.Queue, c.snapshot.Paths = c.queue.Stats(), c.sender.Paths(now)
 			if c.qos != nil {
