@@ -6,6 +6,8 @@ import (
 )
 
 type SessionOptions struct {
+	// Version is the build id (git commit) reported to the client.
+	Version  string
 	MTU      int
 	ClientIP netip.Addr
 	// DeviceIPs are extra tunnel addresses (consoles behind a client LAN adapter)
@@ -56,6 +58,7 @@ func NewSession(key, session []byte, options SessionOptions) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.SetVersion(options.Version)
 	if err = r.SetReorderTimeout(options.ReorderTimeout); err != nil {
 		return nil, err
 	}

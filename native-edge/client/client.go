@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gamebond.local/nativeedge/bond"
+	"gamebond.local/nativeedge/buildinfo"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/uplink"
 )
@@ -121,6 +122,9 @@ type Snapshot struct {
 	QoS map[string]any
 	// Outages is the timestamped journal of line failures and full outages.
 	Outages bond.OutageSummary
+	// ClientVersion is this build's commit; ServerVersion is what the server reported (empty
+	// until it answers, or forever for a server built before the version frames).
+	ClientVersion, ServerVersion string
 }
 
 var ErrConfig = errors.New("client: invalid configuration")
@@ -162,6 +166,7 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.SetVersion(buildinfo.Commit)
 	if err = r.SetPathMTUDiscovery(cfg.Discover); err != nil {
 		return nil, err
 	}
@@ -439,6 +444,7 @@ func (c *Client) Run(ctx context.Context) error {
 			c.snapshot.Receiver, c.snapshot.Sender = c.recv.Stats(), c.sender.Stats()
 			c.snapshot.Reorder = c.recv.ReorderStats()
 			c.snapshot.Outages = c.recv.Outages()
+			c.snapshot.ClientVersion, c.snapshot.ServerVersion = c.recv.Versions()
 			c.snapshot.Loop = c.loop
 			c.snapshot.Queue, c.snapshot.Paths = c.queue.Stats(), c.sender.Paths(now)
 			if c.qos != nil {

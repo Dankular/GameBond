@@ -1,7 +1,8 @@
 FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY native-edge/ ./
-RUN GOFLAGS=-buildvcs=false CGO_ENABLED=0 GOOS=linux go build -o /out/gamebond-native-edge ./cmd/edge
+ARG GIT_COMMIT=dev
+RUN GOFLAGS=-buildvcs=false CGO_ENABLED=0 GOOS=linux go build -ldflags "-X gamebond.local/nativeedge/buildinfo.Commit=${GIT_COMMIT}" -o /out/gamebond-native-edge ./cmd/edge
 
 FROM debian:bookworm-slim
 RUN apt-get update \

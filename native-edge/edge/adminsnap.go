@@ -6,10 +6,14 @@ import (
 	"time"
 
 	"gamebond.local/nativeedge/bond"
+	"gamebond.local/nativeedge/buildinfo"
 )
 
 // Version is reported on the admin Status page.
 const Version = "0.3.1-go"
+
+// BuildCommit is the git commit this server was built from.
+func BuildCommit() string { return buildinfo.Commit }
 
 // AdminSnapshot reshapes the Go engine's stats into the document the admin
 // portal's pages read (the shape app.snapshot() produced in Python): version,
@@ -47,7 +51,7 @@ func AdminSnapshot(c Config, stats map[string]any, now time.Time) map[string]any
 			bind = append(bind, []any{rawString(b[0]), rawNumber(b[1])})
 		}
 	}
-	return map[string]any{"version": Version, "pid": os.Getpid(), "observed_at": now.UTC().Format(time.RFC3339Nano),
+	return map[string]any{"version": Version, "commit": buildinfo.Commit, "pid": os.Getpid(), "observed_at": now.UTC().Format(time.RFC3339Nano),
 		"transport": map[string]any{"paths": paths}, "packets": packets, "queues": queues, "qos": stats["qos"],
 		"config": map[string]any{"lan_tunnel_ips": lanIPs(c), "client_tunnel_ip": c.ClientIP, "game_udp_ports": gamePorts(c),
 			"queues": c.Queues, "bonding_mode": c.Bonding, "bind": bind, "mtu": c.MTU}}

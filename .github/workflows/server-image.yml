@@ -21,6 +21,7 @@ jobs:
         with:
           context: .
           push: true
+          build-args: GIT_COMMIT=${{ github.sha }}
           tags: ghcr.io/dankular/gamebond-native:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

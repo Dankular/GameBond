@@ -112,6 +112,9 @@ type pendingProbe struct {
 // must not use it as a production edge server on its own.
 type Receiver struct {
 	role                 string
+	version              string    // this side's build id (commit)
+	peerVersion          string    // the other side's build id, once it has said
+	versionAsked         time.Time // last VersionReq sent (client)
 	codec                *Codec
 	handshake            *ServerHandshake
 	replay               ReplayWindow
@@ -399,6 +402,8 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		valid = len(payload) == 16
 	case CopyReport:
 		valid = len(payload) == 24
+	case VersionReq, VersionInfo:
+		valid = len(payload) <= 64
 	case Parity:
 		valid = len(payload) >= parityHeader+2
 	case ParityRS:
@@ -491,6 +496,19 @@ func (r *Receiver) ReceiveVia(local int, frame []byte, endpoint netip.AddrPort, 
 		binary.BigEndian.PutUint64(ack[16:], p.wireTX+Overhead+32+28)
 		binary.BigEndian.PutUint64(ack[24:], p.wireRX)
 		err = r.write(LinkPolicyAck, ack, local, endpoint, &out)
+	case VersionReq:
+		if r.role != "server" {
+			r.stats.Malformed++
+			break
+		}
+		r.peerVersion = string(payload)
+		err = r.write(VersionInfo, []byte(r.version), local, endpoint, &out)
+	case VersionInfo:
+		if r.role != "client" {
+			r.stats.Malformed++
+			break
+		}
+		r.peerVersion = string(payload)
 	case LinkPolicyAck:
 		// Only a client with a policy of its own can be acknowledged.
 		revision, epoch := binary.BigEndian.Uint64(payload), binary.BigEndian.Uint64(payload[8:])
@@ -648,6 +666,18 @@ func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 				disabled := p.policy.Blocked || p.policy.Role == Never
 				if !p.policyConfirmed || (!disabled && now.Sub(p.policySent) >= time.Second) {
 					if err := r.sendPolicy(p, now, &out); err != nil {
+						return out, err
+					}
+				}
+			}
+			if r.role == "client" && p.ready && now.Sub(p.last) < 3*time.Second {
+				every := time.Minute
+				if r.peerVersion == "" {
+					every = 2 * time.Second // not known yet (or the server predates this frame)
+				}
+				if now.Sub(r.versionAsked) >= every {
+					r.versionAsked = now
+					if err := r.write(VersionReq, []byte(r.version), p.local, p.endpoint, &out); err != nil {
 						return out, err
 					}
 				}

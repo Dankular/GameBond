@@ -4,7 +4,9 @@ cd "D:/Dev Proj/Speedify"; export GOFLAGS=-buildvcs=false
 K="C:/Users/sysadmin/Desktop/privkey.ppk"; HK="SHA256:aEUdaCw8C09l+TUWYKqOgf05ty6ojqKueAZ65lK3UwI"; H=root@138.199.201.16
 # The widget is a separate exe with its own embedded copy of the GUI: always rebuild it with the client.
 (cd native-edge && go build -ldflags "-H=windowsgui" -o ../build/gamebond-widget.new.exe ./cmd/tray) & WB=$!
-(cd native-edge && go build -o ../build/gamebond-native-client.new.exe ./cmd/client && go build -o ../build/gamebond-desktopctl.new.exe ./cmd/desktopctl) & CB=$!
+COMMIT=$(git -c safe.directory='*' rev-parse HEAD); git -c safe.directory='*' diff --quiet HEAD -- native-edge || COMMIT="$COMMIT-dirty"
+LD="-X gamebond.local/nativeedge/buildinfo.Commit=$COMMIT"
+(cd native-edge && go build -ldflags "$LD" -o ../build/gamebond-native-client.new.exe ./cmd/client && go build -o ../build/gamebond-desktopctl.new.exe ./cmd/desktopctl) & CB=$!
 (cd native-edge && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o ../build/gamebond-native-edge-linux ./cmd/edge)
 wait $WB $CB
 T 'go build done'

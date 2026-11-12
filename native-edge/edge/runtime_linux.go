@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gamebond.local/nativeedge/bond"
+	"gamebond.local/nativeedge/buildinfo"
 	"golang.org/x/sys/unix"
 )
 
@@ -41,6 +42,7 @@ func openTun(name string) (int, error) {
 // neither a bulk pacing wait nor device backpressure can stop control/priority.
 // Address, link-up and NAT setup belong to the container's existing entrypoint.
 func Run(ctx context.Context, c Config, options bond.SessionOptions, address netip.AddrPort, session, key []byte, output io.Writer, observers ...func(map[string]any)) error {
+	options.Version = buildinfo.Commit
 	engine, err := bond.NewSession(key, session, options)
 	if err != nil {
 		return err
