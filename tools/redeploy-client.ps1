@@ -14,6 +14,10 @@ Lap 'processes exited'
 Copy-Item -Force build\gamebond-native-client.exe build\gamebond-native-client.prev.exe -ErrorAction SilentlyContinue
 Copy-Item -Force build\gamebond-native-client.new.exe build\gamebond-native-client.exe
 Copy-Item -Force build\gamebond-desktopctl.new.exe build\gamebond-desktopctl.exe
+if (Test-Path build\gamebond-netstack-attribution.new.exe) {
+  Copy-Item -Force build\gamebond-netstack-attribution.exe build\gamebond-netstack-attribution.prev.exe -ErrorAction SilentlyContinue
+  Copy-Item -Force build\gamebond-netstack-attribution.new.exe build\gamebond-netstack-attribution.exe
+}
 Lap 'binaries swapped'
 .\build\gamebond-desktopctl.exe ensure | Out-Null
 Lap 'ensure returned'

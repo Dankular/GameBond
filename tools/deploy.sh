@@ -9,12 +9,13 @@ LD="-X github.com/Dankular/GameBond.Core/buildinfo.Commit=$COMMIT"
 # The widget is a separate exe with its own embedded copy of the GUI: always rebuild it with the client.
 (cd native-edge && go build -ldflags "-H=windowsgui" -o ../build/gamebond-widget.new.exe ./cmd/tray) & WB=$!
 (cd native-edge && go build -ldflags "$LD" -o ../build/gamebond-native-client.new.exe ./cmd/client && go build -o ../build/gamebond-desktopctl.new.exe ./cmd/desktopctl) & CB=$!
-wait $WB $CB
+(cd netstack && go build -o ../build/gamebond-netstack-attribution.new.exe .) & NB=$!
+wait $WB $CB $NB
 T 'go build done'
 $G push -q 2>/dev/null || true
 # Unchanged binaries are not restarted: the tunnel stays up and the step costs nothing.
 same(){ [ -f "$2" ] && [ "$(sha256sum < "$1")" = "$(sha256sum < "$2")" ]; }
-if same build/gamebond-native-client.new.exe build/gamebond-native-client.exe && same build/gamebond-desktopctl.new.exe build/gamebond-desktopctl.exe; then
+if same build/gamebond-native-client.new.exe build/gamebond-native-client.exe && same build/gamebond-desktopctl.new.exe build/gamebond-desktopctl.exe && same build/gamebond-netstack-attribution.new.exe build/gamebond-netstack-attribution.exe; then
   T 'client unchanged: not restarted'
 else
   powershell -NoProfile -File tools/elevate.ps1 -File "$(cygpath -w tools/redeploy-client.ps1)" | tail -1

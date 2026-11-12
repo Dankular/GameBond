@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gamebond.local/nativeedge/stream"
+	"github.com/Dankular/GameBond.Core/stream"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 

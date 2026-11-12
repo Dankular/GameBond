@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
@@ -47,9 +48,13 @@ func bridgeDevices(devices ...tun.Device) {
 		}(index, device)
 	}
 	go func() {
+		// One large buffered reader: the pipe's own buffer is a few KB, so reading a
+		// header and a payload per packet straight from it made two system calls per
+		// packet and let the writer block whenever this loop was descheduled.
+		in := bufio.NewReaderSize(os.Stdin, 1<<20)
 		for {
 			var header [3]byte
-			if _, err := io.ReadFull(os.Stdin, header[:]); err != nil {
+			if _, err := io.ReadFull(in, header[:]); err != nil {
 				return
 			}
 			length := int(binary.BigEndian.Uint16(header[1:]))
@@ -58,7 +63,7 @@ func bridgeDevices(devices ...tun.Device) {
 					return
 				}
 				packet := make([]byte, length)
-				if _, err := io.ReadFull(os.Stdin, packet); err != nil {
+				if _, err := io.ReadFull(in, packet); err != nil {
 					return
 				}
 				handleAppAuthorizationFrame(packet)
@@ -68,7 +73,7 @@ func bridgeDevices(devices ...tun.Device) {
 				return
 			}
 			packet := make([]byte, length)
-			if _, err := io.ReadFull(os.Stdin, packet); err != nil {
+			if _, err := io.ReadFull(in, packet); err != nil {
 				return
 			}
 			if _, err := devices[header[0]].Write([][]byte{packet}, 0); err != nil {
