@@ -18,8 +18,8 @@ if [ $SERVER = deploy ]; then
   COMMIT=$(git -c safe.directory='*' rev-parse HEAD); IMG=ghcr.io/dankular/gamebond-native:$COMMIT
   mkdir -p .runtime; : > .runtime/deploy-pending
   (
-    until [ "$(gh run list --workflow server-image.yml --commit $COMMIT --json status,conclusion -q '.[0].status+" "+.[0].conclusion' 2>/dev/null)" = "completed success" ]; do
-      [ "$(gh run list --workflow server-image.yml --commit $COMMIT --json conclusion -q '.[0].conclusion' 2>/dev/null)" = failure ] && { echo "CI BUILD FAILED" > .runtime/deploy-server.out; rm -f .runtime/deploy-pending; exit 1; }
+    until [ "$(gh run list -R Dankular/GameBond --workflow server-image.yml --commit $COMMIT --json status,conclusion -q '.[0].status+" "+.[0].conclusion' 2>/dev/null)" = "completed success" ]; do
+      [ "$(gh run list -R Dankular/GameBond --workflow server-image.yml --commit $COMMIT --json conclusion -q '.[0].conclusion' 2>/dev/null)" = failure ] && { echo "CI BUILD FAILED" > .runtime/deploy-server.out; rm -f .runtime/deploy-pending; exit 1; }
       sleep 1
     done
     echo "[+${SECONDS}s] image built"
@@ -36,9 +36,17 @@ else
   echo "server binary unchanged: skipping upload, image build and recreate"
 fi
 # Client swap runs while the server restarts; its connect waits for deploy-pending to clear.
-powershell -NoProfile -File tools/elevate.ps1 -File "$(cygpath -w tools/redeploy-client.ps1)" | tail -1
-T 'client redeployed'
+# Unchanged binaries are not restarted: the tunnel stays up and the step costs nothing.
+same(){ [ -f "$2" ] && [ "$(sha256sum < "$1")" = "$(sha256sum < "$2")" ]; }
+if same build/gamebond-native-client.new.exe build/gamebond-native-client.exe && same build/gamebond-desktopctl.new.exe build/gamebond-desktopctl.exe; then
+  T 'client unchanged: not restarted'
+else
+  powershell -NoProfile -File tools/elevate.ps1 -File "$(cygpath -w tools/redeploy-client.ps1)" | tail -1
+  T 'client redeployed'
+fi
 [ $SERVER = deploy ] && { wait $SB || true; grep -q DEPLOYED .runtime/deploy-server.out || { echo "SERVER DEPLOY FAILED"; exit 1; }; T 'server ready'; }
+if same build/gamebond-widget.new.exe build/gamebond-widget.exe; then rm -f build/gamebond-widget.new.exe; T 'widget unchanged: not relaunched'; else
 powershell -NoProfile -Command "Get-Process gamebond-widget -ErrorAction SilentlyContinue | Stop-Process -Force; Move-Item -Force build/gamebond-widget.new.exe build/gamebond-widget.exe; Start-Process -FilePath ./start-widget.cmd -WindowStyle Hidden"
 T 'widget done'
+fi
 echo WIDGET-RELAUNCHED
