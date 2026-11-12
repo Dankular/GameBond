@@ -42,6 +42,10 @@
   <section><h2>Links</h2>
     <table><thead><tr><th>Link</th><th>State</th><th>RTT</th><th>Jitter</th><th>Sent</th><th>Received</th></tr></thead><tbody id="links"></tbody></table>
   </section>
+  <section><h2>Loss &amp; redundancy</h2>
+    <div class="kv" id="redundancy"></div>
+    <table style="margin-top:10px"><thead><tr><th>Link</th><th>BFD</th><th>Drops</th><th>Last cause</th><th>Since last drop</th></tr></thead><tbody id="bfdrows"></tbody></table>
+  </section>
   <section><h2>Applications</h2>
     <table><thead><tr><th>Application</th><th>Up</th><th>Down</th></tr></thead><tbody id="apps"></tbody></table>
   </section>
@@ -105,6 +109,7 @@ async function poll() {
       cell(tr, fmtMs(p.rtt_ms)); cell(tr, fmtMs(p.rtt_jitter_ms)); cell(tr, fmtBytes(p.wire_tx_bytes)); cell(tr, fmtBytes(p.wire_rx_bytes));
       tb.appendChild(tr);
     }
+    renderRedundancy(d, paths);
     const ab = $("apps"); ab.replaceChildren();
     const apps = Array.isArray(d.application_traffic) ? d.application_traffic : (d.application_traffic && d.application_traffic.applications) || [];
     for (const a of apps.slice(0, 25)) {
@@ -114,6 +119,35 @@ async function poll() {
     }
     if (!apps.length) { const tr = document.createElement("tr"); cell(tr, "No application traffic recorded yet"); ab.appendChild(tr); }
   } catch (e) { text($("state"), "offline"); }
+}
+
+// "Loss & redundancy": how much is copied, what was recovered and by what, and what was truly lost.
+function pct(a, b) { return b > 0 ? (100 * a / b).toFixed(a / b < 0.001 ? 3 : 2) + " %" : "–"; }
+function num(n) { return Number(n || 0).toLocaleString(); }
+function renderRedundancy(d, paths) {
+  const t = d.transport || {}, snd = t.send || {}, rec = t.reorder || {}, lc = d.loss_causes || {};
+  const up = lc.upload || {}, down = lc.download || {}, local = lc.local || {};
+  const payload = snd.PayloadPackets || 0, copies = snd.Copies || 0;
+  const rows = [
+    ["Duplication", payload ? "every packet: " + (copies / payload).toFixed(2) + " frames per packet (" + num(snd.BulkDuplicates) + " bulk copies, " + num(snd.BulkDupSkipped) + " skipped)" : "–"],
+    ["Truly lost (download)", num(down.never_arrived) + " packets (" + num(down.never_arrived_tcp) + " TCP, " + num(down.never_arrived_udp) + " UDP) of " + num(rec.Delivered) + " delivered = " + pct(down.never_arrived || 0, rec.Delivered || 0)],
+    ["Rebuilt from parity (download)", num(down.rebuilt_from_parity)],
+    ["Gave up / arrived too late", num(down.holes_given_up) + " / " + num(down.arrived_after_deadline)],
+    ["Repairs asked / exhausted", num(down.repairs_asked) + " / " + num(down.repairs_exhausted)],
+    ["Upload: lost on wire", num(up.frames_lost_on_wire) + " frames; " + num(up.resent_at_once) + " resent at once, " + num(up.held_for_sibling_copy) + " held for their copy, " + num(up.unrecoverable_no_cache) + " unrecoverable"],
+    ["Upload recovery", "SACK lost " + num(snd.SackLost) + ", tail probes " + num(snd.TailProbed) + ", repair copies " + num(snd.RepairCopies) + ", throttled " + num(snd.RepairThrottled)],
+    ["Reed-Solomon / XOR parity sent", num(snd.ParityRSSent) + " / " + num(snd.ParitySent)],
+    ["Dropped inside this PC", num(local.os_udp_receive_errors) + " OS receive errors, " + num(local.socket_send_errors) + " send errors, " + num(local.delivery_queue_full) + " queue full"],
+  ];
+  const kv = $("redundancy"); kv.replaceChildren();
+  for (const [k, v] of rows) { const a = document.createElement("span"); a.textContent = k; const b = document.createElement("span"); b.textContent = v; kv.append(a, b); }
+  const tb = $("bfdrows"); tb.replaceChildren();
+  for (const p of paths) {
+    const f = p.bfd || {}, tr = document.createElement("tr");
+    cell(tr, "#" + p.slot); cell(tr, f.state || "–"); cell(tr, num(f.downs));
+    cell(tr, f.last_cause || "–"); cell(tr, f.last_down_s_ago != null ? Number(f.last_down_s_ago).toFixed(0) + " s" : "–");
+    tb.appendChild(tr);
+  }
 }
 
 async function control(command) {
