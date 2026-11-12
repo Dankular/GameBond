@@ -671,7 +671,7 @@ func (r *Receiver) Tick(now time.Time) (ReceiveResult, error) {
 				}
 			}
 			if r.role == "client" && p.ready && now.Sub(p.last) < 3*time.Second {
-				every := time.Minute
+				every := 5 * time.Second // a restarted server shows its new build within seconds
 				if r.peerVersion == "" {
 					every = 2 * time.Second // not known yet (or the server predates this frame)
 				}

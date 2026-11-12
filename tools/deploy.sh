@@ -17,13 +17,14 @@ if [ $SERVER = deploy ]; then
   git -c safe.directory='*' diff --quiet HEAD -- native-edge Dockerfile tools compose.yaml || { echo "uncommitted server changes: commit first, the server runs the pushed commit"; exit 1; }
   git -c safe.directory='*' push -q
   COMMIT=$(git -c safe.directory='*' rev-parse HEAD); IMG=ghcr.io/dankular/gamebond-native:$COMMIT
-  mkdir -p .runtime; : > .runtime/deploy-pending
+  mkdir -p .runtime; rm -f .runtime/deploy-pending
   (
     until [ "$(gh run list -R Dankular/GameBond --workflow server-image.yml --commit $COMMIT --json status,conclusion -q '.[0].status+" "+.[0].conclusion' 2>/dev/null)" = "completed success" ]; do
       [ "$(gh run list -R Dankular/GameBond --workflow server-image.yml --commit $COMMIT --json conclusion -q '.[0].conclusion' 2>/dev/null)" = failure ] && { echo "CI BUILD FAILED" > .runtime/deploy-server.out; rm -f .runtime/deploy-pending; exit 1; }
       sleep 1
     done
     echo "[+${SECONDS}s] image built"
+    : > .runtime/deploy-pending   # from here until the server is back, the client waits before connecting
     # The server-side probe owns the update (flock, readiness wait, rollback); here it is just told which commit.
     # Start the update detached: the container recreate can leave an SSH session hanging, so poll on short fresh sessions instead.
     timeout 20 plink -batch -T -i $K -hostkey $HK $H "nohup /usr/local/bin/gamebond-probe update $COMMIT </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
