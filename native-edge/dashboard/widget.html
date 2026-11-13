@@ -56,6 +56,7 @@ function issueTable(head,rows){const t=document.createElement('table'),th=docume
 function issueNote(text){const p=document.createElement('p');p.className='sub';p.textContent=text;return p}
 function renderIssues(d){
 const box=$('issuespanel');box.replaceChildren();issueCopyAll.length=0;const h1=document.createElement('h1');h1.textContent='Issues';box.append(h1);addCopyAll(h1);
+box.append(errorSection(d));
 const t=d.transport;if(d.state!=='running'||!t){const p=document.createElement('p');p.className='notice';p.textContent='The bond is not running. Connect to see live loss, burst, aggregation, load and error-correction counters.';box.append(p);return}
 const now=issueSnaps.at(-1)||{},paths=t.paths||[],qp=d.qos?.path_quality||[],pct=x=>(x*100).toFixed(1)+' %',lan=(d.lan_devices||[])[0]||{};
 const rate=(key,i)=>{const w=issueWin(key+i,10);return w?w.d*8/1e6/w.secs:null};
@@ -161,4 +162,5 @@ __TOPOLOGY_SCRIPT__
 __THEME_SCRIPT__
 __JOURNAL_SCRIPT__
 __PROTECT_SCRIPT__
+__ERRORS_SCRIPT__
 </script></body></html>

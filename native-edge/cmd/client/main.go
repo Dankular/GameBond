@@ -30,6 +30,7 @@ import (
 	"github.com/Dankular/GameBond.Core/bond"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/client"
+	"gamebond.local/nativeedge/errhist"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/omr"
 	"gamebond.local/nativeedge/procjob"
@@ -430,6 +431,10 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			return nil
 		}, logOut)
 	}
+	errHist := errhist.New()
+	if *statusPath != "" {
+		errHist.Load(errhist.SavePath(*statusPath))
+	}
 	rdns, rerr := newReverseDNS(filepath.Dir(*statusPath), cfg.ReverseDNS)
 	if rerr != nil {
 		return rerr
@@ -596,10 +601,19 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			if err := capture.flush(); err != nil {
 				fmt.Fprintln(logOut, "application history write failed:", err)
 			}
+			osErrors, osOK := osUDPReceiveErrors()
+			errHist.Observe(errorCounters(s, osErrors, osOK))
+			errHist.Links(linkHealth(s))
+			if *statusPath != "" && tick%60 == 0 {
+				if err := errHist.Save(errhist.SavePath(*statusPath)); err != nil {
+					fmt.Fprintln(logOut, "error history write failed:", err)
+				}
+			}
 			if *statusPath != "" {
 				doc := statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture, c.DFEnforced(), alarms)
 				doc["slo"] = sr.status()
 				doc["reverse_dns"] = rdns.status()
+				doc["error_history"] = errHist.View()
 				if err := status.WriteJSON(*statusPath, doc); err != nil {
 					fmt.Fprintln(logOut, "status write failed:", err)
 				}
