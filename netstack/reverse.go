@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"reflect"
 	"strconv"
 	"sync"
@@ -44,6 +45,20 @@ type reverseCounters struct {
 }
 
 var reverseStats reverseCounters
+
+// reverseLog appends a line to GAMEBOND_REVERSE_LOG when set, so live behaviour can be inspected.
+func reverseLog(format string, a ...any) {
+	path := os.Getenv("GAMEBOND_REVERSE_LOG")
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s\n", time.Now().Format("15:04:05.000"), fmt.Sprintf(format, a...))
+}
 
 // reversePolicy decides which ports may be forwarded. The default allows everything; the GUI control
 // plane will replace Allow later.
@@ -95,6 +110,7 @@ func enableReverse(n *netstack.Net, p reversePolicy) error {
 
 func serveReverseTCP(r *tcp.ForwarderRequest, p reversePolicy) {
 	port := r.ID().LocalPort
+	reverseLog("syn from %v to port %d", r.ID().RemoteAddress, port)
 	if !p.Allow("tcp", port) {
 		reverseStats.Denied.Add(1)
 		r.Complete(true)
@@ -104,6 +120,7 @@ func serveReverseTCP(r *tcp.ForwarderRequest, p reversePolicy) {
 	local, err := net.DialTimeout("tcp", p.Target("tcp", port), reverseDialWait)
 	if err != nil {
 		reverseStats.TCPRefused.Add(1)
+		reverseLog("port %d refused: %v", port, err)
 		r.Complete(true)
 		return
 	}
