@@ -153,6 +153,8 @@ $('settings').onclick=()=>selectTab('protect');
 Promise.all([loadNetworks(),loadPolicy()]).catch(e=>$('actionmsg').textContent=e.message);poll();setInterval(poll,1000);setInterval(()=>{if(active==='hardware')loadHardware();if(active==='logs')loadLogs()},3000);setInterval(()=>loadNetworks().catch(()=>{}),5000);
 __SETTINGS_SCRIPT__
 __SCANNER_SCRIPT__
+__TOPOLOGY_SCRIPT__
+__THEME_SCRIPT__
 __JOURNAL_SCRIPT__
 __PROTECT_SCRIPT__
 </script></body></html>

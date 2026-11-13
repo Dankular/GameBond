@@ -189,13 +189,24 @@ with every change that alters behaviour and give it the commit once it is commit
 transport are in the [GameBond.Core](https://github.com/Dankular/GameBond.Core) changelog and the server's are in
 [GameBond.Server](https://github.com/Dankular/GameBond.Server); this one records what the client picks up from them.
 
-### Unreleased (working tree, not committed)
+### Unreleased
+- Nothing yet.
 
-**Network Topology tab and per-device usage (built, not deployed)**
+### 2026-11-13, topology, device usage, dark mode and Core v0.1.17
+
+**Dark mode**
+- A footer button cycles Auto, Light and Dark. Auto follows the Windows theme and changes live; the choice is kept in
+  `localStorage` (guarded, the page works without it). New: `native-edge/dashboard/widget_theme.js`. Covers the header, tabs, toolbars,
+  tables, dialogs, the traffic graph, issue and journal cards and the topology. Not covered: the status pills under the toolbar stay light.
+
+**Network Topology tab and per-device usage**
 - **Network Scanner has two views, Devices and Topology.** Devices is the existing list. Topology draws the exit
   server, each bonded link with its live in/out rate, RTT and health, this PC, and every device behind it, under a
   headline that reads "Everything is great!" or names the link that is down. A row of counters shows links up, routed
   devices, other LAN devices and the wire rate in and out. New: `native-edge/dashboard/widget_topology.js`.
+- **Devices that share one physical adapter hang off an adapter node** that shows the combined rate through it (an access point
+  and the devices connected to it). Clicking the node shows combined gauges and a table of every device behind it. Found because the
+  Archer's own address carries almost nothing while the PS5 and Laptop behind it carry the traffic.
 - **Click a device for its card.** Details (tunnel IP, device and adapter MAC, DHCP lease, last frame, problem, first
   and last traffic), a current-usage summary with download and upload gauges against the peak, a donut and list of apps
   and services, a ports table (protocol, remote port, service, bytes each way, packets), the top remote hosts, and a
@@ -213,7 +224,7 @@ transport are in the [GameBond.Core](https://github.com/Dankular/GameBond.Core) 
 - Tests: `devusage` (breakdown, rate going to zero when quiet, per-minute history save, load and expiry, junk and fragments,
   bounded port table) and `TestWidgetScriptParses` now covers the topology script.
 
-**Core v0.1.10 to v0.1.17 (deployed to the client and the server)**
+**Core v0.1.10 to v0.1.17**
 - Pinned in `native-edge/go.mod` (from v0.1.10) and `netstack/go.mod` (from v0.1.6). What changes on the wire and in the receive path:
   loss feedback is sent the moment a gap is seen; the selective-ack bitmap is now actually sent by the receiver; supervision
   frames keep their cadence through bursts; BFD counts any authenticated frame as hearing the peer, so a loaded line is not

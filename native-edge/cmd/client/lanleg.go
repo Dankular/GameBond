@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"gamebond.local/nativeedge/devusage"
 	"gamebond.local/nativeedge/lan"
 )
 
@@ -36,6 +38,11 @@ type lanManager struct {
 	retryAt map[string]time.Time
 	delvd   uint64
 	gaps    gapMeter
+
+	// usage accounts each device's traffic by remote port and service (never nil once built).
+	usage     *devusage.Tracker
+	usagePath string
+	usageSave time.Time
 
 	// leases is the DHCP lease table that survives restarts (nil: memory only).
 	leases *lan.LeaseTable
@@ -85,7 +92,7 @@ func newLanManager(raw json.RawMessage, client netip.Addr, uplinkIDs []string, u
 	}
 	shared := newSharedAdapters(openRedundant(openFrameIO))
 	return &lanManager{devices: devices, client: client, mtu: mtu, shared: shared, open: shared.Open, now: time.Now,
-		gws: map[string]*runningGateway{}, byIP: map[[4]byte]*lan.Gateway{}, errs: map[string]string{}, retryAt: map[string]time.Time{},
+		gws: map[string]*runningGateway{}, byIP: map[[4]byte]*lan.Gateway{}, errs: map[string]string{}, retryAt: map[string]time.Time{}, usage: devusage.New(),
 		out: func(map[string]any) {}}, nil
 }
 
@@ -95,6 +102,29 @@ func (m *lanManager) useLeaseTable(path string) {
 	if m != nil && path != "" {
 		m.leases = lan.OpenLeaseTable(path)
 	}
+}
+
+// useUsageStore loads the saved per-device history from dir and saves it there from now on.
+func (m *lanManager) useUsageStore(dir string) {
+	if m != nil && dir != "" {
+		m.usagePath = filepath.Join(dir, "device-usage.json")
+		m.usage.Load(m.usagePath)
+	}
+}
+
+// usageStatus is device_usage for the status file, keyed by tunnel IP. It also saves the
+// history to disk at most once a minute.
+func (m *lanManager) usageStatus() any {
+	if m == nil {
+		return map[string]any{}
+	}
+	if m.usagePath != "" && m.now().Sub(m.usageSave) >= time.Minute {
+		m.usageSave = m.now()
+		if err := m.usage.Save(m.usagePath); err != nil {
+			m.out(map[string]any{"status": "device_usage_save_failed", "error": err.Error()})
+		}
+	}
+	return m.usage.Snapshot()
 }
 
 // deviceIPs are the tunnel addresses of the attached devices.
@@ -205,6 +235,7 @@ func (m *lanManager) start(ctx context.Context, d lan.DeviceConfig) (*runningGat
 		dev.PinnedMAC = &mac
 	}
 	gw, err := lan.NewGateway(lan.Config{Device: dev, Leases: m.leases, ClientIP: m.client, TunnelMTU: m.mtu, OnPacket: func(p []byte) {
+		m.usage.Record(d.TunnelIP.As4(), true, p)
 		if d.UDPDirect && m.direct != nil && m.direct.Handle(p) {
 			return
 		}
@@ -254,6 +285,7 @@ func (m *lanManager) dispatch(packet []byte) (handled bool) {
 		return false
 	}
 	if gw.Deliver(packet) {
+		m.usage.Record(dst, false, packet)
 		m.mu.Lock()
 		m.delvd++
 		m.gaps.observe(packet, m.now())
