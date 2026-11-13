@@ -42,6 +42,9 @@ var widgetAdopt []byte
 //go:embed widget_internet.js
 var widgetInternet []byte
 
+//go:embed widget_cloudflare.js
+var widgetCloudflare []byte
+
 func (s *Server) widgetPage(w http.ResponseWriter, r *http.Request) {
 	if !s.authorised(r) {
 		http.NotFound(w, r)
@@ -59,6 +62,7 @@ func (s *Server) widgetPage(w http.ResponseWriter, r *http.Request) {
 	page = bytes.ReplaceAll(page, []byte("__ERRORS_SCRIPT__"), widgetErrors)
 	page = bytes.ReplaceAll(page, []byte("__ADOPT_SCRIPT__"), widgetAdopt)
 	page = bytes.ReplaceAll(page, []byte("__INTERNET_SCRIPT__"), widgetInternet)
+	page = bytes.ReplaceAll(page, []byte("__CLOUDFLARE_SCRIPT__"), widgetCloudflare)
 	w.Write(bytes.ReplaceAll(page, []byte("__TOKEN__"), []byte(s.token)))
 }
 
