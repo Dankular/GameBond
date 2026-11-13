@@ -66,7 +66,7 @@ func bridgeDevices(devices ...tun.Device) {
 				if _, err := io.ReadFull(in, packet); err != nil {
 					return
 				}
-				handleAppAuthorizationFrame(packet)
+				handleControlFrame(packet)
 				continue
 			}
 			if int(header[0]) >= len(devices) || length < 20 || length > 1280 {

@@ -30,6 +30,7 @@ import (
 	"github.com/Dankular/GameBond.Core/bond"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/client"
+	"gamebond.local/nativeedge/errhist"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/omr"
 	"gamebond.local/nativeedge/procjob"
@@ -314,6 +315,17 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			})
 		}
 	}
+	var netProbe *netProbes
+	if *statusPath != "" {
+		netProbe = newNetProbes(filepath.Dir(*statusPath), bridge.Respond)
+		afterReady := bridge.OnEvent
+		bridge.OnEvent = func(m map[string]any) {
+			if netProbe.onEvent(m) {
+				return
+			}
+			afterReady(m)
+		}
+	}
 	mtu := cfg.MTU
 	if mtu == 0 {
 		mtu = 1280
@@ -429,6 +441,10 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			}
 			return nil
 		}, logOut)
+	}
+	errHist := errhist.New()
+	if *statusPath != "" {
+		errHist.Load(errhist.SavePath(*statusPath))
 	}
 	rdns, rerr := newReverseDNS(filepath.Dir(*statusPath), cfg.ReverseDNS)
 	if rerr != nil {
@@ -596,10 +612,25 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			if err := capture.flush(); err != nil {
 				fmt.Fprintln(logOut, "application history write failed:", err)
 			}
+			osErrors, osOK := osUDPReceiveErrors()
+			errHist.Observe(errorCounters(s, osErrors, osOK))
+			errHist.Links(linkHealth(s))
+			errHist.Health(linkCounts(s))
+			if netProbe != nil {
+				netProbe.poll()
+			}
+			if *statusPath != "" && tick%60 == 0 {
+				if err := errHist.Save(errhist.SavePath(*statusPath)); err != nil {
+					fmt.Fprintln(logOut, "error history write failed:", err)
+				}
+			}
 			if *statusPath != "" {
 				doc := statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture, c.DFEnforced(), alarms)
 				doc["slo"] = sr.status()
 				doc["reverse_dns"] = rdns.status()
+				doc["error_history"] = errHist.View()
+				doc["internet_ping"] = netProbe.pingStatus()
+				doc["speedtest"] = netProbe.speedStatus()
 				if err := status.WriteJSON(*statusPath, doc); err != nil {
 					fmt.Fprintln(logOut, "status write failed:", err)
 				}

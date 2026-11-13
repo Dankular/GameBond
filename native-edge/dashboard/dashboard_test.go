@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"strconv"
+	"time"
 )
 
 func start(t *testing.T) (*Server, string, string, *[]string) {
@@ -230,5 +233,29 @@ func TestAppsDNSNetworksSections(t *testing.T) {
 	}
 	if c, b := do(t, "GET", base+"/api/log", tok, ""); c != 200 || !strings.Contains(b, "lines") {
 		t.Fatalf("log: %d %s", c, b)
+	}
+}
+
+// The widget shows the DNS name the client keeps pointed at the active exit, so the status document
+// must reach it with the reverse_dns object intact, and the page must have somewhere to show it.
+func TestStatusCarriesReverseDNSAndWidgetShowsIt(t *testing.T) {
+	s, url, _, _ := start(t)
+	base := url[:strings.Index(url, "/?t=")]
+	doc := `{"state":"running","updated_at":` + strconv.FormatInt(time.Now().Unix(), 10) + `,"peer":["1.2.3.4",4433],"transport":{"paths":[{"slot":0,"healthy":true}]},` +
+		`"reverse_dns":{"name":"bond.example.test","address":"1.2.3.4","ok":true,"verified_ago_s":3}}`
+	if err := os.WriteFile(s.o.StatusPath, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, body := do(t, "GET", base+"/api/status", s.token, "")
+	var got map[string]any
+	if code != 200 || json.Unmarshal([]byte(body), &got) != nil {
+		t.Fatal(code, body)
+	}
+	rd, _ := got["reverse_dns"].(map[string]any)
+	if rd["name"] != "bond.example.test" || rd["address"] != "1.2.3.4" || rd["ok"] != true {
+		t.Fatalf("reverse_dns not passed through: %v", got["reverse_dns"])
+	}
+	if code, page := do(t, "GET", base+"/widget", s.token, ""); code != 200 || !strings.Contains(page, `id="rdns"`) || !strings.Contains(page, "reverseName(d,running)") {
+		t.Fatal("widget lacks the public name display")
 	}
 }

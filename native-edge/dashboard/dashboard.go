@@ -27,6 +27,7 @@ import (
 	"gamebond.local/nativeedge/eventjournal"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/scanner"
+	"gamebond.local/nativeedge/serveradmin"
 )
 
 //go:embed index.html
@@ -51,6 +52,8 @@ type Options struct {
 	// Adapters overrides read-only OS discovery (for tests).
 	Adapters          func() ([]Adapter, error)
 	USBNetworkDevices func() ([]USBNetworkDevice, error)
+	// CloudflareAPI overrides the Cloudflare API base (tests and proxies); empty is the real one.
+	CloudflareAPI string
 	// OMRLogin overrides the pinned login check for tests.
 	OMRLogin      OMRLogin
 	ScanInventory func() (scanner.Inventory, error)
@@ -65,7 +68,13 @@ type Server struct {
 	l     net.Listener
 	srv   *http.Server
 	mu    sync.Mutex // serialises config edits
+	sync  serverSyncState
+	cfAPI string // Cloudflare API base; empty is the real one (tests point it at a fake)
 	scan  scanController
+
+	secMu     sync.Mutex // guards the cached portal client below
+	secClient *serveradmin.Client
+	secKey    string
 }
 
 // Start listens on 127.0.0.1 (random port) and returns the URL to open.
@@ -78,7 +87,7 @@ func Start(o Options) (*Server, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	s := &Server{o: o, token: hex.EncodeToString(raw), l: l}
+	s := &Server{o: o, token: hex.EncodeToString(raw), l: l, cfAPI: o.CloudflareAPI}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.page)
 	mux.HandleFunc("/widget", s.widgetPage)
@@ -90,6 +99,12 @@ func Start(o Options) (*Server, string, error) {
 	mux.HandleFunc("/api/app-policy", s.guard(s.appPolicy))
 	mux.HandleFunc("/api/lan-devices", s.guard(s.lanDevices))
 	mux.HandleFunc("/api/lan-access", s.guard(s.lanAccess))
+	mux.HandleFunc("/api/server-sync", s.guard(s.serverSyncAPI))
+	mux.HandleFunc("/api/security", s.guard(s.securityAPI))
+	mux.HandleFunc("/api/security/", s.guard(s.securityAPI))
+	mux.HandleFunc("/api/speedtest", s.guard(s.speedtestAPI))
+	mux.HandleFunc("/api/cloudflare", s.guard(s.cloudflareAPI))
+	mux.HandleFunc("/api/server-admin", s.guard(s.serverAdminAPI))
 	mux.HandleFunc("/api/omr", s.guard(s.omrConfig))
 	mux.HandleFunc("/api/omr-check", s.guard(s.omrCheck))
 	mux.HandleFunc("/api/networks", s.guard(s.networks))
