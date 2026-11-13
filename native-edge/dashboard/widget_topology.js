@@ -141,7 +141,9 @@ function flowIntensity(bps) {
 // toward the measured one every frame: quickly when traffic rises (tau 0.5 s), slowly when it falls
 // (tau 1.6 s). The map is redrawn on every status update; the frame loop below keeps the live
 // elements of the latest redraw moving between the redraws.
-const flowState = new Map(); // key -> { cur, target, els, seen }
+const flowState = new Map(); // key -> { cur, target, els, seen, phase, forward }
+// Dash travel speed in px/s from the smoothed intensity: a slow crawl for a trickle, a rush at line rate.
+const flowSpeed = i => 6 + 300 * i * i + 40 * i;
 let flowFrame = 0, flowLast = 0, flowLoop = false;
 function flowTick(now) {
   const dt = Math.min(0.25, (now - (flowLast || now)) / 1000);
@@ -151,6 +153,9 @@ function flowTick(now) {
     st.cur += (st.target - st.cur) * (1 - Math.exp(-dt / tau));
     if (Math.abs(st.target - st.cur) < 0.002) st.cur = st.target;
     for (const el of st.els) el.style.setProperty('--i', st.cur.toFixed(3));
+    // The dashes advance by speed x time, so a change of speed bends the motion instead of restarting it.
+    if (!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches)) st.phase = (st.phase + flowSpeed(st.cur) * dt) % 16;
+    if (st.els[1]) st.els[1].setAttribute('stroke-dashoffset', (st.forward ? -st.phase : st.phase).toFixed(2));
     if (Date.now() - st.seen > 10000) flowState.delete(key);
   }
   requestAnimationFrame(flowTick);
@@ -158,7 +163,7 @@ function flowTick(now) {
 function flowLayer(g, x1, y1, x2, y2, bps, forward) {
   const key = [x1, y1, x2, y2, forward].join(',');
   let st = flowState.get(key);
-  if (!st) { st = { cur: 0, target: 0, els: [], seen: 0 }; flowState.set(key, st); }
+  if (!st) { st = { cur: 0, target: 0, els: [], seen: 0, phase: 0, forward }; flowState.set(key, st); }
   st.target = flowIntensity(bps); st.seen = Date.now(); st.els = [];
   if (!flowLoop) { flowLoop = true; requestAnimationFrame(flowTick); }
   const i = st.cur;
@@ -170,10 +175,10 @@ function flowLayer(g, x1, y1, x2, y2, bps, forward) {
   halo.style.setProperty('--i', i.toFixed(3));
   halo.style.animation = 'tf-halo-pulse ' + (dur * 3).toFixed(2) + 's ease-in-out infinite';
   halo.style.animationDelay = '-' + (t % (dur * 3)).toFixed(3) + 's';
-  const line = svg('line', { ...attrs, class: 'tf ' + cls });
+  const line = svg('line', { ...attrs, class: 'tf ' + cls, 'stroke-dashoffset': (forward ? -st.phase : st.phase).toFixed(2) });
   line.style.setProperty('--i', i.toFixed(3));
-  line.style.animation = (forward ? 'tf-fwd ' : 'tf-rev ') + dur.toFixed(2) + 's linear infinite, tf-glow ' + (dur * 3).toFixed(2) + 's ease-in-out infinite';
-  line.style.animationDelay = '-' + (t % dur).toFixed(3) + 's, -' + (t % (dur * 3)).toFixed(3) + 's';
+  line.style.animation = 'tf-glow ' + (dur * 3).toFixed(2) + 's ease-in-out infinite'; // the dashes are moved by flowTick
+  line.style.animationDelay = '-' + (t % (dur * 3)).toFixed(3) + 's';
   const title = svg('title'); title.textContent = (forward ? 'Download ' : 'Upload ') + fmtBps(bps);
   line.append(title);
   st.els = [halo, line];
