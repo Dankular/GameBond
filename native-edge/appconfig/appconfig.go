@@ -531,6 +531,51 @@ func clientChecks(config map[string]any, bindList, hosts []any, opt Options) err
 	if port, isI := isInt(peer[1]); !isI || port < 1 || port > 65535 {
 		return bad("invalid peer port")
 	}
+	return peerBackups(config, peer)
+}
+
+// peerBackups checks the optional standby exit servers: at most three [host, port] pairs, each a
+// usable unicast IPv4 address, none repeating the primary or each other.
+func peerBackups(config map[string]any, peer []any) error {
+	v, ok := config["peer_backups"]
+	if !ok || v == nil {
+		return nil
+	}
+	list, isList := v.([]any)
+	if !isList || len(list) > 3 {
+		return bad("peer_backups must be a list of at most 3 [host, port] pairs")
+	}
+	seen := map[string]bool{}
+	primaryIP, _ := omr.IPv4(peer[0])
+	primaryPort, _ := isInt(peer[1])
+	seen[fmt.Sprintf("%s:%d", primaryIP, primaryPort)] = true
+	for i, e := range list {
+		pair, isPair := e.([]any)
+		if !isPair || len(pair) != 2 {
+			return bad("peer_backups[%d] must be [host, port]", i)
+		}
+		ip, err := omr.IPv4(pair[0])
+		if err != nil {
+			return err
+		}
+		if ip.IsUnspecified() || ip.IsMulticast() || ip.IsLoopback() || isLinkLocal(ip) {
+			return bad("peer_backups[%d] must be a usable unicast IPv4 address", i)
+		}
+		port, isI := isInt(pair[1])
+		if !isI || port < 1 || port > 65535 {
+			return bad("peer_backups[%d] has an invalid port", i)
+		}
+		key := fmt.Sprintf("%s:%d", ip, port)
+		if seen[key] {
+			return bad("peer_backups[%d] repeats another server", i)
+		}
+		seen[key] = true
+	}
+	if ms, present := config["exit_failover_ms"]; present && ms != nil {
+		if n, isI := isInt(ms); !isI || n < 500 || n > 60000 {
+			return bad("exit_failover_ms must be between 500 and 60000")
+		}
+	}
 	return nil
 }
 

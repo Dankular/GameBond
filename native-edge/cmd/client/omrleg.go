@@ -34,6 +34,7 @@ type routedUplink struct {
 	gb      gbUplink
 	deliver func([]byte)
 	ready   func() bool
+	probe   func([]byte) bool // consumes echo replies to the SLO probe
 
 	mu  sync.Mutex // serialises Submit so cur is the packet being routed
 	cur bond.QueuedPacket
@@ -70,6 +71,9 @@ func (u *routedUplink) Submit(q bond.QueuedPacket) bool {
 
 // Deliver is the client's Deliver callback.
 func (u *routedUplink) Deliver(p []byte) {
+	if u.probe != nil && u.probe(p) {
+		return
+	}
 	if rt := u.rt.Load(); rt != nil {
 		rt.Receive(router.GameBond, p)
 		return

@@ -190,7 +190,41 @@ transport are in the [GameBond.Core](https://github.com/Dankular/GameBond.Core) 
 [GameBond.Server](https://github.com/Dankular/GameBond.Server); this one records what the client picks up from them.
 
 ### Unreleased
-- Nothing yet.
+
+**Metrics, alerting and measured-loss reporting**
+- **`slo_probe`** sends an ICMP echo through the tunnel to the server (`slo_target`, default 10.77.0.1) every `slo_probe_ms` (default 1000) and measures what really comes back: a probe not answered within 1 s is lost, charged to the minute it was sent. Results are kept per minute in `slo.db` (SQLite, WAL, 35-day retention) with an RTT histogram, and judged against objectives (delivery 99.99%, availability 99.95% of seconds, latency 99% at or under 150 ms, failover p95 5 s) with burn rates over 1 h, 6 h, 24 h, 7 d and 30 d and a 95% upper bound on loss. The status document gains an `slo` section.
+- **`metrics_addr`** (loopback only) serves Prometheus text at `/metrics`: path, receive, send, queue, outage, exit, health-alarm, probe and SLO series, all named `gamebond_*`. `ops/prometheus/` holds the alert rules (a test checks every metric they name is really exported), a Prometheus config and an Alertmanager example.
+- **The tray raises Windows notifications** for no connection, reduced redundancy, exit server silent or changed, transport alarms and a delivery objective at risk. Each is raised once after it has held for a set time and followed by a recovery notice.
+- **The topology map shows traffic per exit server** (rate and total, kept per exit across failovers) and every connection animates in the direction of its traffic: moving dashes, a pulsing glow and a halo that grow with the rate. Needs the daemon restarted to report exit traffic.
+
+### Failover (working tree, not committed)
+
+**Backup exit server with automatic failover (built and deployed to this PC)**
+- **`peer_backups`** in the client config lists up to three standby exit servers, each `[host, port]`; `peer` stays the
+  primary. `exit_failover_ms` (500 to 60000, default 2000) is how long the active server may be silent before the client
+  looks for a standby. Both are validated when the config is loaded or saved (`appconfig`), and the backups cannot be
+  combined with the stream carrier (`outer_transport`).
+- **The active server is judged by authenticated frames arriving from it.** BFD and supervision frames flow every few tens
+  of milliseconds even when idle, so silence means the server or the way to it is gone.
+- **Silence alone does not switch.** A local outage (both links down for a few seconds) looks the same, and a switch resets
+  every bonded TCP stream. While the active server is silent the client sends real handshakes to the standbys over the live
+  uplinks and moves only to one that answers; if none answers, nothing is switched. The standby that answered is promoted
+  with the handshake it just finished, so no traffic waits for a second one.
+- **Standbys are probed while the active server is healthy** (first after 5 s, then every 30 s; a probe is one handshake per
+  live uplink and is dropped at once) so a standby that stopped working is shown before it is needed.
+- **Sticky, no automatic failback.** After a switch the client stays on the new server until that one goes silent; the old
+  primary is then probed like any standby. A switch resets TCP streams terminated at the exit and changes the public IP.
+  The outage journal records the switch (`exit-node`), but its in-memory counters start again on the new session.
+- **Status and GUI.** `userspace-status.json` gains `exit` (active, primary, `on_backup`, per-server state, last probe and
+  handshake time, failures, switches, last reason), `peer` now names the active server, and the Topology map shows the
+  active exit as primary or backup with each standby underneath (reachable with its handshake time, no answer, or not probed).
+- **Tests:** a loopback pair of servers where the active one is killed and the session moves and carries traffic; a pair
+  where both die (no switch, search state shown); the idle probe leaves the session where it is; config validation.
+- **Measured on this PC:** the standby at `195.154.119.136:4433` completed a handshake over the live links in 75 ms while
+  the primary stayed active. A live failover drill has not been run: it would reset the connections in use.
+- **Backup host.** `195.154.119.136` (the former exit) runs the same server image, key and config as the primary under
+  `/opt/gamebond/releases/native-live`, on UDP 4433 because 4434 belongs to an unrelated older container there. The
+  update probe is not watching it, so it stays on the image it was started with until it is updated by hand.
 
 ### 2026-11-13, topology, device usage, dark mode and Core v0.1.17
 

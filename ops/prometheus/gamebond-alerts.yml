@@ -1,0 +1,107 @@
+# GameBond client alert rules. Metric names are checked against the exporter by
+# native-edge/promexport (TestAlertRulesUseExportedMetrics): a rule cannot name a metric that
+# does not exist. Burn-rate thresholds follow the multi-window method: a fast burn pages, a slow
+# burn opens a ticket. A burn rate of 1 spends the error budget exactly over its period.
+groups:
+  - name: gamebond-availability
+    rules:
+      - alert: GameBondNoLinks
+        expr: gamebond_no_links == 1
+        for: 10s
+        labels: {severity: critical}
+        annotations:
+          summary: "No line is carrying traffic"
+          description: "Every uplink is down or unheard; the tunnel is dark."
+      - alert: GameBondPathDown
+        expr: gamebond_path_ready == 0
+        for: 30s
+        labels: {severity: warning}
+        annotations:
+          summary: "Uplink slot {{ $labels.slot }} is not ready"
+      - alert: GameBondRedundancyLost
+        expr: gamebond_paths_ready < gamebond_paths_configured
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "Running on {{ $value }} of the configured uplinks; duplication no longer covers a single failure"
+      - alert: GameBondLinkFlapping
+        expr: gamebond_link_downs_last_hour > 6
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} line failures in the last hour"
+      - alert: GameBondOnBackupExit
+        expr: gamebond_exit_on_backup == 1
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "Traffic is on the backup exit server; the primary needs attention (no automatic failback)"
+      - alert: GameBondExitSearching
+        expr: gamebond_exit_searching == 1
+        for: 5s
+        labels: {severity: critical}
+        annotations:
+          summary: "The active exit server is silent and standbys are being tried"
+      - alert: GameBondStandbyUnreachable
+        expr: gamebond_exit_standby_probed == 1 and gamebond_exit_standby_reachable == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Standby exit {{ $labels.address }} did not answer its last probe; there is nothing to fail over to"
+      - alert: GameBondTransportAlarm
+        expr: gamebond_health_alarm == 1
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "Transport health alarm {{ $labels.kind }} on link {{ $labels.link }}"
+      - alert: GameBondAuthErrors
+        expr: increase(gamebond_rx_authentication_errors_total[5m]) > 20
+        labels: {severity: warning}
+        annotations:
+          summary: "Frames are failing authentication (wrong key, replay or injection)"
+      - alert: GameBondMetricsMissing
+        expr: absent(gamebond_build_info)
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "The client is not reporting metrics"
+  - name: gamebond-slo
+    rules:
+      - alert: GameBondProbeLoss
+        expr: increase(gamebond_probe_lost_total[5m]) / clamp_min(increase(gamebond_probe_sent_total[5m]), 1) > 0.001
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "Measured end-to-end loss above 0.1% over 5 minutes"
+      - alert: GameBondDeliveryFastBurn
+        expr: gamebond_slo_burn_rate{slo="delivery",window="1h"} > 14.4 and gamebond_slo_burn_rate{slo="delivery",window="6h"} > 6
+        labels: {severity: critical}
+        annotations:
+          summary: "Delivery error budget burning at {{ $value }}x; it would be gone in about two days"
+      - alert: GameBondDeliverySlowBurn
+        expr: gamebond_slo_burn_rate{slo="delivery",window="24h"} > 3 and gamebond_slo_burn_rate{slo="delivery",window="7d"} > 1
+        labels: {severity: warning}
+        annotations:
+          summary: "Delivery error budget burning steadily above its sustainable rate"
+      - alert: GameBondAvailabilityBurn
+        expr: gamebond_slo_burn_rate{slo="availability",window="1h"} > 14.4 and gamebond_slo_burn_rate{slo="availability",window="6h"} > 6
+        labels: {severity: critical}
+        annotations:
+          summary: "Availability error budget burning fast"
+      - alert: GameBondLatencyBurn
+        expr: gamebond_slo_burn_rate{slo="latency",window="6h"} > 6
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Probe latency is outside its objective"
+      - alert: GameBondErrorBudgetLow
+        expr: gamebond_slo_error_budget_left < 0.1
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Less than 10% of the delivery error budget is left"
+      - alert: GameBondFailoverSlow
+        expr: gamebond_failover_restore_seconds_p95 > 5
+        labels: {severity: warning}
+        annotations:
+          summary: "Failover restoration p95 is {{ $value }}s, above the 5s objective"

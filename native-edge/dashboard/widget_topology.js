@@ -12,6 +12,7 @@ topoStyle.textContent = '.subtabs{display:flex;gap:6px;margin:8px 0 12px}.subtab
   + '.gauges{display:flex;gap:16px;align-items:center}.gauge{text-align:center}.gauge b{display:block;font-size:16px;font-weight:500}.gauge span{color:#7b8089}'
   + '.svc-row{display:grid;grid-template-columns:14px minmax(90px,1.2fr) 2fr 60px;gap:6px;align-items:center;margin:3px 0}.svc-row i{width:10px;height:10px;border-radius:50%;display:inline-block}.svc-bar{height:5px;border-radius:3px;background:#e8edf3;overflow:hidden}.svc-bar div{height:100%}'
   + '.range{display:flex;gap:4px;justify-content:flex-end;margin-bottom:4px}.range .seg.active{background:#0f7ae5;color:#fff}.notice{background:#f4f6f9;border-radius:8px;padding:10px 12px;color:#505762}';
+topoStyle.textContent += '.tf{fill:none;stroke-linecap:round;stroke-dasharray:5 11;pointer-events:none;stroke-width:calc(2px + 2.5px*var(--i))}.tf.down{stroke:#2fb800;--c:47,184,0}.tf.up{stroke:#0f7ae5;--c:15,122,229}.tf-halo{fill:none;stroke-linecap:round;pointer-events:none;stroke-width:calc(4px + 10px*var(--i));opacity:calc(.08 + .22*var(--i));filter:blur(calc(1px + 3px*var(--i)))}.tf-halo.down{stroke:#2fb800}.tf-halo.up{stroke:#0f7ae5}@keyframes tf-fwd{from{stroke-dashoffset:16}to{stroke-dashoffset:0}}@keyframes tf-rev{from{stroke-dashoffset:0}to{stroke-dashoffset:16}}@keyframes tf-glow{0%,100%{opacity:calc(.5 + .25*var(--i));filter:drop-shadow(0 0 calc(1px + 3px*var(--i)) rgb(var(--c)))}50%{opacity:1;filter:drop-shadow(0 0 calc(3px + 9px*var(--i)) rgb(var(--c)))}}@keyframes tf-halo-pulse{0%,100%{opacity:calc(.05 + .15*var(--i))}50%{opacity:calc(.12 + .35*var(--i))}}@media (prefers-reduced-motion:reduce){.tf,.tf-halo{animation:none!important}}';
 topoStyle.textContent += '.tb-rect{fill:#fff;stroke:#cfd5dd}.tb-title{fill:#393b43}.tb-sub{fill:#7b8089}.tl{stroke:#aab2bd}.tl-label{fill:#505762}.g-bg{fill:#f4f6f9;stroke:#cfd5dd}.d-track{stroke:#e8edf3}.ax{stroke:#cfd5dd}';
 document.head.append(topoStyle);
 
@@ -63,6 +64,7 @@ topoPane.append(topoHead, topoStats, topoMap, topoCard);
 
 let selectedDevice = null, usageRange = 60;
 const linkRates = new Map(); // slot -> { at, tx, rx, txBps, rxBps }
+const exitRates = new Map(); // exit address -> { at, tx, rx, txBps, rxBps }
 
 function updateLinkRates(paths) {
   const now = Date.now();
@@ -72,6 +74,17 @@ function updateLinkRates(paths) {
       const dt = (now - prev.at) / 1000;
       linkRates.set(p.slot, { at: now, tx, rx, txBps: Math.max(0, tx - prev.tx) * 8 / dt, rxBps: Math.max(0, rx - prev.rx) * 8 / dt });
     } else if (!prev) linkRates.set(p.slot, { at: now, tx, rx, txBps: 0, rxBps: 0 });
+  }
+}
+
+function updateExitRates(servers) {
+  const now = Date.now();
+  for (const x of servers) {
+    const prev = exitRates.get(x.address), tx = Number(x.wire_tx_bytes) || 0, rx = Number(x.wire_rx_bytes) || 0;
+    if (prev && now - prev.at >= 800) {
+      const dt = (now - prev.at) / 1000;
+      exitRates.set(x.address, { at: now, tx, rx, txBps: Math.max(0, tx - prev.tx) * 8 / dt, rxBps: Math.max(0, rx - prev.rx) * 8 / dt });
+    } else if (!prev) exitRates.set(x.address, { at: now, tx, rx, txBps: 0, rxBps: 0 });
   }
 }
 
@@ -102,20 +115,50 @@ function overallHealth(paths) {
   return ['fair', down.map(p => 'Link ' + (p.slot + 1)).join(', ') + (down.length > 1 ? ' are' : ' is') + ' down; running on the other line'];
 }
 
-function nodeBox(x, y, w, h, title, subtitle, state, onActivate, selected) {
+function nodeBox(x, y, w, h, title, subtitle, state, onActivate, selected, extraLine) {
   const g = svg('g', { class: 'topo-node' + (selected ? ' sel' : ''), transform: 'translate(' + x + ',' + y + ')' });
   const color = state === 'good' ? '#2fb800' : state === 'poor' ? '#e0201b' : state === 'fair' ? '#f5a300' : '#9aa1ab';
   g.append(svg('rect', { class: 'tb-rect', width: w, height: h, rx: 8 }), svg('circle', { cx: 12, cy: 14, r: 4, fill: color }),
     svg('text', { class: 'tb-title', x: 22, y: 18, 'font-size': 12 }, String(title).slice(0, 27)), svg('text', { class: 'tb-sub', x: 12, y: 36, 'font-size': 11 }, String(subtitle || '').slice(0, 26)));
+  (Array.isArray(extraLine) ? extraLine : extraLine ? [extraLine] : []).forEach((t, i) => g.append(svg('text', { class: 'tb-sub', x: 12, y: 51 + i * 13, 'font-size': 10 }, String(t).slice(0, 32))));
   if (onActivate) {
     g.setAttribute('tabindex', '0'); g.setAttribute('role', 'button'); g.setAttribute('aria-label', title + (subtitle ? ', ' + subtitle : ''));
     g.onclick = onActivate; g.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onActivate(); } };
   }
   return g;
 }
-function mapLine(x1, y1, x2, y2, dashed, label) {
+// Traffic intensity 0..1 on a log scale: ~10 kbps is a faint trickle, 100 Mbps is full.
+function flowIntensity(bps) {
+  bps = Number(bps) || 0;
+  if (bps < 2e3) return 0;
+  return Math.min(1, Math.max(0.08, Math.log10(bps / 1e4) / 4 + 0.12));
+}
+// One direction of a connection: dashes travel along it, a glow pulses over them, and a soft halo
+// sits underneath. Speed, thickness and glow all grow with the traffic. The animation phase comes
+// from the wall clock so a redraw does not restart it.
+function flowLayer(g, x1, y1, x2, y2, bps, forward) {
+  const i = flowIntensity(bps);
+  if (!i) return;
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1, off = (forward ? 3 : -3), ox = -dy / len * off, oy = dx / len * off;
+  const dur = 1.8 - 1.45 * i, t = (Date.now() / 1000), cls = forward ? 'down' : 'up';
+  const attrs = { x1: x1 + ox, y1: y1 + oy, x2: x2 + ox, y2: y2 + oy };
+  const halo = svg('line', { ...attrs, class: 'tf-halo ' + cls });
+  halo.style.setProperty('--i', i.toFixed(3));
+  halo.style.animation = 'tf-halo-pulse ' + (dur * 3).toFixed(2) + 's ease-in-out infinite';
+  halo.style.animationDelay = '-' + (t % (dur * 3)).toFixed(3) + 's';
+  const line = svg('line', { ...attrs, class: 'tf ' + cls });
+  line.style.setProperty('--i', i.toFixed(3));
+  line.style.animation = (forward ? 'tf-fwd ' : 'tf-rev ') + dur.toFixed(2) + 's linear infinite, tf-glow ' + (dur * 3).toFixed(2) + 's ease-in-out infinite';
+  line.style.animationDelay = '-' + (t % dur).toFixed(3) + 's, -' + (t % (dur * 3)).toFixed(3) + 's';
+  const title = svg('title'); title.textContent = (forward ? 'Download ' : 'Upload ') + fmtBps(bps);
+  line.append(title);
+  g.append(halo, line);
+}
+// flow = { down, up } in bps; down runs from (x1,y1) to (x2,y2), up the other way.
+function mapLine(x1, y1, x2, y2, dashed, label, flow) {
   const g = svg('g');
   g.append(svg('line', { class: 'tl', x1, y1, x2, y2, 'stroke-width': 2, 'stroke-dasharray': dashed ? '4 4' : '' }));
+  if (flow) { flowLayer(g, x1, y1, x2, y2, flow.down, true); flowLayer(g, x1, y1, x2, y2, flow.up, false); }
   if (label) g.append(svg('text', { x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 5, 'font-size': 10, 'text-anchor': 'middle', class: 'tl-label' }, label));
   return g;
 }
@@ -124,6 +167,7 @@ function renderTopology() {
   if (!current || current.state === 'unavailable' && !current.transport) { topoHead.textContent = 'Status unavailable'; return; }
   const paths = current?.transport?.paths || [], { routed, others, extra } = topologyDevices();
   updateLinkRates(paths);
+  updateExitRates(current?.exit?.servers || []);
   const [health, headline] = overallHealth(paths);
   topoHead.replaceChildren();
   if (health === 'good') { topoHead.append('Everything is ', element('b', 'great', { class: 'good' }), '!'); } else topoHead.append(element('b', headline, { class: health }));
@@ -134,16 +178,31 @@ function renderTopology() {
   }
 
   topoMap.replaceChildren();
-  const rowGap = 64, rows = Math.max(paths.length, routed.length + others.length, 2), height = 40 + rows * rowGap;
+  const exit = current?.exit, standbys = (exit?.servers || []).filter(x => !x.active);
+  const rowGap = 64, rows = Math.max(paths.length, routed.length + others.length, 2, standbys.length ? Math.ceil(2 + standbys.length * 1.6) : 0), height = 40 + rows * rowGap;
   topoMap.setAttribute('viewBox', '0 0 1060 ' + height);
   const midY = height / 2 - 24, serverX = 10, linkX = 215, pcX = 420, hubX = 625, devX = 850, w = 180, h = 46;
-  const server = nodeBox(serverX, midY, w, h, 'Exit server', current?.peer ? current.peer[0] : '', health === 'poor' ? 'poor' : 'good');
+  const onBackup = !!exit?.on_backup;
+  const eh = 72, ey = midY + h / 2 - eh / 2, eg = eh + 12; // exit nodes carry rate and total lines, so they are taller
+  const exitLines = x => {
+    const r = exitRates.get(x.address) || {};
+    return ['↓ ' + fmtBps(r.rxBps) + '  ↑ ' + fmtBps(r.txBps), 'total ↓ ' + bytes(x.wire_rx_bytes) + '  ↑ ' + bytes(x.wire_tx_bytes)];
+  };
+  const activeX = (exit?.servers || []).find(x => x.active) || { address: exit?.active || '', wire_rx_bytes: 0, wire_tx_bytes: 0 };
+  const server = nodeBox(serverX, ey, w, eh, exit && standbys.length ? (onBackup ? 'Exit server · backup' : 'Exit server · primary') : 'Exit server', exit?.active || (current?.peer ? current.peer[0] : ''), exit?.searching ? 'fair' : health === 'poor' ? 'poor' : onBackup ? 'fair' : 'good', null, false, exitLines(activeX));
   const pc = nodeBox(pcX, midY, w, h, 'This PC', 'GameBond client', 'good');
   topoMap.append(server, pc);
+  // Standby exits hang under the active one, dashed: they carry nothing until the active exit stops answering.
+  standbys.forEach((x, i) => {
+    const y = ey + (i + 1) * eg, state = x.state === 'reachable' ? 'good' : x.state === 'unreachable' ? 'poor' : 'neutral';
+    const label = x.state === 'reachable' ? 'standby · ' + Math.round(x.handshake_ms) + ' ms' : x.state === 'unreachable' ? 'standby · no answer' : 'standby · not probed';
+    topoMap.append(mapLine(serverX + w / 2, (i ? y - eg + eh : ey + eh), serverX + w / 2, y, true), nodeBox(serverX, y, w, eh, 'Standby ' + x.address, label, state, null, false, exitLines(x)));
+  });
   const linkY0 = midY + h / 2 - (paths.length - 1) * rowGap / 2 - h / 2;
   paths.forEach((p, i) => {
     const y = linkY0 + i * rowGap, r = linkRates.get(p.slot) || {};
-    topoMap.append(mapLine(serverX + w, midY + h / 2, linkX, y + h / 2, false), mapLine(linkX + w, y + h / 2, pcX, midY + h / 2, false));
+    const fl = { down: r.rxBps || 0, up: r.txBps || 0 };
+    topoMap.append(mapLine(serverX + w, midY + h / 2, linkX, y + h / 2, false, null, fl), mapLine(linkX + w, y + h / 2, pcX, midY + h / 2, false, null, fl));
     topoMap.append(nodeBox(linkX, y, w, h, 'Link ' + (p.slot + 1) + (p.slot === 0 ? ' · Ethernet' : p.slot === 1 ? ' · Hotspot' : ''), '↓ ' + fmtBps(r.rxBps) + '  ↑ ' + fmtBps(r.txBps) + (p.rtt_ms != null ? '  ' + Math.round(p.rtt_ms) + ' ms' : ''), p.healthy ? 'good' : 'poor'));
   });
   // Devices sharing one physical adapter (an access point or switch on it) hang off one adapter node,
@@ -156,11 +215,11 @@ function renderTopology() {
   const placed = new Map(all.map((d, i) => [d.key, devY0 + i * rowGap]));
   for (const hub of hubs) {
     const ys = hub.devices.map(d => placed.get(d.key)), hy = (Math.min(...ys) + Math.max(...ys)) / 2;
-    topoMap.append(mapLine(pcX + w, midY + h / 2, hubX, hy + h / 2, false));
+    topoMap.append(mapLine(pcX + w, midY + h / 2, hubX, hy + h / 2, false, null, { down: hub.down, up: hub.upBps }));
     topoMap.append(nodeBox(hubX, hy, w, h, hub.name + ' · ' + hub.devices.length + (hub.devices.length === 1 ? ' device' : ' devices'), '↓ ' + fmtBps(hub.down) + '  ↑ ' + fmtBps(hub.upBps), hub.up ? 'good' : 'poor', () => { selectedDevice = hub.key; renderTopology(); }, selectedDevice === hub.key));
     for (const d of hub.devices) {
       const y = placed.get(d.key);
-      topoMap.append(mapLine(hubX + w, hy + h / 2, devX, y + h / 2, false));
+      topoMap.append(mapLine(hubX + w, hy + h / 2, devX, y + h / 2, false, null, { down: d.usage?.down_bps || 0, up: d.usage?.up_bps || 0 }));
       const sub = d.usage ? '↓ ' + fmtBps(d.usage.down_bps) + '  ↑ ' + fmtBps(d.usage.up_bps) : d.ip;
       topoMap.append(nodeBox(devX, y, w, h, d.name, sub, d.up && d.present !== false ? 'good' : 'poor', () => { selectedDevice = d.key; renderTopology(); }, selectedDevice === d.key));
     }

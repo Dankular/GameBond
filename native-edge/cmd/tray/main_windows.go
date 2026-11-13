@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"gamebond.local/nativeedge/alerting"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,10 +20,10 @@ import (
 	"gamebond.local/nativeedge/dashboard"
 	"gamebond.local/nativeedge/desktopruntime"
 	"gamebond.local/nativeedge/eventjournal"
-	"github.com/Dankular/GameBond.Core/hwmon"
 	"gamebond.local/nativeedge/tray"
 	"gamebond.local/nativeedge/ttyrelay"
 	"gamebond.local/nativeedge/uplink"
+	"github.com/Dankular/GameBond.Core/hwmon"
 )
 
 const (
@@ -232,9 +233,13 @@ func main() {
 			}()
 		}
 	}
+	alerts := alerting.NewWatcher()
 	shell.OnTick = func() {
 		if lease.ShowRequested() {
 			show()
+		}
+		for _, n := range alerts.Observe(time.Now(), sample()) {
+			shell.Balloon(n.Title, n.Body)
 		}
 		if model.Update(sample(), busy.Load(), "") {
 			shell.SetIcon(model.Color, model.Title)

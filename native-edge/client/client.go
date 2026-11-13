@@ -12,10 +12,10 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Dankular/GameBond.Core/bond"
-	"github.com/Dankular/GameBond.Core/buildinfo"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/uplink"
 )
@@ -59,7 +59,13 @@ type Config struct {
 	LossTracking bool
 	// DelayControl cuts a path's bulk rate when a standing queue builds (config delay_control).
 	DelayControl bool
-
+	// Backups are standby exit servers tried, in order, when Server stops answering (see failover.go).
+	// They cannot be combined with Outer.
+	Backups []netip.AddrPort
+	// FailoverAfter is how long the active server may be silent before standbys are probed; 0 means 2 s.
+	FailoverAfter time.Duration
+	// OnSwitch is called on the loop goroutine after the active server changed.
+	OnSwitch func(from, to netip.AddrPort, reason string)
 }
 
 type inbound struct {
@@ -92,6 +98,9 @@ type Client struct {
 	runCtx    context.Context
 	done      chan struct{}
 	rebinds   uint64
+	serverPtr atomic.Pointer[netip.AddrPort]
+	fo        failoverState
+	outageDir string // guarded by mu
 }
 
 // Snapshot is a copy of the loop's counters, safe to read from any goroutine.
@@ -129,6 +138,8 @@ type Snapshot struct {
 	ClientVersion, ServerVersion string
 	// ServerState is what the server announced ("updating" just before a planned restart).
 	ServerState string
+	// Exit describes the exit servers and failovers.
+	Exit ExitStatus
 }
 
 var ErrConfig = errors.New("client: invalid configuration")
@@ -160,46 +171,19 @@ func New(cfg Config) (*Client, error) {
 	if cfg.MaxMbps == 0 {
 		cfg.MaxMbps = 100
 	}
-	var codec *bond.Codec
-	var err error
-	codec, err = bond.NewCodec(cfg.Key, cfg.Session, "client")
-	if err != nil {
-		return nil, err
-	}
-	r, err := bond.NewReceiver(codec, cfg.MTU)
-	if err != nil {
-		return nil, err
-	}
-	r.SetVersion(buildinfo.Commit)
-	if err = r.SetPathMTUDiscovery(cfg.Discover); err != nil {
-		return nil, err
-	}
-	s, err := bond.NewSender(r, cfg.InitialMbps, cfg.MaxMbps)
-	if err != nil {
-		return nil, err
-	}
-	s.EnableFailover(cfg.Failover)
-	s.SetFlowPinning(cfg.FlowPinning)
-	s.SetStripeAbove(cfg.StripeAbove)
-	s.SetParityRows(cfg.ParityRowsMin, cfg.ParityRowsMax)
-	s.EnableLossTracking(cfg.LossTracking)
-	s.EnableDelayControl(cfg.DelayControl)
-	q, err := bond.NewTransmitQueue(s, cfg.QueuePackets, cfg.QueueBytes)
-	if err == nil {
-		q.EnableCoDel(cfg.CoDel)
-	}
-	if err != nil {
-		return nil, err
-	}
-	var qos *bond.AdaptiveQoS
-	if cfg.QoS != nil {
-		if qos, err = bond.NewAdaptiveQoS(*cfg.QoS); err != nil {
-			return nil, err
+	if len(cfg.Backups) > 0 {
+		if cfg.Outer != nil {
+			return nil, fmt.Errorf("%w: backup exit servers cannot be combined with the stream carrier", ErrConfig)
 		}
-		q.SetQoS(qos)
+		for _, b := range cfg.Backups {
+			if !b.IsValid() || !b.Addr().Is4() || b == cfg.Server {
+				return nil, fmt.Errorf("%w: invalid backup server %v", ErrConfig, b)
+			}
+		}
 	}
-	c := &Client{qos: qos, cfg: cfg, recv: r, sender: s, queue: q, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4), hints: make(chan pathHintMsg, 16), rebind: make(chan rebindRequest), done: make(chan struct{}), specs: append([]uplink.Spec(nil), cfg.Uplinks...)}
+	c := &Client{cfg: cfg, incoming: make(chan inbound, 1024), submit: make(chan bond.QueuedPacket, 4096), policies: make(chan []bond.PathPolicy, 4), hints: make(chan pathHintMsg, 16), rebind: make(chan rebindRequest), done: make(chan struct{}), specs: append([]uplink.Spec(nil), cfg.Uplinks...)}
 	now := hrclock.Now()
+	c.initFailover(now)
 	for i, spec := range cfg.Uplinks {
 		live := cfg.Available == nil || cfg.Available[i]
 		spec.DontFragment = cfg.Discover
@@ -223,23 +207,13 @@ func New(cfg Config) (*Client, error) {
 		c.socks = append(c.socks, sock)
 		c.avail = append(c.avail, live)
 		c.lastRec = append(c.lastRec, time.Time{})
-		if err = r.AddClientPath(i, cfg.Server, now); err != nil {
-			c.closeConns()
-			return nil, err
-		}
-		if !live {
-			if err = r.RebindClientPath(i, now, true); err != nil {
-				c.closeConns()
-				return nil, err
-			}
-		}
 	}
-	if cfg.Policies != nil {
-		if err = r.SetClientLinkPolicies(cfg.Policies, now); err != nil {
-			c.closeConns()
-			return nil, err
-		}
+	st, err := c.buildStack(cfg.Server, now, false)
+	if err != nil {
+		c.closeConns()
+		return nil, err
 	}
+	c.adopt(st)
 	return c, nil
 }
 
@@ -276,18 +250,26 @@ func (c *Client) Submit(p bond.QueuedPacket) bool {
 
 // OpenOutageLog starts the durable, size-capped outage log in dir (see bond.OpenOutageLog).
 func (c *Client) OpenOutageLog(dir string) error {
-	return c.recv.OpenOutageLog(dir)
+	c.mu.Lock()
+	c.outageDir = dir
+	c.mu.Unlock()
+	return c.receiver().OpenOutageLog(dir)
 }
 
 // NoteComponent journals a driver, adapter or process state change; polling it with an
 // unchanged state records nothing. NoteComponentError journals error-counter growth.
 func (c *Client) NoteComponent(source string, ok bool, note string) {
-	c.recv.NoteComponent(source, ok, note)
+	c.receiver().NoteComponent(source, ok, note)
 }
-func (c *Client) NoteComponentError(source, note string) { c.recv.NoteComponentError(source, note) }
+func (c *Client) NoteComponentError(source, note string) { c.receiver().NoteComponentError(source, note) }
 
 // CloseOutageLog flushes and stops the durable outage log.
-func (c *Client) CloseOutageLog() { c.recv.CloseOutageLog() }
+func (c *Client) CloseOutageLog() {
+	c.mu.Lock()
+	c.outageDir = ""
+	c.mu.Unlock()
+	c.receiver().CloseOutageLog()
+}
 
 func (c *Client) Snapshot() Snapshot {
 	c.mu.Lock()
@@ -384,9 +366,18 @@ func (c *Client) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case d := <-c.incoming:
+			if c.standbyInbound(d, hrclock.Now()) {
+				continue
+			}
+			if len(c.fo.servers) > 1 && d.rx == nil && d.endpoint != c.serverAddr() {
+				continue // a late reply from a standby whose probe has ended
+			}
 			res, err := c.recv.ReceiveVia(d.local, d.frame, d.endpoint, hrclock.Now(), d.rx == nil || d.rx.Transport == "udp")
 			if err != nil {
 				return err
+			}
+			if res.Authenticated {
+				c.fo.lastAuth = hrclock.Now()
 			}
 			if d.rx != nil {
 				if res.Authenticated {
@@ -421,6 +412,9 @@ func (c *Client) Run(ctx context.Context) error {
 			return err
 		}
 		handle(res, now)
+		if err = c.failoverTick(now); err != nil {
+			return err
+		}
 		if err = c.sender.Maintenance(now, c.write); err != nil {
 			return err
 		}
@@ -452,6 +446,7 @@ func (c *Client) Run(ctx context.Context) error {
 			c.snapshot.ClientVersion, c.snapshot.ServerVersion = c.recv.Versions()
 			c.snapshot.ServerState = c.recv.PeerState()
 			c.snapshot.Loop = c.loop
+			c.snapshot.Exit = c.exitStatus()
 			c.snapshot.Queue, c.snapshot.Paths = c.queue.Stats(), c.sender.Paths(now)
 			if c.qos != nil {
 				c.snapshot.QoS = c.qos.Stats(now)
@@ -541,7 +536,7 @@ func (c *Client) startReader(ctx context.Context, i int, conn *net.UDPConn, sock
 						return
 					}
 					select {
-					case c.incoming <- inbound{i, r.Packet, c.cfg.Server, &r}:
+					case c.incoming <- inbound{i, r.Packet, c.serverAddr(), &r}:
 					case <-ctx.Done():
 						return
 					}
@@ -618,6 +613,7 @@ func (c *Client) UpdateUplinks(specs []uplink.Spec, available []bool) ([]RebindE
 func (c *Client) doRebind(req rebindRequest) rebindResult {
 	var res rebindResult
 	now := hrclock.Now()
+	c.fo.standby = nil // its paths were built for the old adapter set; the next pass rebuilds it
 	for i, spec := range req.specs {
 		if spec == c.specs[i] && req.avail[i] == c.avail[i] {
 			continue
@@ -633,7 +629,7 @@ func (c *Client) doRebind(req rebindRequest) rebindResult {
 				res.errs = append(res.errs, RebindError{i, err.Error()})
 				live = false
 			} else if c.cfg.Outer != nil && spec.Addr.IsValid() && !spec.Addr.IsUnspecified() {
-				if sock, err = carrier.NewSocket(conn, net.UDPAddrFromAddrPort(c.cfg.Server), c.cfg.Key, c.cfg.Session, *c.cfg.Outer, uplink.Control(spec)); err != nil {
+				if sock, err = carrier.NewSocket(conn, net.UDPAddrFromAddrPort(c.serverAddr()), c.cfg.Key, c.cfg.Session, *c.cfg.Outer, uplink.Control(spec)); err != nil {
 					conn.Close()
 					res.errs = append(res.errs, RebindError{i, err.Error()})
 					live = false

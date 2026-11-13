@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gamebond.local/nativeedge/adapterwatch"
@@ -43,6 +44,8 @@ type fileConfig struct {
 	Session        string                       `json:"session"`
 	Bind           [][]any                      `json:"bind"` // [[ip, port], ...] one per uplink; port is ignored (ephemeral)
 	Peer           []any                        `json:"peer"`
+	PeerBackups    [][]any                      `json:"peer_backups"`     // standby exit servers [[host, port], ...]
+	ExitFailoverMS int                          `json:"exit_failover_ms"` // silence before standbys are probed; 0 = 2000
 	MTU            int                          `json:"mtu"`
 	InitialMbps    float64                      `json:"bonding_initial_rate_mbps"`
 	MaxMbps        float64                      `json:"bonding_max_rate_mbps"`
@@ -65,6 +68,10 @@ type fileConfig struct {
 	ClientTunnelIP string                       `json:"client_tunnel_ip"`
 	LANDevices     json.RawMessage              `json:"lan_devices"`
 	OuterTransport json.RawMessage              `json:"outer_transport"` // stream-carrier fallback; null/absent = UDP only
+	SLOProbe       bool                         `json:"slo_probe"`       // in-tunnel echo probe: measured loss and SLOs
+	SLOProbeMS     int                          `json:"slo_probe_ms"`    // probe interval, default 1000
+	SLOTarget      string                       `json:"slo_target"`      // tunnel address of the server, default 10.77.0.1
+	MetricsAddr    string                       `json:"metrics_addr"`    // loopback host:port for Prometheus, empty = off
 }
 
 func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
@@ -108,6 +115,58 @@ func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
 		specs = append(specs, spec)
 	}
 	return c, specs, netip.AddrPortFrom(addr, uint16(port)), nil
+}
+
+// backupPeers reads peer_backups: up to three standby exit servers, each [host, port].
+func backupPeers(c fileConfig, primary netip.AddrPort) ([]netip.AddrPort, error) {
+	if len(c.PeerBackups) > 3 {
+		return nil, fmt.Errorf("peer_backups holds at most 3 servers")
+	}
+	var out []netip.AddrPort
+	for i, b := range c.PeerBackups {
+		if len(b) != 2 {
+			return nil, fmt.Errorf("peer_backups[%d] must be [host, port]", i)
+		}
+		h, _ := b[0].(string)
+		port, _ := b[1].(float64)
+		addr, err := netip.ParseAddr(h)
+		if err != nil || !addr.Is4() || addr.IsUnspecified() || addr.IsMulticast() || port < 1 || port > 65535 || port != float64(int(port)) {
+			return nil, fmt.Errorf("peer_backups[%d] is not a usable IPv4 [host, port]", i)
+		}
+		ap := netip.AddrPortFrom(addr, uint16(port))
+		if ap == primary {
+			return nil, fmt.Errorf("peer_backups[%d] repeats the primary peer", i)
+		}
+		for _, o := range out {
+			if o == ap {
+				return nil, fmt.Errorf("peer_backups[%d] is listed twice", i)
+			}
+		}
+		out = append(out, ap)
+	}
+	return out, nil
+}
+
+// exitStatusDoc is the "exit" object of the status file: the active exit server, the standbys and
+// their last probe, and the failovers so far.
+func exitStatusDoc(e client.ExitStatus) map[string]any {
+	servers := make([]map[string]any, 0, len(e.Servers))
+	for _, x := range e.Servers {
+		m := map[string]any{"address": x.Addr.Addr().String(), "port": x.Addr.Port(), "active": x.Active, "state": x.State, "failures": x.Failures, "wire_tx_bytes": x.WireTX, "wire_rx_bytes": x.WireRX}
+		if !x.CheckedAt.IsZero() {
+			m["checked_at"] = float64(x.CheckedAt.UnixNano()) / 1e9
+		}
+		if x.State == "reachable" {
+			m["handshake_ms"] = x.HandshakeMS
+		}
+		servers = append(servers, m)
+	}
+	doc := map[string]any{"active": e.Active.Addr().String(), "primary": e.Primary.Addr().String(), "on_backup": e.Active != e.Primary,
+		"servers": servers, "switches": e.Switches, "silent_ms": e.SilentMS, "searching": e.Probing}
+	if !e.LastSwitch.IsZero() {
+		doc["last_switch"], doc["last_reason"] = float64(e.LastSwitch.UnixNano())/1e9, e.LastReason
+	}
+	return doc
 }
 
 // qosFromConfig is QoSSettings(**config.get('adaptive_qos', {})): defaults for
@@ -289,6 +348,40 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			bridge.Deliver(p)
 		}
 	}}
+	var sr *sloRuntime
+	sloOpts := sloOptions{Probe: cfg.SLOProbe, Interval: time.Second, Metrics: cfg.MetricsAddr}
+	if cfg.SLOProbe || cfg.MetricsAddr != "" {
+		if cfg.MetricsAddr != "" {
+			if err := loopbackAddr(cfg.MetricsAddr); err != nil {
+				return err
+			}
+		}
+		if cfg.SLOProbe {
+			if cfg.SLOProbeMS > 0 {
+				sloOpts.Interval = time.Duration(max(cfg.SLOProbeMS, 100)) * time.Millisecond
+			}
+			var perr error
+			if sloOpts.Src, perr = netip.ParseAddr(cfg.ClientTunnelIP); perr != nil {
+				return fmt.Errorf("slo_probe needs a valid client_tunnel_ip: %w", perr)
+			}
+			target := cfg.SLOTarget
+			if target == "" {
+				target = "10.77.0.1"
+			}
+			if sloOpts.Dst, perr = netip.ParseAddr(target); perr != nil {
+				return fmt.Errorf("slo_target: %w", perr)
+			}
+			if *statusPath != "" {
+				sloOpts.DBPath = filepath.Join(filepath.Dir(*statusPath), "slo.db")
+			}
+		}
+		var serr error
+		if sr, serr = newSLO(sloOpts); serr != nil {
+			return serr
+		}
+		routed.probe = sr.Handle
+	}
+	var curAlarms atomic.Pointer[[]bond.Alarm]
 	slots := make([]adapterwatch.Slot, len(specs))
 	useInventory := false
 	for i, sp := range specs {
@@ -306,7 +399,16 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		}
 		specs, available = adapterwatch.PlanInventory(slots, rows, uplink.InterfaceFor)
 	}
-	clientCfg := client.Config{Key: key, Session: session, Server: peer, Uplinks: specs, Available: available,
+	backups, err := backupPeers(cfg, peer)
+	if err != nil {
+		return err
+	}
+	clientCfg := client.Config{Backups: backups, FailoverAfter: time.Duration(cfg.ExitFailoverMS) * time.Millisecond,
+		OnSwitch: func(from, to netip.AddrPort, reason string) {
+			b, _ := json.Marshal(map[string]any{"status": "exit_failover", "from": from.String(), "to": to.String(), "reason": reason})
+			fmt.Println(string(b))
+			sr.NoteSwitch(from, to, reason)
+		}, Key: key, Session: session, Server: peer, Uplinks: specs, Available: available,
 		MTU: mtu + bond.Overhead + 24, Discover: cfg.PathMTU, Failover: cfg.FailoverReplay, FlowPinning: cfg.FlowPinning, StripeAbove: cfg.StripeAbove, CoDel: cfg.CoDel, ParityRowsMin: cfg.ParityRowsMin, ParityRowsMax: cfg.ParityRowsMax,
 		InitialMbps: max(cfg.InitialMbps, 1), MaxMbps: max(cfg.MaxMbps, 100), Deliver: routed.Deliver, Outer: outer, QoS: &qosSettings, LossTracking: cfg.LossTracking, DelayControl: cfg.DelayControl}
 	c, err := client.New(clientCfg)
@@ -315,6 +417,14 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 	}
 	routed.gb = c
 	routed.ready = func() bool { return c.Snapshot().Ready > 0 }
+	if sr != nil {
+		sr.run(ctx, sloOpts, routed, c.Snapshot, func() []bond.Alarm {
+			if a := curAlarms.Load(); a != nil {
+				return *a
+			}
+			return nil
+		}, logOut)
+	}
 	bridge.Uplink = routed
 	omrStatus := &omrState{mode: serverMode}
 	var meter *linkpolicy.Meter
@@ -441,6 +551,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 				timeouts[i] = q.FeedbackTimeoutRatio
 			}
 			alarms := health.Observe(s.Receiver.FeedbackReceived, s.Receiver.FeedbackRejected, timeouts)
+			curAlarms.Store(&alarms)
 			if text := fmt.Sprint(alarms); text != lastAlarms {
 				lastAlarms = text
 				if len(alarms) == 0 {
@@ -474,7 +585,9 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 				fmt.Fprintln(logOut, "application history write failed:", err)
 			}
 			if *statusPath != "" {
-				if err := status.WriteJSON(*statusPath, statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture, c.DFEnforced(), alarms)); err != nil {
+				doc := statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture, c.DFEnforced(), alarms)
+				doc["slo"] = sr.status()
+				if err := status.WriteJSON(*statusPath, doc); err != nil {
 					fmt.Fprintln(logOut, "status write failed:", err)
 				}
 			}
@@ -568,13 +681,16 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 			"rtt_ms": p.RTTMilliseconds, "rtt_jitter_ms": p.JitterMilliseconds, "wire_tx_bytes": p.WireTX, "wire_rx_bytes": p.WireRX,
 			"bfd": p.BFD, "frer": frerStatus(p), "policy_confirmed": p.PolicyConfirmed, "remote": p.Endpoint.String(), "mtu": mtuStatus(p, df)})
 	}
+	if s.Exit.Active.IsValid() {
+		peer = s.Exit.Active
+	}
 	doc := map[string]any{"pid": os.Getpid(), "created": float64(created.UnixNano()) / 1e9, "updated_at": float64(time.Now().UnixNano()) / 1e9,
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
 		"transport": map[string]any{"paths": paths, "receive": s.Receiver, "send": s.Sender, "reorder": s.Reorder, "queue": s.Queue, "loop": s.Loop, "outages": s.Outages},
 		"versions": map[string]any{"client": s.ClientVersion, "server": s.ServerVersion, "server_state": s.ServerState},
 		"runtime": runtimeStats(), "stack_write": b.Out.Timing(),
 		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "device_usage": l.usageStatus(), "lan_access": l.accessStatus(), "alarms": alarms, "loss_causes": lossCauses(s)}
+		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "device_usage": l.usageStatus(), "lan_access": l.accessStatus(), "alarms": alarms, "loss_causes": lossCauses(s), "exit": exitStatusDoc(s.Exit)}
 	if capture != nil {
 		capture.status(doc)
 	}

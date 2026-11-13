@@ -1,0 +1,14 @@
+# Scrape the client's loopback endpoint ("metrics_addr": "127.0.0.1:9477" in the client config).
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+rule_files:
+  - gamebond-alerts.yml
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["127.0.0.1:9093"]
+scrape_configs:
+  - job_name: gamebond-client
+    static_configs:
+      - targets: ["127.0.0.1:9477"]
