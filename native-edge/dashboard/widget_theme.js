@@ -25,7 +25,7 @@ themeStyle.textContent = [
   'html[data-theme=dark] .accesscard{background:#3a3220;border-color:#7a6420;color:#f1e3b8}',
   'html[data-theme=dark] .journal-card{background:#1b1e24;border-color:#2a2e36}html[data-theme=dark] .journal-card.unread{background:#1a2535;border-color:#2a3b52}',
   'html[data-theme=dark] #protect .selected{background:#263050}html[data-theme=dark] #protect select.allowed{background:#1f3a28;color:#7ddc9a}',
-  'html[data-theme=dark] .pie-track,html[data-theme=dark] .gl{stroke:#2a2f38}html[data-theme=dark] .pie-num{fill:#e0e3e8}html[data-theme=dark] .pie-card,html[data-theme=dark] .topo-svg{border-color:#3a404b}html[data-theme=dark] .pie-legend b{color:#aab2bd}',
+  'html[data-theme=dark] .pie-track,html[data-theme=dark] .gl{stroke:#2a2f38}html[data-theme=dark] .usage-tile{border-color:#3a404b}html[data-theme=dark] .pie-num{fill:#e0e3e8}html[data-theme=dark] .pie-card,html[data-theme=dark] .topo-svg{border-color:#3a404b}html[data-theme=dark] .pie-legend b{color:#aab2bd}',
   'html[data-theme=dark] .tb-rect{fill:#1e2229;stroke:#3a404b}html[data-theme=dark] .tb-title{fill:#e0e3e8}html[data-theme=dark] .tb-sub{fill:#8d95a3}',
   'html[data-theme=dark] .tl{stroke:#566070}html[data-theme=dark] .tl-label{fill:#aab2bd}html[data-theme=dark] .g-bg{fill:#232830;stroke:#3a404b}',
   'html[data-theme=dark] .d-track{stroke:#2a2f38}html[data-theme=dark] .ax{stroke:#3a404b}html[data-theme=dark] .topo-svg{background:#171a1f}',

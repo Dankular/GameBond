@@ -14,6 +14,7 @@ topoStyle.textContent = '.subtabs{display:flex;gap:6px;margin:8px 0 12px}.subtab
   + '.range{display:flex;gap:4px;justify-content:flex-end;margin-bottom:4px}.range .seg.active{background:#0f7ae5;color:#fff}.notice{background:#f4f6f9;border-radius:8px;padding:10px 12px;color:#505762}';
 topoStyle.textContent += '.tf{fill:none;stroke-linecap:round;stroke-dasharray:5 11;pointer-events:none;stroke-width:calc(2px + 2.5px*var(--i))}.tf.down{stroke:#2fb800;--c:47,184,0}.tf.up{stroke:#0f7ae5;--c:15,122,229}.tf-halo{fill:none;stroke-linecap:round;pointer-events:none;stroke-width:calc(4px + 10px*var(--i));opacity:calc(.08 + .22*var(--i));filter:blur(calc(1px + 3px*var(--i)))}.tf-halo.down{stroke:#2fb800}.tf-halo.up{stroke:#0f7ae5}@keyframes tf-fwd{from{stroke-dashoffset:16}to{stroke-dashoffset:0}}@keyframes tf-rev{from{stroke-dashoffset:0}to{stroke-dashoffset:16}}@keyframes tf-glow{0%,100%{opacity:calc(.5 + .25*var(--i));filter:drop-shadow(0 0 calc(1px + 3px*var(--i)) rgb(var(--c)))}50%{opacity:1;filter:drop-shadow(0 0 calc(3px + 9px*var(--i)) rgb(var(--c)))}}@keyframes tf-halo-pulse{0%,100%{opacity:calc(.05 + .15*var(--i))}50%{opacity:calc(.12 + .35*var(--i))}}@media (prefers-reduced-motion:reduce){.tf,.tf-halo{animation:none!important}}';
 topoStyle.textContent += '.port-active{color:#00a66c;font-weight:600}.gl{stroke:#e8edf3;stroke-width:1}'
+  + '.usage-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:4px 0 10px}.usage-tile{border:1px solid #e1e5eb;border-radius:10px;padding:8px 10px;text-align:center}.usage-tile b{display:block;font-size:18px;font-weight:600}.usage-tile span{color:#7b8089;font-size:11px}.usage-tile small{display:block;color:#7b8089;font-size:11px;text-transform:uppercase}'
   + '.topo-pies{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:14px 0}.pie-card{border:1px solid #e1e5eb;border-radius:10px;padding:10px 14px;min-width:0}.pie-card h3{margin:0 0 6px;font-size:12px;text-transform:uppercase;color:#7b8089}'
   + '.pie-body{display:flex;gap:14px;align-items:center}.pie-svg{width:128px;height:128px;flex:none}.pie-track{stroke:#e8edf3}.pie-num{fill:#393b43;font-weight:600}.pie-legend{flex:1;min-width:0;font-size:12px}'
   + '.pie-legend div{display:grid;grid-template-columns:12px minmax(0,1fr) auto;gap:6px;align-items:center;margin:2px 0}.pie-legend i{width:9px;height:9px;border-radius:2px;display:inline-block}.pie-legend span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pie-legend b{font-weight:500;color:#505762}'
@@ -400,15 +401,47 @@ function renderAdapterCard(hub) {
   const gauges = element('div', null, { class: 'gauges' });
   gauges.append(gauge('Download', hub.down, Math.max(peakDown, hub.down), '#2fb800'), gauge('Upload', hub.upBps, Math.max(peakUp, hub.upBps), '#0f7ae5'));
   const now = element('div'); now.append(element('h3', 'Combined usage'), gauges);
-  const table = element('table'); table.innerHTML = '<thead><tr><th>Device</th><th>IP</th><th>Down now</th><th>Up now</th><th>Total down</th><th>Total up</th></tr></thead>';
+  const table = element('table'); table.innerHTML = '<thead><tr><th>Device</th><th>IP</th><th>Down now</th><th>Up now</th><th>Total down</th><th>Total up</th><th>7 days</th><th>30 days</th></tr></thead>';
   const body = element('tbody'); table.append(body);
   for (const d of hub.devices) {
     const tr = element('tr'), u = d.usage;
     cell(tr, d.name); cell(tr, d.ip); cell(tr, u ? fmtBps(u.down_bps) : '—'); cell(tr, u ? fmtBps(u.up_bps) : '—'); cell(tr, u ? bytes(u.down_bytes) : '—'); cell(tr, u ? bytes(u.up_bytes) : '—');
+    cell(tr, u?.usage_week ? bytes(u.usage_week.down + u.usage_week.up) : '—'); cell(tr, u?.usage_month ? bytes(u.usage_month.down + u.usage_month.up) : '—');
     tr.style.cursor = 'pointer'; tr.onclick = () => { selectedDevice = d.key; renderTopology(); }; body.append(tr);
   }
   const list = element('div'); list.append(element('h3', 'Devices behind it'), table);
   const grid = element('div', null, { class: 'dev-grid' }); grid.append(now, list); card.append(grid); topoCard.append(card);
+}
+
+// usageSection: how much data a device moved in the last day, week and month (rolling windows of hours), and a bar
+// per day for the last 30 days. Hidden when the client does not report it yet.
+function usageSection(u) {
+  if (!u.usage_week || !u.usage_month || !u.usage_daily) return null;
+  const box = element('div'); box.append(element('h3', 'Data usage'));
+  const tiles = element('div', null, { class: 'usage-tiles' });
+  for (const [label, w] of [['Last 24 hours', u.usage_day || { up: 0, down: 0 }], ['Last 7 days', u.usage_week], ['Last 30 days', u.usage_month]]) {
+    const t = element('div', null, { class: 'usage-tile' });
+    t.append(element('small', label), element('b', bytes((w.down || 0) + (w.up || 0))), element('span', '↓ ' + bytes(w.down || 0) + ' · ↑ ' + bytes(w.up || 0)));
+    tiles.append(t);
+  }
+  box.append(tiles);
+  const days = u.usage_daily, width = 620, height = 150, left = 44, bottom = 18, plot = height - bottom, usable = plot - 12, bw = (width - left - 4) / days.length;
+  const top = Math.max(1e6, ...days.map(d => d[0] + d[1])) * 1.1;
+  const s = svg('svg', { class: 'topo-svg', viewBox: '0 0 ' + width + ' ' + height, role: 'img', 'aria-label': 'Data used per day over the last 30 days' });
+  s.style.maxWidth = '720px';
+  for (let g = 0; g <= 3; g++) { const y = plot - g / 3 * usable; s.append(svg('line', { class: 'gl', x1: left, y1: y, x2: width - 4, y2: y }), svg('text', { class: 'tb-sub', x: left - 4, y: y + 3, 'font-size': 10, 'text-anchor': 'end' }, g ? bytes(top * g / 3) : '0')); }
+  s.append(svg('text', { class: 'tb-sub', x: left, y: height - 4, 'font-size': 10 }, '-30 d'), svg('text', { class: 'tb-sub', x: width - 4, y: height - 4, 'font-size': 10, 'text-anchor': 'end' }, 'now'));
+  days.forEach((d, k) => { // index 0 is the most recent 24 hours, so draw right to left
+    const i = days.length - 1 - k, x = left + i * bw, hd = d[1] / top * usable, hu = d[0] / top * usable;
+    if (hd >= 0.5) s.append(svg('rect', { x: x + 1, y: plot - hd, width: Math.max(1, bw - 2), height: hd, rx: 1.5, fill: '#2fb800', 'fill-opacity': 0.8 }));
+    if (hu >= 0.5) s.append(svg('rect', { x: x + 1, y: plot - hd - hu, width: Math.max(1, bw - 2), height: hu, rx: 1.5, fill: '#0f7ae5', 'fill-opacity': 0.8 }));
+    const hit = svg('rect', { x, y: 0, width: bw, height: plot, fill: 'transparent' });
+    hit.append(svg('title', {}, (k === 0 ? 'Last 24 hours' : k === 1 ? '24 to 48 hours ago' : (k * 24) + ' to ' + ((k + 1) * 24) + ' hours ago') + '\n↓ ' + bytes(d[1]) + ' · ↑ ' + bytes(d[0]))); s.append(hit);
+  });
+  const lg = element('div', null, { class: 'tp-legend' });
+  lg.innerHTML = '<span><i style="background:#2fb800;opacity:.8"></i>Download</span><span><i style="background:#0f7ae5;opacity:.8"></i>Upload</span>';
+  box.append(s, lg, element('p', 'Counts what this device moved through the tunnel; each bar is one 24-hour block counted back from now. Totals are kept for 35 days.', { class: 'sub' }));
+  return box;
 }
 
 const palette = ['#0f7ae5', '#2fb800', '#f5a300', '#9b59d0', '#e0201b', '#00a5b8', '#8c6d46', '#7b8089'];
@@ -449,6 +482,7 @@ function renderDeviceCard(d) {
     row.append(dot, element('span', r.service), bar, element('span', bytes(part), { title: '↓ ' + bytes(r.down_bytes) + ' ↑ ' + bytes(r.up_bytes) })); apps.append(row);
   });
   grid.append(apps); card.append(grid);
+  const usageBox = usageSection(u); if (usageBox) card.append(usageBox);
 
   const hist = element('div'); hist.append(element('h3', 'History'));
   const range = element('div', null, { class: 'range' });

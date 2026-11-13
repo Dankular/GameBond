@@ -1,6 +1,8 @@
 package devusage
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -322,3 +324,100 @@ func TestCategoriesGroupPortsAndAreSortedByTraffic(t *testing.T) {
 		t.Fatalf("categories: %+v", cats)
 	}
 }
+
+func window(d map[string]any, key string) (up, down uint64) {
+	w := d[key].(map[string]uint64)
+	return w["up"], w["down"]
+}
+
+func TestWeekAndMonthWindowsAreRollingSums(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	record := func(up, down int) {
+		if up > 0 {
+			tr.Record(dev, true, pkt(dev, srv, 6, 1, 443, up))
+		}
+		if down > 0 {
+			tr.Record(dev, false, pkt(srv, dev, 6, 443, 1, down))
+		}
+	}
+	record(1000, 2000) // now
+	*now = start.Add(-10 * 24 * time.Hour)
+	record(500, 700) // 10 days ago: in the month, not the week
+	*now = start.Add(-40 * 24 * time.Hour)
+	record(9999, 9999) // 40 days ago: outside every window and past the 35-day retention
+	*now = start.Add(-2 * 24 * time.Hour)
+	record(100, 300) // 2 days ago: in the week
+	*now = start
+	d := snap(tr)
+	if up, down := window(d, "usage_day"); up != 1000 || down != 2000 {
+		t.Fatalf("day: %d/%d", up, down)
+	}
+	if up, down := window(d, "usage_week"); up != 1100 || down != 2300 {
+		t.Fatalf("week: %d/%d", up, down)
+	}
+	if up, down := window(d, "usage_month"); up != 1600 || down != 3000 {
+		t.Fatalf("month: %d/%d", up, down)
+	}
+	daily := d["usage_daily"].([][2]uint64)
+	if len(daily) != 30 || daily[0] != [2]uint64{1000, 2000} || daily[2] != [2]uint64{100, 300} || daily[10] != [2]uint64{500, 700} {
+		t.Fatalf("daily: %v", daily)
+	}
+}
+
+func TestHourlyTotalsAreBoundedToThirtyFiveDays(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	for h := 0; h < historyHours+200; h++ {
+		*now = start.Add(time.Duration(h) * time.Hour)
+		tr.Record(dev, true, pkt(dev, srv, 6, 1, 443, 100))
+	}
+	tr.mu.Lock()
+	n := len(tr.devs[dev].Hours)
+	tr.mu.Unlock()
+	if n > historyHours {
+		t.Fatalf("%d hourly buckets kept", n)
+	}
+}
+
+func TestHourlyTotalsSurviveSaveAndLoad(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	tr.Record(dev, true, pkt(dev, srv, 6, 1, 443, 1000))
+	*now = start.Add(5 * 24 * time.Hour)
+	tr.Record(dev, false, pkt(srv, dev, 6, 443, 1, 4000))
+	path := filepath.Join(t.TempDir(), "usage.json")
+	if err := tr.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t2, _ := clocked(*now)
+	t2.Load(path)
+	d := snap(t2)
+	if up, down := window(d, "usage_month"); up != 1000 || down != 4000 {
+		t.Fatalf("month after reload: %d/%d", up, down)
+	}
+	if up, down := window(d, "usage_week"); up != 1000 || down != 4000 {
+		t.Fatalf("week after reload: %d/%d", up, down)
+	}
+	if up, _ := window(d, "usage_day"); up != 0 {
+		t.Fatalf("the five-day-old upload is not in the last day: %d", up)
+	}
+}
+
+// A usage file from before hourly totals only has minutes; they must give the first day of data.
+func TestLoadSeedsHoursFromOlderMinuteHistory(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	path := filepath.Join(t.TempDir(), "usage.json")
+	minute := start.Unix()/60 - 30
+	old := `{"version":1,"devices":{"10.77.0.9":{"first":` + itoa(start.Unix()-3600) + `,"up":300,"down":900,"history":[{"m":` + itoa(minute) + `,"u":100,"d":400},{"m":` + itoa(minute+1) + `,"u":200,"d":500}]}}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tr, _ := clocked(start)
+	tr.Load(path)
+	if up, down := window(snap(tr), "usage_day"); up != 300 || down != 900 {
+		t.Fatalf("seeded day: %d/%d", up, down)
+	}
+}
+
+func itoa(n int64) string { return fmt.Sprintf("%d", n) }

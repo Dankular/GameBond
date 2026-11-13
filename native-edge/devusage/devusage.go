@@ -15,7 +15,8 @@ import (
 
 const (
 	historyMinutes = 24 * 60
-	maxPorts       = 64 // per device; the smallest entry is evicted past this
+	historyHours   = 35 * 24 // hourly totals kept for the week and month views
+	maxPorts       = 64      // per device; the smallest entry is evicted past this
 	maxRemotes     = 256
 	rateWindow     = 5 * time.Second
 	// activeWindow is how recently a port must have carried a packet to count as active.
@@ -102,6 +103,13 @@ type categoryRow struct {
 	Down     uint64 `json:"down_bytes"`
 }
 
+// hourBucket is one hour of a device's traffic; the week and month views are sums of these.
+type hourBucket struct {
+	Hour int64  `json:"h"` // unix hour
+	Up   uint64 `json:"u,omitempty"`
+	Down uint64 `json:"d,omitempty"`
+}
+
 type bucket struct {
 	Minute int64  `json:"m"` // unix minute
 	Up     uint64 `json:"u"`
@@ -137,6 +145,7 @@ type device struct {
 	Ports        map[portKey]*portStat
 	Remotes      map[[4]byte]uint64
 	History      []bucket
+	Hours        []hourBucket
 	rateAt       time.Time
 	rateUp       uint64 // bytes in the current window
 	rateDown     uint64
@@ -231,6 +240,14 @@ func (t *Tracker) Record(dev [4]byte, outbound bool, p []byte) {
 		}
 	}
 	b := &d.History[len(d.History)-1]
+	hour := now.Unix() / 3600
+	if n := len(d.Hours); n == 0 || d.Hours[n-1].Hour != hour {
+		d.Hours = append(d.Hours, hourBucket{Hour: hour})
+		if len(d.Hours) > historyHours {
+			d.Hours = d.Hours[len(d.Hours)-historyHours:]
+		}
+	}
+	hb := &d.Hours[len(d.Hours)-1]
 	k := portKey{proto, port}
 	ps := d.Ports[k]
 	if ps == nil {
@@ -252,12 +269,14 @@ func (t *Tracker) Record(dev [4]byte, outbound bool, p []byte) {
 		d.Up += size
 		d.PktUp++
 		b.Up += size
+		hb.Up += size
 		ps.Up += size
 		d.rateUp += size
 	} else {
 		d.Down += size
 		d.PktDn++
 		b.Down += size
+		hb.Down += size
 		ps.Down += size
 		d.rateDown += size
 	}
@@ -439,6 +458,24 @@ func (d *device) view(now time.Time) map[string]any {
 			latency = append(latency, [2]uint64{uint64(b.Minute * 60), uint64(b.RTT)})
 		}
 	}
+	// Rolling windows and a per-day breakdown from the hourly totals (day 0 is the last 24 hours).
+	nowHour := now.Unix() / 3600
+	window := func(hours int64) map[string]uint64 {
+		w := map[string]uint64{}
+		for _, h := range d.Hours {
+			if h.Hour > nowHour-hours {
+				w["up"], w["down"] = w["up"]+h.Up, w["down"]+h.Down
+			}
+		}
+		return w
+	}
+	daily := make([][2]uint64, 30)
+	for _, h := range d.Hours {
+		if age := nowHour - h.Hour; age >= 0 && age < 30*24 {
+			day := age / 24
+			daily[day][0], daily[day][1] = daily[day][0]+h.Up, daily[day][1]+h.Down
+		}
+	}
 	rttMS := 0.0
 	if d.lastRTT > 0 && now.Sub(d.lastRTTAt) <= 2*time.Minute {
 		rttMS = float64(d.lastRTT) / 10
@@ -453,7 +490,7 @@ func (d *device) view(now time.Time) map[string]any {
 		"first_seen": d.First.Unix(), "last_seen": d.Last.Unix(),
 		"up_bytes": d.Up, "down_bytes": d.Down, "up_packets": d.PktUp, "down_packets": d.PktDn,
 		"up_bps": upBps, "down_bps": downBps, "peak_up_bps": max(d.peakUp, upBps), "peak_down_bps": max(d.peakDown, downBps),
-		"rtt_ms": rttMS, "latency": latency, "categories": categories, "ports": ports, "active_ports": active, "services": services, "remotes": remotes, "history": history,
+		"usage_day": window(24), "usage_week": window(7 * 24), "usage_month": window(30 * 24), "usage_daily": daily, "rtt_ms": rttMS, "latency": latency, "categories": categories, "ports": ports, "active_ports": active, "services": services, "remotes": remotes, "history": history,
 	}
 }
 
@@ -463,10 +500,11 @@ type saved struct {
 }
 
 type savedDevice struct {
-	First   int64    `json:"first"`
-	Up      uint64   `json:"up"`
-	Down    uint64   `json:"down"`
-	History []bucket `json:"history"`
+	Hours   []hourBucket `json:"hours,omitempty"`
+	First   int64        `json:"first"`
+	Up      uint64       `json:"up"`
+	Down    uint64       `json:"down"`
+	History []bucket     `json:"history"`
 }
 
 // Save writes totals and history (not the port breakdown, which is per session) to path.
@@ -474,7 +512,7 @@ func (t *Tracker) Save(path string) error {
 	t.mu.Lock()
 	s := saved{Version: 1, Devices: map[string]savedDevice{}}
 	for ip, d := range t.devs {
-		s.Devices[ipString(ip)] = savedDevice{d.First.Unix(), d.Up, d.Down, append([]bucket(nil), d.History...)}
+		s.Devices[ipString(ip)] = savedDevice{First: d.First.Unix(), Up: d.Up, Down: d.Down, History: append([]bucket(nil), d.History...), Hours: append([]hourBucket(nil), d.Hours...)}
 	}
 	t.mu.Unlock()
 	data, err := json.Marshal(s)
@@ -513,6 +551,22 @@ func (t *Tracker) Load(path string) {
 		for _, b := range sd.History {
 			if b.Minute > cutoff {
 				d.History = append(d.History, b)
+			}
+		}
+		hourCutoff := now.Unix()/3600 - historyHours
+		for _, h := range sd.Hours {
+			if h.Hour > hourCutoff {
+				d.Hours = append(d.Hours, h)
+			}
+		}
+		if len(d.Hours) == 0 { // a file from before hourly totals: the minutes it has give the first day
+			for _, b := range d.History {
+				hour := b.Minute / 60
+				if n := len(d.Hours); n == 0 || d.Hours[n-1].Hour != hour {
+					d.Hours = append(d.Hours, hourBucket{Hour: hour})
+				}
+				d.Hours[len(d.Hours)-1].Up += b.Up
+				d.Hours[len(d.Hours)-1].Down += b.Down
 			}
 		}
 		t.devs[ip] = d
