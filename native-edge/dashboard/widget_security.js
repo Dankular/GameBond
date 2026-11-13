@@ -27,7 +27,7 @@ subTabs.append(secSub);
 scanPanel.append(secPane);
 secPane.hidden = true;
 
-const SEC_SECTIONS = [['overview', 'Overview'], ['firewall', 'Firewall'], ['countries', 'Countries'], ['dns', 'Ad & content blocking'], ['ids', 'Intrusion detection']];
+const SEC_SECTIONS = [['overview', 'Overview'], ['firewall', 'Firewall'], ['countries', 'Countries'], ['dns', 'Ad & content blocking'], ['ids', 'Intrusion detection'], ['pc', 'This PC']];
 let secCat = null, secOv = null, secDraft = null, secSection = 'overview', secBusy = false, secMsg = '', secMsgBad = false, secTimer = null, secError = '', secLive = [], secBarEl = null, secBody = null, secLoading = false;
 
 const secClone = v => JSON.parse(JSON.stringify(v));
@@ -101,7 +101,7 @@ async function secLoad(first) {
     let redraw = first || !secBody || !secBody.firstChild;
     if (!secDraft || (!wasDirty && (first || before !== JSON.stringify(secNorm(ov.settings))))) { secDraft = secNorm(ov.settings); redraw = true; }
     if (redraw) secRender(); else { secRefreshBar(); for (const f of secLive) f(); }
-  } catch (e) { secError = e.message; secOv = null; secRender(); }
+  } catch (e) { secError = e.message; secOv = null; if (secSection !== 'pc' || !secBody) secRender(); }
   finally { secLoading = false; }
 }
 async function secApply() {
@@ -140,23 +140,24 @@ function secRefreshBar(force) {
 // ---- layout ----
 function secRender() {
   secPane.replaceChildren(); secLive = [];
-  if (secError || !secOv || !secCat) {
-    const card = secCard('Security is managed on your server', 'Firewall, country filter, ad and content blocking, and intrusion detection run on the exit server, so they protect every device behind it.');
-    card.append(secEl('p', secError || 'Loading…', secError ? 'sec-bad' : 'sec-note'));
-    if (/admin portal|set up|password/i.test(secError)) card.append(secEl('p', 'Open Settings, Server admin, and enter the server portal address and password. This page then works through it.', 'sec-note'));
-    secPane.append(card); secBody = null; secBarEl = null;
-    return;
-  }
   const nav = secEl('div', null, 'sec-nav', { role: 'tablist' });
   for (const [id, label] of SEC_SECTIONS) {
     const b = secEl('button', label, 'seg' + (id === secSection ? ' active' : ''), { role: 'tab', 'aria-selected': id === secSection });
     b.onclick = () => { secSection = id; secRender(); };
     nav.append(b);
   }
+  // "This PC" reads local files and works without the server; every other section needs the server's portal.
+  if ((secError || !secOv || !secCat) && secSection !== 'pc') {
+    const card = secCard('Security is managed on your server', 'Firewall, country filter, ad and content blocking, and intrusion detection run on the exit server, so they protect every device behind it.');
+    card.append(secEl('p', secError || 'Loading…', secError ? 'sec-bad' : 'sec-note'));
+    if (/admin portal|set up|password/i.test(secError)) card.append(secEl('p', 'Open Settings, Server admin, and enter the server portal address and password. This page then works through it.', 'sec-note'));
+    secPane.append(nav, card); secBody = null; secBarEl = null;
+    return;
+  }
   secBarEl = secEl('div', null, 'sec-bar', { role: 'region', 'aria-label': 'Unapplied changes' });
   secBody = secEl('div');
   secPane.append(nav, secBarEl, secBody);
-  ({ overview: secOverview, firewall: secFirewall, countries: secCountries, dns: secDNS, ids: secIDS })[secSection](secBody);
+  ({ overview: secOverview, firewall: secFirewall, countries: secCountries, dns: secDNS, ids: secIDS, pc: secPC })[secSection](secBody);
   secRefreshBar();
   for (const f of secLive) f();
 }
