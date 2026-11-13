@@ -1,0 +1,57 @@
+# Duplication benchmark, 2026-11-13, GameBond.Core e3ddaea
+# Reproduce: GB_BENCH=1 go test -run TestDuplicationBenchmark -v ./bond   (in GameBond.Core)
+# Independent per-link loss, equal 20 ms delay unless stated, link capacity not modelled.
+
+Duplication benchmark: 20s measured per scenario, 5 seeds pooled, virtual clock
+
+GAME class: 100 B at 50 packets/s, DSCP 46, copied on every ready link
+scenario                                     sent delivered   p50 ms   p99 ms   max ms  copies wire/data
+1 link(s), 0% loss each                      5000   100.00%     21.0     22.0     22.0    1.00      2.15
+2 link(s), 0% loss each                      5000   100.00%     20.6     21.9     22.0    2.00      4.30
+3 link(s), 0% loss each                      5000   100.00%     20.4     21.7     21.9    3.00      6.45
+1 link(s), 1% loss each                      5000    98.80%     21.0     22.0     22.0    1.00      2.15
+2 link(s), 1% loss each                      5000   100.00%     20.6     21.9     22.0    2.00      4.30
+3 link(s), 1% loss each                      5000   100.00%     20.4     21.6     21.9    3.00      6.45
+1 link(s), 5% loss each                      5000    95.02%     21.0     22.0     22.0    1.00      2.15
+2 link(s), 5% loss each                      5000    99.86%     20.6     21.9     22.0    2.00      4.29
+3 link(s), 5% loss each                      5000   100.00%     20.4     21.7     22.0    3.00      6.44
+1 link(s), 10% loss each                     5000    90.16%     21.0     22.0     22.0    1.00      2.15
+2 link(s), 10% loss each                     5000    99.04%     20.6     21.9     22.0    1.99      4.27
+3 link(s), 10% loss each                     5000    99.86%     20.5     21.7     22.0    3.00      6.42
+1 link(s), 20% loss each                     5000    80.64%     21.0     22.0     22.0    1.00      2.14
+2 link(s), 20% loss each                     5000    95.78%     20.7     21.9     22.0    1.98      4.23
+3 link(s), 20% loss each                     5000    99.08%     20.5     21.9     22.0    2.96      6.34
+2 links: one 30% loss, one clean             5000   100.00%     20.7     22.0     22.0    1.96      4.20
+2 links: one blackholed, one clean           5000   100.00%     21.0     22.0     22.0    1.01      2.28
+2 links: 20 ms and 80 ms (+20 jitter)        5000   100.00%     21.0     22.0     22.0    2.00      4.30
+2 links: 0% loss, tiered mode                5000   100.00%     20.6     21.9     22.0    2.00      4.30
+2 links: 1% loss each, tiered mode           5000   100.00%     20.6     21.9     22.0    2.00      4.30
+2 links: 5% loss each, tiered mode           5000    99.82%     20.6     21.9     22.0    2.00      4.29
+2 links: 10% loss each, tiered mode          5000    99.10%     20.6     21.9     22.0    1.99      4.27
+3 links: 10% loss each, tiered mode          5000    99.92%     20.4     21.8     22.0    2.99      6.41
+
+BULK class: 1000 B at about 10 Mbit/s offered
+scenario                                     sent delivered   p50 ms   p99 ms   max ms  copies wire/data
+1 link(s), 0% loss each                    124986   100.00%     21.0     22.0     22.0    1.00      1.09
+2 link(s), 0% loss each                    124999   100.00%     20.6     21.8     22.0    2.00      2.17
+3 link(s), 0% loss each                    125000   100.00%     20.6     21.8     22.0    2.00      2.18
+1 link(s), 1% loss each                    124985    99.01%     21.0     22.0     22.0    1.00      1.09
+2 link(s), 1% loss each                    125000    99.99%     20.6     21.8     22.0    2.00      2.17
+3 link(s), 1% loss each                    125000    99.99%     20.6     21.8     22.0    2.00      2.18
+1 link(s), 5% loss each                    124978    95.06%     21.0     22.0     22.0    1.00      1.09
+2 link(s), 5% loss each                    125000    99.77%     20.6     21.9     22.0    2.00      2.17
+3 link(s), 5% loss each                    124999    99.78%     20.6     21.9     22.0    2.00      2.18
+1 link(s), 10% loss each                   124984    90.02%     21.0     22.0     22.0    1.00      1.09
+2 link(s), 10% loss each                   124999    99.04%     20.6     21.9     22.0    2.00      2.17
+3 link(s), 10% loss each                   125000    99.02%     20.6     21.9     22.0    2.00      2.18
+1 link(s), 20% loss each                   124989    80.06%     21.0     22.0     22.0    1.00      1.09
+2 link(s), 20% loss each                   125000    95.99%     20.7     21.9     22.0    2.00      2.17
+3 link(s), 20% loss each                   125000    96.14%     20.7     21.9     22.0    2.00      2.18
+2 links: one 30% loss, one clean           124986   100.00%     20.7     21.9     22.0    2.00      2.17
+2 links: one blackholed, one clean         124982   100.00%     21.0     22.0     22.0    1.15      1.25
+2 links: 20 ms and 80 ms (+20 jitter)      124999   100.00%     21.0     22.0     22.0    2.00      2.17
+2 links: 0% loss, tiered mode              125000   100.00%     21.0     22.0     22.0    1.00      1.09
+2 links: 1% loss each, tiered mode         125000    99.93%     20.9     22.0     27.6    1.32      1.44
+2 links: 5% loss each, tiered mode         125000    99.69%     20.6     21.9     22.0    1.99      2.16
+2 links: 10% loss each, tiered mode        125000    98.93%     20.6     21.9     22.0    1.99      2.16
+3 links: 10% loss each, tiered mode        125000    98.90%     20.6     21.9     22.0    1.99      2.16
