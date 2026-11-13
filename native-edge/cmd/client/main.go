@@ -315,6 +315,17 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			})
 		}
 	}
+	var netProbe *netProbes
+	if *statusPath != "" {
+		netProbe = newNetProbes(filepath.Dir(*statusPath), bridge.Respond)
+		afterReady := bridge.OnEvent
+		bridge.OnEvent = func(m map[string]any) {
+			if netProbe.onEvent(m) {
+				return
+			}
+			afterReady(m)
+		}
+	}
 	mtu := cfg.MTU
 	if mtu == 0 {
 		mtu = 1280
@@ -605,6 +616,9 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			errHist.Observe(errorCounters(s, osErrors, osOK))
 			errHist.Links(linkHealth(s))
 			errHist.Health(linkCounts(s))
+			if netProbe != nil {
+				netProbe.poll()
+			}
 			if *statusPath != "" && tick%60 == 0 {
 				if err := errHist.Save(errhist.SavePath(*statusPath)); err != nil {
 					fmt.Fprintln(logOut, "error history write failed:", err)
@@ -615,6 +629,8 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 				doc["slo"] = sr.status()
 				doc["reverse_dns"] = rdns.status()
 				doc["error_history"] = errHist.View()
+				doc["internet_ping"] = netProbe.pingStatus()
+				doc["speedtest"] = netProbe.speedStatus()
 				if err := status.WriteJSON(*statusPath, doc); err != nil {
 					fmt.Fprintln(logOut, "status write failed:", err)
 				}

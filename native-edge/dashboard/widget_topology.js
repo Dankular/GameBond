@@ -236,7 +236,7 @@ function donutCard(title, slices, centerValue, centerLabel, note) {
     const row = element('div'), sw = element('i'); sw.style.background = x.color;
     row.append(sw, element('span', x.label), element('b', x.text)); legend.append(row);
   });
-  if (!live.length) legend.append(element('div', 'Nothing to show yet'));
+  if (!live.length) legend.append(element('p', 'Nothing to show yet', { class: 'sub' }));
   ring.append(svg('text', { x: 60, y: 58, 'text-anchor': 'middle', class: 'pie-num', 'font-size': centerValue.length > 5 ? 13 : centerValue.length > 3 ? 16 : 20 }, centerValue), svg('text', { x: 60, y: 73, 'text-anchor': 'middle', class: 'tb-sub', 'font-size': 8 }, centerLabel));
   body.append(ring, legend); card.append(body);
   if (note) card.append(element('p', note, { class: 'sub' }));

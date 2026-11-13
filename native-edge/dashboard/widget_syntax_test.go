@@ -16,7 +16,7 @@ func TestWidgetScriptParses(t *testing.T) {
 		t.Skip("node not installed")
 	}
 	page := widgetHTML
-	for marker, js := range map[string][]byte{"__SETTINGS_SCRIPT__": widgetSettings, "__SCANNER_SCRIPT__": widgetScanner, "__TOPOLOGY_SCRIPT__": widgetTopology, "__THEME_SCRIPT__": widgetTheme, "__JOURNAL_SCRIPT__": widgetJournal, "__PROTECT_SCRIPT__": widgetProtect, "__ERRORS_SCRIPT__": widgetErrors, "__ADOPT_SCRIPT__": widgetAdopt} {
+	for marker, js := range map[string][]byte{"__SETTINGS_SCRIPT__": widgetSettings, "__SCANNER_SCRIPT__": widgetScanner, "__TOPOLOGY_SCRIPT__": widgetTopology, "__THEME_SCRIPT__": widgetTheme, "__JOURNAL_SCRIPT__": widgetJournal, "__PROTECT_SCRIPT__": widgetProtect, "__ERRORS_SCRIPT__": widgetErrors, "__ADOPT_SCRIPT__": widgetAdopt, "__INTERNET_SCRIPT__": widgetInternet} {
 		page = bytes.ReplaceAll(page, []byte(marker), js)
 	}
 	start := bytes.Index(page, []byte("<script>"))

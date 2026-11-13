@@ -92,6 +92,7 @@ func Start(o Options) (*Server, string, error) {
 	mux.HandleFunc("/api/lan-devices", s.guard(s.lanDevices))
 	mux.HandleFunc("/api/lan-access", s.guard(s.lanAccess))
 	mux.HandleFunc("/api/server-sync", s.guard(s.serverSyncAPI))
+	mux.HandleFunc("/api/speedtest", s.guard(s.speedtestAPI))
 	mux.HandleFunc("/api/server-admin", s.guard(s.serverAdminAPI))
 	mux.HandleFunc("/api/omr", s.guard(s.omrConfig))
 	mux.HandleFunc("/api/omr-check", s.guard(s.omrCheck))

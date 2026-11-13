@@ -39,6 +39,9 @@ var widgetErrors []byte
 //go:embed widget_adopt.js
 var widgetAdopt []byte
 
+//go:embed widget_internet.js
+var widgetInternet []byte
+
 func (s *Server) widgetPage(w http.ResponseWriter, r *http.Request) {
 	if !s.authorised(r) {
 		http.NotFound(w, r)
@@ -55,6 +58,7 @@ func (s *Server) widgetPage(w http.ResponseWriter, r *http.Request) {
 	page = bytes.ReplaceAll(page, []byte("__PROTECT_SCRIPT__"), widgetProtect)
 	page = bytes.ReplaceAll(page, []byte("__ERRORS_SCRIPT__"), widgetErrors)
 	page = bytes.ReplaceAll(page, []byte("__ADOPT_SCRIPT__"), widgetAdopt)
+	page = bytes.ReplaceAll(page, []byte("__INTERNET_SCRIPT__"), widgetInternet)
 	w.Write(bytes.ReplaceAll(page, []byte("__TOKEN__"), []byte(s.token)))
 }
 
