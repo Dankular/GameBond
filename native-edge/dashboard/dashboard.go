@@ -27,6 +27,7 @@ import (
 	"gamebond.local/nativeedge/eventjournal"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/scanner"
+	"gamebond.local/nativeedge/serveradmin"
 )
 
 //go:embed index.html
@@ -70,6 +71,10 @@ type Server struct {
 	sync  serverSyncState
 	cfAPI string // Cloudflare API base; empty is the real one (tests point it at a fake)
 	scan  scanController
+
+	secMu     sync.Mutex // guards the cached portal client below
+	secClient *serveradmin.Client
+	secKey    string
 }
 
 // Start listens on 127.0.0.1 (random port) and returns the URL to open.
@@ -95,6 +100,8 @@ func Start(o Options) (*Server, string, error) {
 	mux.HandleFunc("/api/lan-devices", s.guard(s.lanDevices))
 	mux.HandleFunc("/api/lan-access", s.guard(s.lanAccess))
 	mux.HandleFunc("/api/server-sync", s.guard(s.serverSyncAPI))
+	mux.HandleFunc("/api/security", s.guard(s.securityAPI))
+	mux.HandleFunc("/api/security/", s.guard(s.securityAPI))
 	mux.HandleFunc("/api/speedtest", s.guard(s.speedtestAPI))
 	mux.HandleFunc("/api/cloudflare", s.guard(s.cloudflareAPI))
 	mux.HandleFunc("/api/server-admin", s.guard(s.serverAdminAPI))

@@ -23,6 +23,10 @@ type Portal struct {
 	Restarts  int    // restarts requested
 	RejectAs  string // when set, validation fails with this message
 	Logins    int
+
+	Security     map[string]any   // the settings last saved through /api/security
+	SecurityFail string           // when set, saving security settings is refused with this message
+	Actions      []map[string]any // security actions requested
 }
 
 // New returns a portal with a password and a starting configuration.
@@ -95,6 +99,22 @@ func (p *Portal) Handler() http.Handler {
 				return
 			}
 			reply(200, map[string]any{"ok": true, "error": nil})
+		case "/api/security":
+			if r.Method == http.MethodGet {
+				reply(200, map[string]any{"settings": p.Security, "ids": map[string]any{"mode": "off"}})
+				return
+			}
+			if p.SecurityFail != "" {
+				reply(422, map[string]any{"ok": false, "error": p.SecurityFail})
+				return
+			}
+			p.Security, _ = body["settings"].(map[string]any)
+			reply(200, map[string]any{"ok": true, "error": nil})
+		case "/api/security/catalog":
+			reply(200, map[string]any{"categories": []any{map[string]any{"id": "ads"}}})
+		case "/api/security/action":
+			p.Actions = append(p.Actions, body)
+			reply(200, map[string]any{"ok": true, "error": nil, "result": map[string]any{}})
 		case "/api/restart":
 			p.Restarts++
 			reply(202, map[string]any{"ok": true})

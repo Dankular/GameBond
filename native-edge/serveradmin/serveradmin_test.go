@@ -2,6 +2,7 @@ package serveradmin
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -159,5 +160,17 @@ func TestNewClientRefusesPlainHTTPAndBadPin(t *testing.T) {
 	}
 	if _, err := NewClient("https://203.0.113.5:8443", "", ""); err == nil {
 		t.Fatal("an empty password must be refused")
+	}
+}
+
+func TestSecurityOnlyCallsSecurityEndpoints(t *testing.T) {
+	c, err := NewClient("https://127.0.0.1:1", "pw", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range [][2]string{{"GET", "/api/config"}, {"POST", "/api/restart"}, {"POST", "/api/security/catalog"}, {"DELETE", "/api/security"}, {"", "/api/security"}, {"GET", "/api/security/../config"}} {
+		if _, _, err := c.Security(context.Background(), bad[0], bad[1], nil); err == nil || !strings.Contains(err.Error(), "not a security endpoint") {
+			t.Errorf("%v must be refused before any request: %v", bad, err)
+		}
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,6 +41,7 @@ type Client struct {
 	HTTP      *http.Client
 
 	csrf string
+	mu   sync.Mutex // Security calls share one session, so they run one at a time
 }
 
 // NewClient builds a client; the address must be an https URL.
@@ -229,6 +231,24 @@ func (c *Client) Restart(ctx context.Context) error {
 		return apiError(status, out)
 	}
 	return nil
+}
+
+// securityPaths are the portal's security endpoints; Security refuses anything else.
+var securityPaths = map[string]string{
+	"/api/security":         "GET POST",
+	"/api/security/catalog": "GET",
+	"/api/security/action":  "POST",
+}
+
+// Security calls one of the portal's security endpoints and returns its status and JSON body untouched, so the
+// dashboard can pass the portal's own wording (for example nftables' complaint) to the person who made the change.
+func (c *Client) Security(ctx context.Context, method, path string, body any) (int, map[string]any, error) {
+	if !strings.Contains(securityPaths[path], method) || method == "" {
+		return 0, nil, fmt.Errorf("server admin: %s %s is not a security endpoint", method, path)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.call(ctx, method, path, body)
 }
 
 // TunnelIPs lists the lan_tunnel_ips of a configuration text.
