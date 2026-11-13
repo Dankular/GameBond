@@ -143,7 +143,7 @@ function flowIntensity(bps) {
 // elements of the latest redraw moving between the redraws.
 const flowState = new Map(); // key -> { cur, target, els, seen, phase, forward }
 // Dash travel speed in px/s from the smoothed intensity: a slow crawl for a trickle, a rush at line rate.
-const flowSpeed = i => 6 + 300 * i * i + 40 * i;
+const flowSpeed = i => 8 + 60 * i + 130 * i * i;
 let flowFrame = 0, flowLast = 0, flowLoop = false;
 function flowTick(now) {
   const dt = Math.min(0.25, (now - (flowLast || now)) / 1000);
