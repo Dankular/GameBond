@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"sort"
@@ -52,7 +53,7 @@ func runPings(ctx context.Context, dial dialFunc, targets []pingTarget, timeout 
 		if err != nil {
 			r.Error = shortError(err)
 		} else {
-			r.MS, r.OK = float64(time.Since(start).Microseconds())/1000, true
+			r.MS, r.OK = math.Max(float64(time.Since(start).Microseconds())/1000, 0.001), true
 			conn.Close()
 		}
 		out = append(out, r)
@@ -155,7 +156,8 @@ func measureLatency(ctx context.Context, cl *http.Client, base string) (median, 
 			return 0, 0, fmt.Errorf("the speed server answered HTTP %d", resp.StatusCode)
 		}
 		if i > 0 {
-			samples = append(samples, float64(time.Since(start).Microseconds())/1000)
+			// A coarse clock (Windows) can report 0 for a loopback round trip; no request takes no time.
+			samples = append(samples, math.Max(float64(time.Since(start).Microseconds())/1000, 0.001))
 		}
 	}
 	sort.Float64s(samples)
