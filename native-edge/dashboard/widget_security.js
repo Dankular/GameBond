@@ -494,3 +494,41 @@ function secTick() {
   if (scannerSub !== 'security' || !$('scanner').classList.contains('active') || document.hidden || secBusy || secLoading) return;
   secLoad();
 }
+
+// ---- Settings > Ad blocking: the short version of Security > Ad & content blocking ----
+const adDialog = modal('adblockdialog', 'Ad blocking'), adBody = element('div');
+adDialog.append(adBody);
+let adState = null, adMsg = '', adMsgBad = false;
+async function adLoad() {
+  try {
+    if (!secCat) secCat = await secCall('security/catalog');
+    adState = await secCall('security');
+  } catch (e) { adState = null; adMsg = e.message; adMsgBad = true; }
+  adRender();
+}
+function adRender() {
+  adBody.replaceChildren();
+  if (!adState) { adBody.append(secEl('p', adMsg || 'Loading…', adMsgBad ? 'sec-bad' : 'sec-note'), secEl('p', 'This works through the server\'s admin portal: open Settings, Server sync (or Server admin) and enter its address and password first.', 'sec-note')); return; }
+  const s = secNorm(adState.settings), d = s.dns_filter, st = adState.dns;
+  adBody.append(secEl('p', 'Block ads, trackers and other unwanted sites for every device on your tunnel, at the server, without installing anything on the devices. The lists are fetched fresh from their publishers and kept up to date.', 'sec-help'));
+  const on = secCheck('Block ads and trackers', d.enabled, v => { d.enabled = v; });
+  const row = secEl('div', null, 'sec-row'); row.append(on); adBody.append(row);
+  adBody.append(secEl('b', 'Choose what to block'));
+  const grid = secEl('div', null, 'sec-grid');
+  for (const cat of secCat.categories) {
+    const box = element('input', null, { type: 'checkbox' }); box.checked = d.categories.includes(cat.id); box.onchange = () => { d.categories = box.checked ? [...d.categories, cat.id] : d.categories.filter(x => x !== cat.id); };
+    const l = secEl('label'), t = secEl('span'); t.append(document.createTextNode(cat.label), secEl('small', cat.help)); l.append(box, t); grid.append(l);
+  }
+  adBody.append(grid);
+  const q = st.server.queries, blocked = st.server.blocked;
+  adBody.append(secEl('p', st.filter.enabled ? 'Blocked ' + secNum(blocked) + ' of ' + secNum(q) + ' questions so far, using ' + secNum(st.filter.unique_domains) + ' blocked names.' : 'Blocking is off.', 'sec-note'));
+  const r = secEl('div', null, 'row');
+  const save = action('Save', async () => {
+    try { await secCall('security', 'POST', { settings: s }); adMsg = 'Saved. The lists download in the background.'; adMsgBad = false; secDraft = secDirty() ? secDraft : null; await adLoad(); }
+    catch (e) { adMsg = e.message; adMsgBad = true; adRender(); }
+  });
+  const more = action('More options…', async () => { adDialog.close(); selectTab('scanner'); showScannerSub('security'); secSection = 'dns'; secRender(); });
+  r.append(save, more, secEl('span', adMsg, adMsgBad ? 'sec-bad' : 'sec-ok', { role: 'status' }));
+  adBody.append(r);
+}
+settingsMenu.append(action('Ad blocking', () => { settingsDialog.close(); adMsg = ''; adLoad(); showDialog('adblockdialog'); }));
