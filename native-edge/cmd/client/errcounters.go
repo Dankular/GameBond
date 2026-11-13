@@ -22,10 +22,29 @@ func errorCounters(s client.Snapshot, osErrors uint64, osOK bool) map[string]uin
 		"replay_rejected":        s.Receiver.ReplayTooOld + s.Receiver.ReplayTooFar,
 		"failover_suspected":     s.Sender.FailoverSuspected,
 	}
+	// The mechanisms that absorb those errors, charted over them.
+	c["repair_sent"] = s.Sender.RepairCopies
+	c["resent_at_once"] = s.Sender.SackResent
+	c["parity_sent"] = s.Sender.ParitySent
+	c["parity_recovered"] = s.Receiver.FECRecovered
+	c["failover_replayed"] = s.Sender.FailoverReplayed
+	c["failover_recovered"] = s.Sender.FailoverRecovered
+	c["fast_reroutes"] = s.Sender.FastReroutes
 	if osOK {
 		c["os_udp_receive_errors"] = osErrors
 	}
 	return c
+}
+
+// linkCounts is how many uplinks are configured and how many of them are healthy.
+func linkCounts(s client.Snapshot) (total, healthy int) {
+	for _, p := range s.Paths {
+		total++
+		if p.Healthy {
+			healthy++
+		}
+	}
+	return
 }
 
 // linkHealth is each uplink's health by slot, for the link_down transitions.

@@ -14,6 +14,9 @@ func TestErrorCountersUseKnownKinds(t *testing.T) {
 	for _, k := range errhist.Kinds {
 		known[k.Key] = true
 	}
+	for _, k := range errhist.Recoveries {
+		known[k.Key] = true
+	}
 	for key := range errorCounters(client.Snapshot{}, 1, true) {
 		if !known[key] {
 			t.Errorf("%q is not an errhist kind", key)
@@ -37,5 +40,18 @@ func TestLinkHealthBySlot(t *testing.T) {
 	s := client.Snapshot{Paths: []bond.PathSnapshot{{Local: 0, Healthy: true}, {Local: 2, Healthy: false}}}
 	if h := linkHealth(s); !h[0] || h[2] || len(h) != 2 {
 		t.Fatalf("%v", h)
+	}
+}
+
+func TestRecoveryCountersAndLinkCounts(t *testing.T) {
+	var s client.Snapshot
+	s.Sender.RepairCopies, s.Sender.SackResent, s.Sender.ParitySent, s.Receiver.FECRecovered, s.Sender.FailoverReplayed, s.Sender.FastReroutes = 1, 2, 3, 4, 5, 6
+	c := errorCounters(s, 0, false)
+	if c["repair_sent"] != 1 || c["resent_at_once"] != 2 || c["parity_sent"] != 3 || c["parity_recovered"] != 4 || c["failover_replayed"] != 5 || c["fast_reroutes"] != 6 {
+		t.Fatalf("%v", c)
+	}
+	s.Paths = []bond.PathSnapshot{{Healthy: true}, {Healthy: false}, {Healthy: true}}
+	if total, healthy := linkCounts(s); total != 3 || healthy != 2 {
+		t.Fatalf("%d/%d", healthy, total)
 	}
 }

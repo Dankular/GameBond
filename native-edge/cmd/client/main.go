@@ -604,6 +604,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			osErrors, osOK := osUDPReceiveErrors()
 			errHist.Observe(errorCounters(s, osErrors, osOK))
 			errHist.Links(linkHealth(s))
+			errHist.Health(linkCounts(s))
 			if *statusPath != "" && tick%60 == 0 {
 				if err := errHist.Save(errhist.SavePath(*statusPath)); err != nil {
 					fmt.Fprintln(logOut, "error history write failed:", err)

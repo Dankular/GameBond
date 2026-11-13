@@ -42,6 +42,37 @@ var Kinds = []Kind{
 	{"failover_suspected", "Failover suspected", "Links", "A path stopped answering and traffic was moved off it."},
 }
 
+// Recoveries are the mechanisms that absorb errors, charted over the errors to show the connection holding up.
+// Group is Recovery (retransmission), Parity (forward error correction) or Failover.
+var Recoveries = []Kind{
+	{"repair_sent", "Repair packets sent", "Recovery", "Copies resent because the peer reported a gap."},
+	{"resent_at_once", "Resent at once", "Recovery", "Frames resent immediately after the peer's selective acknowledgement showed them missing."},
+	{"parity_sent", "Parity packets sent", "Parity", "Redundant packets sent all the time so the peer can rebuild a lost one without waiting. Routine overhead, not a reaction to an error."},
+	{"parity_recovered", "Rebuilt from parity", "Parity", "Lost packets reconstructed from parity, so nothing had to be resent."},
+	{"failover_replayed", "Replayed after failover", "Failover", "Packets re-sent on another link after the one carrying them stopped answering."},
+	{"failover_recovered", "Failover recoveries", "Failover", "A suspected link failure that turned out to be recovered."},
+	{"fast_reroutes", "Fast reroutes", "Failover", "Traffic moved to a healthier link before a failure was declared."},
+}
+
+// routine marks recovery kinds that run all the time as protection overhead rather than in reaction to an
+// error. They are reported and totalled but must not be read as "recovery happened here".
+var routine = map[string]bool{"parity_sent": true}
+
+// Connection state seconds, counted once a second while at least one link is configured.
+const (
+	secUp       = "t_up"       // every link healthy
+	secDegraded = "t_degraded" // some links down, traffic still flowing on the rest
+	secDown     = "t_down"     // no healthy link
+)
+
+var recIndex = func() map[string]int {
+	m := map[string]int{}
+	for i, k := range Recoveries {
+		m[k.Key] = i
+	}
+	return m
+}()
+
 var index = func() map[string]int {
 	m := map[string]int{}
 	for i, k := range Kinds {
@@ -75,7 +106,9 @@ func (t *Tracker) add(key string, n uint64) {
 	if n == 0 {
 		return
 	}
-	if _, ok := index[key]; !ok {
+	_, isErr := index[key]
+	_, isRec := recIndex[key]
+	if !isErr && !isRec && key != secUp && key != secDegraded && key != secDown {
 		return
 	}
 	minute := t.now().Unix() / 60
@@ -125,33 +158,66 @@ func (t *Tracker) Links(healthy map[int]bool) {
 	}
 }
 
-// View is the status document section: the kinds with their totals, and one row per minute that had
-// any error: [unix seconds, count per kind in Kinds order].
+// Health records one second of connection state: total links configured, healthy links among them.
+// With no links nothing is recorded (the tunnel is not running).
+func (t *Tracker) Health(total, healthy int) {
+	if total <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch {
+	case healthy >= total:
+		t.add(secUp, 1)
+	case healthy > 0:
+		t.add(secDegraded, 1)
+	default:
+		t.add(secDown, 1)
+	}
+}
+
+// View is the status document section. kinds/minutes are the errors: one row per minute that had any,
+// [unix seconds, count per kind in Kinds order]. recovery_kinds/recovery are the same for the mechanisms
+// that absorb errors (Recoveries order). stability has one row per minute with connection state:
+// [unix seconds, seconds all links healthy, seconds degraded, seconds with no healthy link].
 func (t *Tracker) View() map[string]any {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	cutoff := t.now().Unix()/60 - historyMinutes
-	totals := make([]uint64, len(Kinds))
-	rows := make([][]uint64, 0, len(t.buckets))
+	errTotals, recTotals := make([]uint64, len(Kinds)), make([]uint64, len(Recoveries))
+	rows, recRows, stab := make([][]uint64, 0), make([][]uint64, 0), make([][]uint64, 0)
 	for _, b := range t.buckets {
 		if b.Minute <= cutoff {
 			continue
 		}
-		row := make([]uint64, 1+len(Kinds))
-		row[0] = uint64(b.Minute * 60)
+		er, rr := make([]uint64, 1+len(Kinds)), make([]uint64, 1+len(Recoveries))
+		er[0], rr[0] = uint64(b.Minute*60), uint64(b.Minute*60)
+		var anyErr, anyRec bool
 		for key, n := range b.Counts {
-			if i, ok := index[key]; ok {
-				row[1+i] = uint64(n)
-				totals[i] += uint64(n)
+			if i, ok := index[key]; ok && n > 0 {
+				er[1+i], errTotals[i], anyErr = uint64(n), errTotals[i]+uint64(n), true
+			} else if i, ok := recIndex[key]; ok && n > 0 {
+				rr[1+i], recTotals[i], anyRec = uint64(n), recTotals[i]+uint64(n), true
 			}
 		}
-		rows = append(rows, row)
+		if anyErr {
+			rows = append(rows, er)
+		}
+		if anyRec {
+			recRows = append(recRows, rr)
+		}
+		if up, dg, dn := b.Counts[secUp], b.Counts[secDegraded], b.Counts[secDown]; up+dg+dn > 0 {
+			stab = append(stab, []uint64{uint64(b.Minute * 60), uint64(up), uint64(dg), uint64(dn)})
+		}
 	}
-	kinds := make([]map[string]any, len(Kinds))
-	for i, k := range Kinds {
-		kinds[i] = map[string]any{"key": k.Key, "label": k.Label, "group": k.Group, "help": k.Help, "total_24h": totals[i], "session": t.session[k.Key]}
+	meta := func(list []Kind, totals []uint64) []map[string]any {
+		out := make([]map[string]any, len(list))
+		for i, k := range list {
+			out[i] = map[string]any{"key": k.Key, "label": k.Label, "group": k.Group, "help": k.Help, "total_24h": totals[i], "session": t.session[k.Key], "routine": routine[k.Key]}
+		}
+		return out
 	}
-	return map[string]any{"kinds": kinds, "minutes": rows}
+	return map[string]any{"kinds": meta(Kinds, errTotals), "minutes": rows, "recovery_kinds": meta(Recoveries, recTotals), "recovery": recRows, "stability": stab}
 }
 
 type saved struct {

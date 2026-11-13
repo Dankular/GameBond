@@ -128,3 +128,93 @@ func TestKindsAreUniqueAndDescribed(t *testing.T) {
 		seen[k.Key] = true
 	}
 }
+
+func recRows(t *Tracker) [][]uint64   { return t.View()["recovery"].([][]uint64) }
+func stability(t *Tracker) [][]uint64 { return t.View()["stability"].([][]uint64) }
+
+func TestRecoveriesAreTrackedSeparatelyFromErrors(t *testing.T) {
+	tr, now := clocked(time.Unix(1_700_000_000, 0))
+	tr.Observe(map[string]uint64{"parity_recovered": 10, "repair_sent": 0, "socket_send_errors": 0})
+	*now = now.Add(time.Second)
+	tr.Observe(map[string]uint64{"parity_recovered": 14, "repair_sent": 2, "socket_send_errors": 0})
+	if r := rows(tr); len(r) != 0 {
+		t.Fatalf("recoveries must not appear as errors: %v", r)
+	}
+	r := recRows(tr)
+	if len(r) != 1 || r[0][1+recIndex["parity_recovered"]] != 4 || r[0][1+recIndex["repair_sent"]] != 2 {
+		t.Fatalf("recovery rows: %v", r)
+	}
+	kinds := tr.View()["recovery_kinds"].([]map[string]any)
+	if len(kinds) != len(Recoveries) {
+		t.Fatalf("recovery kinds missing: %d", len(kinds))
+	}
+}
+
+func TestConnectionStateSeconds(t *testing.T) {
+	tr, now := clocked(time.Unix(1_700_000_000, 0))
+	tr.Health(0, 0) // not running: nothing recorded
+	if s := stability(tr); len(s) != 0 {
+		t.Fatalf("no links must record nothing: %v", s)
+	}
+	for i := 0; i < 5; i++ {
+		tr.Health(2, 2)
+		*now = now.Add(time.Second)
+	}
+	for i := 0; i < 3; i++ {
+		tr.Health(2, 1) // one link down: degraded, still up
+		*now = now.Add(time.Second)
+	}
+	tr.Health(2, 0)
+	s := stability(tr)
+	if len(s) != 1 || s[0][1] != 5 || s[0][2] != 3 || s[0][3] != 1 {
+		t.Fatalf("stability: %v", s)
+	}
+	if r := rows(tr); len(r) != 0 {
+		t.Fatalf("connection state must not appear as errors: %v", r)
+	}
+}
+
+func TestStateAndRecoverySurviveSaveAndLoad(t *testing.T) {
+	tr, now := clocked(time.Unix(1_700_000_000, 0))
+	tr.Health(1, 1)
+	tr.Observe(map[string]uint64{"fast_reroutes": 0})
+	*now = now.Add(time.Second)
+	tr.Observe(map[string]uint64{"fast_reroutes": 3})
+	path := filepath.Join(t.TempDir(), "e.json")
+	if err := tr.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t2, _ := clocked(*now)
+	t2.Load(path)
+	if s := stability(t2); len(s) != 1 || s[0][1] != 1 {
+		t.Fatalf("stability not restored: %v", s)
+	}
+	if r := recRows(t2); len(r) != 1 || r[0][1+recIndex["fast_reroutes"]] != 3 {
+		t.Fatalf("recovery not restored: %v", r)
+	}
+}
+
+func TestRecoveryKindsAreUniqueAndDisjointFromErrors(t *testing.T) {
+	seen := map[string]bool{}
+	for _, k := range Kinds {
+		seen[k.Key] = true
+	}
+	for _, k := range Recoveries {
+		if seen[k.Key] || k.Label == "" || k.Group == "" || k.Help == "" {
+			t.Fatalf("bad recovery kind %+v", k)
+		}
+		seen[k.Key] = true
+	}
+}
+
+func TestRoutineRecoveryIsFlagged(t *testing.T) {
+	flagged := map[string]bool{}
+	for _, k := range t_view(New())["recovery_kinds"].([]map[string]any) {
+		flagged[k["key"].(string)] = k["routine"].(bool)
+	}
+	if !flagged["parity_sent"] || flagged["parity_recovered"] || flagged["repair_sent"] || flagged["failover_replayed"] {
+		t.Fatalf("only constant protection overhead is routine: %v", flagged)
+	}
+}
+
+func t_view(tr *Tracker) map[string]any { return tr.View() }
