@@ -46,6 +46,7 @@ func proxyStack() error {
 		return err
 	}
 	go publishApplicationMetrics()
+	startNetProbes(context.Background(), stack)
 	return serveProxyConnections(listener, func(conn net.Conn) { serveSOCKS(conn, stack, false) })
 }
 

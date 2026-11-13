@@ -54,6 +54,49 @@ one. "Default" is the value when the flag is absent. Counters appear under
 - Starlink dish telemetry as a degraded-path hint.
 - Optional HTTPS admin portal on the server ([admin-portal.md](docs/admin-portal.md)).
 
+## Layer 2 gateway features (planned)
+
+These features target a separately supervised Linux gateway control plane. The current tunnel server remains isolated from host networking. A feature will be marked supported only when its provider reports host capability and verifies the effective state.
+
+### Switching and network isolation
+
+- Virtual Network Override.
+- Jumbo Frames.
+- Port Isolation.
+- MAC-Based Port Restriction.
+- MAC Address Blocking.
+- MAC-Based ACLs & Device Isolation.
+- IP-Based ACLs & Network Isolation.
+
+### Resilience and aggregation
+
+- LACP Port Aggregation.
+- MC-LAG (requires a compatible peer/provider).
+- STP & RSTP.
+- Loop Protection.
+- Redundancy.
+- Shadow Mode (VRRP) Gateway Failover.
+
+### Multicast and media
+
+- IGMP Snooping.
+- Advanced IGMP Configuration (Querier, Fast Leave, Router Port).
+- Voice VLAN.
+- LLDP-MED.
+- Pro AV Profiles: Play, Dante, Q-SYS, NDI, SDVoE, Shure, AES67, Crestron.
+
+### Access and traffic control
+
+- DHCP Snooping & Guarding.
+- 802.1X Control.
+- Egress Rate Limit.
+- Flow Control.
+- QoS (DSCP).
+- Storm Control.
+- Multicast & Broadcast Rate Limiting.
+- Port Mirroring.
+
+
 ## Where the code lives
 
 `native-edge/bond/`: `sender.go`, `receiver.go`, `reorder.go`, `repair.go`,
@@ -80,6 +123,14 @@ One gateway per attached device (PS5, laptop, phone, access point) on its own ad
 - TTL handling (`TTLExpired`), fragmentation to the tunnel MTU (1280) when a packet is too large and DF is clear, and ICMP "fragmentation needed" when DF is set (`FragNeededSent`).
 - Presence tracking: present, leased, silent-for, per-device byte and packet counters.
 
+### Local IPv4 networks (client, `native-edge/lan`)
+
+- `local_networks` attaches explicitly selected dedicated adapters to configured IPv4 prefixes. The local router answers gateway ARP and can serve a bounded DHCP pool with DNS, lease time, MAC reservations, and persistent leases (`.runtime/local-network-leases.json`), or relay DHCP to up to three configured servers.
+- `static_routes` use an explicit local network and directly connected next hop. Connected prefixes win; static routes use longest-prefix match. Packets with no local route go through GameBond. The router does not edit the workstation's host routes.
+- Forwarding between local networks is denied by default and enabled as a bidirectional pair with `forward_to`. Source-prefix validation, TTL decrement, MSS adjustment, MTU fragmentation, bounded neighbor discovery, and per-network counters apply.
+- The dashboard's **Local networks and routes** settings accepts validated `local_networks` and `static_routes` JSON and shows adapter and runtime status. Reconnect to apply changes.
+- Windows is the supported runtime. Linux raw-frame opening exists in code but its runtime is not currently supported. VLAN-tagged trunk mode is rejected until ingress and egress preservation is verified with the packet driver; inter-VLAN deployment is therefore unavailable until that gate is completed.
+
 ### NAT and forwarding (server)
 
 - IP forwarding on in the container; `gamebond0` TUN at 10.77.0.1.
@@ -105,7 +156,7 @@ One gateway per attached device (PS5, laptop, phone, access point) on its own ad
 
 ### Not provided
 
-No port forwarding, inbound firewall rules, DNS server or resolver, UPnP, VLANs, or IPv6 forwarding. DNS settings were removed from the widget.
+The current tunnel gateway does not provide port forwarding, inbound firewall rules, a DNS server or resolver, UPnP, verified VLAN trunking, or IPv6 forwarding. DNS settings for local DHCP leases are separate from the removed widget DNS settings. VLAN and other Layer 2 controls are listed above as planned Linux gateway work; they are not available in the current tunnel gateway.
 - Predicted-arrival scheduling: among paths that can send now, a path that would deliver clearly sooner (more than 20 ms or four times the jitter) takes the packet outright; closer paths still share by weighted fair split.
 - Passive ACK-stall detection: a path that is sending but has had no accepted acknowledgement for three round trips (at least 60 ms) counts as at risk, so redundancy starts in tens of milliseconds without waiting for the probe clock. Status shows the reorder timeouts as adapted to the paths' RTT difference (`transport.reorder.TimeoutMS`, `UDPTimeoutMS`).
 - Transport health alarms (`alarms` in the status file, and in the log on change): `feedback_rejected` when 20% or more of feedback frames are refused for three seconds running, and `feedback_timeout` when half of a link's packets expire unacknowledged for three seconds running. Both describe failures that leave loss and RTT looking normal while the rate controller starves.

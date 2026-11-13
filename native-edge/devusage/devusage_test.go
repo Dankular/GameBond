@@ -1,6 +1,8 @@
 package devusage
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -121,3 +123,301 @@ func TestPortTableIsBounded(t *testing.T) {
 		t.Fatalf("%d ports tracked", n)
 	}
 }
+
+func portRows(d map[string]any) map[uint16]row {
+	out := map[uint16]row{}
+	for _, r := range d["ports"].([]row) {
+		out[r.Port] = r
+	}
+	return out
+}
+
+func TestPortsReportRecency(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	tr.Record(dev, true, pkt(dev, srv, 6, 50000, 443, 1000))
+	tr.Record(dev, true, pkt(dev, srv, 17, 40000, 3478, 100))
+	*now = start.Add(30 * time.Second)
+	tr.Record(dev, true, pkt(dev, srv, 17, 40000, 3478, 100))
+	d := snap(tr)
+	rows := portRows(d)
+	if !rows[3478].Active || rows[443].Active {
+		t.Fatalf("3478 should be active and 443 idle: %+v", rows)
+	}
+	if rows[443].LastSeen != start.Unix() || rows[3478].LastSeen != now.Unix() {
+		t.Fatalf("last seen: %+v", rows)
+	}
+	if d["active_ports"].(int) != 1 {
+		t.Fatalf("active_ports = %v", d["active_ports"])
+	}
+	if first := d["ports"].([]row)[0]; first.Port != 3478 {
+		t.Fatalf("active ports must sort first even with fewer bytes: %+v", d["ports"])
+	}
+	*now = now.Add(activeWindow + time.Second)
+	if d := snap(tr); d["active_ports"].(int) != 0 {
+		t.Fatalf("nothing sent for %v: %v", activeWindow, d["active_ports"])
+	}
+}
+
+// A small port that just started must survive the display cut even when twenty busier idle ports exist.
+func TestActivePortIsNeverCutFromTheList(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	for port := 1000; port < 1030; port++ {
+		tr.Record(dev, true, pkt(dev, srv, 6, 1, uint16(port), 1400))
+	}
+	*now = start.Add(time.Minute)
+	tr.Record(dev, true, pkt(dev, srv, 17, 1, 3478, 60))
+	d := snap(tr)
+	if rows := portRows(d); !rows[3478].Active || len(d["ports"].([]row)) != 20 {
+		t.Fatalf("active port missing or list not bounded: %d rows", len(d["ports"].([]row)))
+	}
+}
+
+func TestEvictionPrefersIdlePorts(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	for port := 1; port <= maxPorts; port++ {
+		tr.Record(dev, true, pkt(dev, srv, 6, 1, uint16(port), 1000))
+	}
+	*now = start.Add(time.Minute)
+	for port := 1; port <= 10; port++ { // ten ports stay active, with the fewest bytes
+		tr.Record(dev, true, pkt(dev, srv, 6, 1, uint16(port), 50))
+	}
+	tr.Record(dev, true, pkt(dev, srv, 6, 1, 9000, 40)) // forces an eviction
+	tr.Record(dev, true, pkt(dev, srv, 6, 1, 9001, 40)) // and another
+	tr.mu.Lock()
+	ports := tr.devs[dev].Ports
+	for _, port := range []uint16{1, 5, 10, 9000, 9001} {
+		if ports[portKey{"tcp", port}] == nil {
+			tr.mu.Unlock()
+			t.Fatalf("active port %d was evicted", port)
+		}
+	}
+	n := len(ports)
+	tr.mu.Unlock()
+	if n > maxPorts {
+		t.Fatalf("%d ports tracked", n)
+	}
+}
+
+// tcp is pkt with TCP flags set (the flag byte is the 14th byte of the TCP header).
+func tcp(src, dst [4]byte, sport, dport uint16, flags byte) []byte {
+	p := pkt(src, dst, 6, sport, dport, 60)
+	p[33] = flags
+	return p
+}
+
+const (
+	flagSYN = 0x02
+	flagACK = 0x10
+)
+
+func latencyOf(d map[string]any) [][2]uint64 { return d["latency"].([][2]uint64) }
+
+func TestHandshakeRTTIsMeasuredPerDevice(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	for i, ms := range []int{40, 44, 300} { // the median ignores one slow outlier
+		sport := uint16(50000 + i)
+		tr.Record(dev, true, tcp(dev, srv, sport, 443, flagSYN))
+		*now = now.Add(time.Duration(ms) * time.Millisecond)
+		tr.Record(dev, false, tcp(srv, dev, 443, sport, flagSYN|flagACK))
+	}
+	d := snap(tr)
+	l := latencyOf(d)
+	if len(l) != 1 || l[0][1] < 435 || l[0][1] > 445 {
+		t.Fatalf("expected one minute with a ~44 ms median (440 tenths), got %v", l)
+	}
+	if ms := d["rtt_ms"].(float64); ms < 43.5 || ms > 44.5 {
+		t.Fatalf("rtt_ms = %v", ms)
+	}
+	*now = now.Add(3 * time.Minute)
+	if ms := snap(tr)["rtt_ms"].(float64); ms != 0 {
+		t.Fatalf("a stale latency must read zero, got %v", ms)
+	}
+}
+
+func TestRetransmittedSynGivesNoSample(t *testing.T) {
+	tr, now := clocked(time.Unix(1_700_000_000, 0))
+	tr.Record(dev, true, tcp(dev, srv, 50000, 443, flagSYN))
+	*now = now.Add(time.Second) // the SYN was lost; the retry is what gets answered
+	tr.Record(dev, true, tcp(dev, srv, 50000, 443, flagSYN))
+	*now = now.Add(40 * time.Millisecond)
+	tr.Record(dev, false, tcp(srv, dev, 443, 50000, flagSYN|flagACK))
+	if l := latencyOf(snap(tr)); len(l) != 0 {
+		t.Fatalf("a retransmitted SYN must not be timed: %v", l)
+	}
+}
+
+func TestOnlyMatchingSynAckIsTimed(t *testing.T) {
+	tr, now := clocked(time.Unix(1_700_000_000, 0))
+	tr.Record(dev, false, tcp(srv, dev, 443, 50000, flagSYN|flagACK)) // answer to nothing
+	tr.Record(dev, true, tcp(dev, srv, 50000, 443, flagSYN))
+	*now = now.Add(20 * time.Millisecond)
+	tr.Record(dev, false, tcp(srv, dev, 80, 50000, flagSYN|flagACK))  // wrong remote port
+	tr.Record(dev, false, tcp(srv, dev, 443, 50001, flagSYN|flagACK)) // wrong local port
+	tr.Record(dev, false, tcp(srv, dev, 443, 50000, flagACK))         // not a SYN-ACK
+	if l := latencyOf(snap(tr)); len(l) != 0 {
+		t.Fatalf("unrelated packets produced a sample: %v", l)
+	}
+	tr.Record(dev, false, tcp(srv, dev, 443, 50000, flagSYN|flagACK))
+	if l := latencyOf(snap(tr)); len(l) != 1 {
+		t.Fatalf("the real answer was not timed: %v", l)
+	}
+}
+
+func TestPendingHandshakesAreBounded(t *testing.T) {
+	tr, now := clocked(time.Unix(1_700_000_000, 0))
+	for port := 1; port <= 5000; port++ { // a SYN flood from one device must not grow memory
+		tr.Record(dev, true, tcp(dev, srv, uint16(port), 443, flagSYN))
+	}
+	*now = now.Add(2 * synTimeout)
+	tr.Record(dev, true, tcp(dev, srv, 6000, 443, flagSYN))
+	tr.mu.Lock()
+	n := len(tr.devs[dev].syns)
+	tr.mu.Unlock()
+	if n > maxSyns {
+		t.Fatalf("%d pending handshakes", n)
+	}
+	tr.mu.Lock()
+	_, ok := tr.devs[dev].syns[synKey{srv, 443, 6000}]
+	tr.mu.Unlock()
+	if !ok {
+		t.Fatal("expired entries should make room for a new handshake")
+	}
+}
+
+func TestLatencySurvivesSaveAndLoad(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	tr.Record(dev, true, tcp(dev, srv, 50000, 443, flagSYN))
+	*now = now.Add(35 * time.Millisecond)
+	tr.Record(dev, false, tcp(srv, dev, 443, 50000, flagSYN|flagACK))
+	path := filepath.Join(t.TempDir(), "usage.json")
+	if err := tr.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t2, _ := clocked(*now)
+	t2.Load(path)
+	if l := latencyOf(snap(t2)); len(l) != 1 || l[0][1] < 345 || l[0][1] > 355 {
+		t.Fatalf("latency not restored: %v", l)
+	}
+}
+
+func TestCategoriesGroupPortsAndAreSortedByTraffic(t *testing.T) {
+	for _, c := range []struct {
+		proto string
+		port  uint16
+		want  string
+	}{{"tcp", 443, "Web"}, {"udp", 443, "Web"}, {"udp", 53, "DNS"}, {"udp", 3478, "Gaming"}, {"udp", 3080, "Gaming"}, {"tcp", 993, "Mail"}, {"tcp", 22, "Remote access"}, {"udp", 51820, "VPN"}, {"tcp", 40000, "Other"}, {"icmp", 0, "Network services"}} {
+		if got := Category(c.proto, c.port); got != c.want {
+			t.Errorf("Category(%s,%d) = %q, want %q", c.proto, c.port, got, c.want)
+		}
+	}
+	tr, _ := clocked(time.Unix(1_700_000_000, 0))
+	tr.Record(dev, true, pkt(dev, srv, 6, 1, 443, 1000))
+	tr.Record(dev, false, pkt(srv, dev, 6, 443, 1, 1400))
+	tr.Record(dev, true, pkt(dev, srv, 17, 1, 3478, 200))
+	cats := snap(tr)["categories"].([]*categoryRow)
+	if len(cats) != 2 || cats[0].Category != "Web" || cats[0].Up != 1000 || cats[0].Down != 1400 || cats[1].Category != "Gaming" {
+		t.Fatalf("categories: %+v", cats)
+	}
+}
+
+func window(d map[string]any, key string) (up, down uint64) {
+	w := d[key].(map[string]uint64)
+	return w["up"], w["down"]
+}
+
+func TestWeekAndMonthWindowsAreRollingSums(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	record := func(up, down int) {
+		if up > 0 {
+			tr.Record(dev, true, pkt(dev, srv, 6, 1, 443, up))
+		}
+		if down > 0 {
+			tr.Record(dev, false, pkt(srv, dev, 6, 443, 1, down))
+		}
+	}
+	record(1000, 2000) // now
+	*now = start.Add(-10 * 24 * time.Hour)
+	record(500, 700) // 10 days ago: in the month, not the week
+	*now = start.Add(-40 * 24 * time.Hour)
+	record(9999, 9999) // 40 days ago: outside every window and past the 35-day retention
+	*now = start.Add(-2 * 24 * time.Hour)
+	record(100, 300) // 2 days ago: in the week
+	*now = start
+	d := snap(tr)
+	if up, down := window(d, "usage_day"); up != 1000 || down != 2000 {
+		t.Fatalf("day: %d/%d", up, down)
+	}
+	if up, down := window(d, "usage_week"); up != 1100 || down != 2300 {
+		t.Fatalf("week: %d/%d", up, down)
+	}
+	if up, down := window(d, "usage_month"); up != 1600 || down != 3000 {
+		t.Fatalf("month: %d/%d", up, down)
+	}
+	daily := d["usage_daily"].([][2]uint64)
+	if len(daily) != 30 || daily[0] != [2]uint64{1000, 2000} || daily[2] != [2]uint64{100, 300} || daily[10] != [2]uint64{500, 700} {
+		t.Fatalf("daily: %v", daily)
+	}
+}
+
+func TestHourlyTotalsAreBoundedToThirtyFiveDays(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	for h := 0; h < historyHours+200; h++ {
+		*now = start.Add(time.Duration(h) * time.Hour)
+		tr.Record(dev, true, pkt(dev, srv, 6, 1, 443, 100))
+	}
+	tr.mu.Lock()
+	n := len(tr.devs[dev].Hours)
+	tr.mu.Unlock()
+	if n > historyHours {
+		t.Fatalf("%d hourly buckets kept", n)
+	}
+}
+
+func TestHourlyTotalsSurviveSaveAndLoad(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	tr.Record(dev, true, pkt(dev, srv, 6, 1, 443, 1000))
+	*now = start.Add(5 * 24 * time.Hour)
+	tr.Record(dev, false, pkt(srv, dev, 6, 443, 1, 4000))
+	path := filepath.Join(t.TempDir(), "usage.json")
+	if err := tr.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t2, _ := clocked(*now)
+	t2.Load(path)
+	d := snap(t2)
+	if up, down := window(d, "usage_month"); up != 1000 || down != 4000 {
+		t.Fatalf("month after reload: %d/%d", up, down)
+	}
+	if up, down := window(d, "usage_week"); up != 1000 || down != 4000 {
+		t.Fatalf("week after reload: %d/%d", up, down)
+	}
+	if up, _ := window(d, "usage_day"); up != 0 {
+		t.Fatalf("the five-day-old upload is not in the last day: %d", up)
+	}
+}
+
+// A usage file from before hourly totals only has minutes; they must give the first day of data.
+func TestLoadSeedsHoursFromOlderMinuteHistory(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	path := filepath.Join(t.TempDir(), "usage.json")
+	minute := start.Unix()/60 - 30
+	old := `{"version":1,"devices":{"10.77.0.9":{"first":` + itoa(start.Unix()-3600) + `,"up":300,"down":900,"history":[{"m":` + itoa(minute) + `,"u":100,"d":400},{"m":` + itoa(minute+1) + `,"u":200,"d":500}]}}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tr, _ := clocked(start)
+	tr.Load(path)
+	if up, down := window(snap(tr), "usage_day"); up != 300 || down != 900 {
+		t.Fatalf("seeded day: %d/%d", up, down)
+	}
+}
+
+func itoa(n int64) string { return fmt.Sprintf("%d", n) }

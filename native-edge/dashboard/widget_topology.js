@@ -13,6 +13,12 @@ topoStyle.textContent = '.subtabs{display:flex;gap:6px;margin:8px 0 12px}.subtab
   + '.svc-row{display:grid;grid-template-columns:14px minmax(90px,1.2fr) 2fr 60px;gap:6px;align-items:center;margin:3px 0}.svc-row i{width:10px;height:10px;border-radius:50%;display:inline-block}.svc-bar{height:5px;border-radius:3px;background:#e8edf3;overflow:hidden}.svc-bar div{height:100%}'
   + '.range{display:flex;gap:4px;justify-content:flex-end;margin-bottom:4px}.range .seg.active{background:#0f7ae5;color:#fff}.notice{background:#f4f6f9;border-radius:8px;padding:10px 12px;color:#505762}';
 topoStyle.textContent += '.tf{fill:none;stroke-linecap:round;stroke-dasharray:5 11;pointer-events:none;stroke-width:calc(2px + 2.5px*var(--i))}.tf.down{stroke:#2fb800;--c:47,184,0}.tf.up{stroke:#0f7ae5;--c:15,122,229}.tf-halo{fill:none;stroke-linecap:round;pointer-events:none;stroke-width:calc(4px + 10px*var(--i));opacity:calc(.08 + .22*var(--i));filter:blur(calc(1px + 3px*var(--i)))}.tf-halo.down{stroke:#2fb800}.tf-halo.up{stroke:#0f7ae5}@keyframes tf-fwd{from{stroke-dashoffset:16}to{stroke-dashoffset:0}}@keyframes tf-rev{from{stroke-dashoffset:0}to{stroke-dashoffset:16}}@keyframes tf-glow{0%,100%{opacity:calc(.5 + .25*var(--i));filter:drop-shadow(0 0 calc(1px + 3px*var(--i)) rgb(var(--c)))}50%{opacity:1;filter:drop-shadow(0 0 calc(3px + 9px*var(--i)) rgb(var(--c)))}}@keyframes tf-halo-pulse{0%,100%{opacity:calc(.05 + .15*var(--i))}50%{opacity:calc(.12 + .35*var(--i))}}@media (prefers-reduced-motion:reduce){.tf,.tf-halo{animation:none!important}}';
+topoStyle.textContent += '.port-active{color:#00a66c;font-weight:600}.gl{stroke:#e8edf3;stroke-width:1}'
+  + '.usage-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:4px 0 10px}.usage-tile{border:1px solid #e1e5eb;border-radius:10px;padding:8px 10px;text-align:center}.usage-tile b{display:block;font-size:18px;font-weight:600}.usage-tile span{color:#7b8089;font-size:11px}.usage-tile small{display:block;color:#7b8089;font-size:11px;text-transform:uppercase}'
+  + '.topo-pies{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:14px 0}.pie-card{border:1px solid #e1e5eb;border-radius:10px;padding:10px 14px;min-width:0}.pie-card h3{margin:0 0 6px;font-size:12px;text-transform:uppercase;color:#7b8089}'
+  + '.pie-body{display:flex;gap:14px;align-items:center}.pie-svg{width:128px;height:128px;flex:none}.pie-track{stroke:#e8edf3}.pie-num{fill:#393b43;font-weight:600}.pie-legend{flex:1;min-width:0;font-size:12px}'
+  + '.pie-legend div{display:grid;grid-template-columns:12px minmax(0,1fr) auto;gap:6px;align-items:center;margin:2px 0}.pie-legend i{width:9px;height:9px;border-radius:2px;display:inline-block}.pie-legend span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pie-legend b{font-weight:500;color:#505762}'
+  + '.pie-card .sub{color:#7b8089;font-size:11px;margin:6px 0 0}.tp-panel{margin:6px 0 10px}.tp-panel h4{margin:0 0 2px;font-size:12px;color:#505762;font-weight:600}.tp-legend{display:flex;gap:14px;flex-wrap:wrap;color:#7b8089;font-size:11px;margin:2px 0}.tp-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}';
 topoStyle.textContent += '.tb-rect{fill:#fff;stroke:#cfd5dd}.tb-title{fill:#393b43}.tb-sub{fill:#7b8089}.tl{stroke:#aab2bd}.tl-label{fill:#505762}.g-bg{fill:#f4f6f9;stroke:#cfd5dd}.d-track{stroke:#e8edf3}.ax{stroke:#cfd5dd}';
 document.head.append(topoStyle);
 
@@ -60,7 +66,8 @@ const topoHead = element('div', null, { class: 'topo-head', role: 'status' });
 const topoStats = element('div', null, { class: 'topo-stats' });
 const topoMap = svg('svg', { class: 'topo-svg', viewBox: '0 0 1060 360', role: 'group', 'aria-label': 'Network topology' });
 const topoCard = element('div');
-topoPane.append(topoHead, topoStats, topoMap, topoCard);
+const topoPies = element('div', null, { class: 'topo-pies' });
+topoPane.append(topoHead, topoStats, topoMap, topoPies, topoCard);
 
 let selectedDevice = null, usageRange = 60;
 const linkRates = new Map(); // slot -> { at, tx, rx, txBps, rxBps }
@@ -115,11 +122,30 @@ function overallHealth(paths) {
   return ['fair', down.map(p => 'Link ' + (p.slot + 1)).join(', ') + (down.length > 1 ? ' are' : ' is') + ' down; running on the other line'];
 }
 
-function nodeBox(x, y, w, h, title, subtitle, state, onActivate, selected, extraLine) {
+// activePorts summarises what a routed device is talking on right now: the remote-side ports that carried
+// a packet within the last few seconds (the client marks them active). It reports only what the tunnel sees.
+function activePorts(usage) {
+  if (!usage) return { line: '', tip: '' };
+  const act = (usage.ports || []).filter(r => r.active && r.port);
+  if (!act.length) return { line: 'No active ports', tip: 'No ports carried traffic in the last 10 seconds' };
+  const label = r => String(r.port), parts = [];
+  let line = 'Ports ';
+  for (const r of act) {
+    const next = (parts.length ? line + ' ' : line) + label(r), more = act.length - parts.length - 1;
+    if (next.length + (more > 0 ? 3 + String(more).length : 0) > 32 && parts.length) break;
+    line = next; parts.push(r);
+  }
+  if (act.length > parts.length) line += ' +' + (act.length - parts.length);
+  const tip = act.map(r => String(r.proto).toUpperCase() + ' ' + r.port + (r.service ? ' ' + r.service : '') + ' · ↓ ' + bytes(r.down_bytes) + ' ↑ ' + bytes(r.up_bytes)).join('\n');
+  return { line, tip: 'Active remote ports (traffic in the last 10 seconds)\n' + tip };
+}
+
+function nodeBox(x, y, w, h, title, subtitle, state, onActivate, selected, extraLine, tip) {
   const g = svg('g', { class: 'topo-node' + (selected ? ' sel' : ''), transform: 'translate(' + x + ',' + y + ')' });
   const color = state === 'good' ? '#2fb800' : state === 'poor' ? '#e0201b' : state === 'fair' ? '#f5a300' : '#9aa1ab';
   g.append(svg('rect', { class: 'tb-rect', width: w, height: h, rx: 8 }), svg('circle', { cx: 12, cy: 14, r: 4, fill: color }),
     svg('text', { class: 'tb-title', x: 22, y: 18, 'font-size': 12 }, String(title).slice(0, 27)), svg('text', { class: 'tb-sub', x: 12, y: 36, 'font-size': 11 }, String(subtitle || '').slice(0, 26)));
+  if (tip) g.append(svg('title', {}, tip));
   (Array.isArray(extraLine) ? extraLine : extraLine ? [extraLine] : []).forEach((t, i) => g.append(svg('text', { class: 'tb-sub', x: 12, y: 51 + i * 13, 'font-size': 10 }, String(t).slice(0, 32))));
   if (onActivate) {
     g.setAttribute('tabindex', '0'); g.setAttribute('role', 'button'); g.setAttribute('aria-label', title + (subtitle ? ', ' + subtitle : ''));
@@ -193,11 +219,109 @@ function mapLine(x1, y1, x2, y2, dashed, label, flow) {
   return g;
 }
 
+const pieColors = ['#0f7ae5', '#2fb800', '#f5a300', '#9b59d0', '#e0201b', '#00a5b8', '#8c6d46', '#7b8089'];
+// A donut with a legend, like the UniFi dashboard's Devices / Clients / Deep Packet Inspection rings.
+// slices: [{ label, value, text }]; the centre shows the total.
+function donutCard(title, slices, centerValue, centerLabel, note) {
+  const card = element('div', null, { class: 'pie-card' }), body = element('div', null, { class: 'pie-body' }), legend = element('div', null, { class: 'pie-legend' });
+  card.append(element('h3', title));
+  const live = slices.filter(x => x.value > 0), total = live.reduce((a, x) => a + x.value, 0), r = 44, c = 2 * Math.PI * r;
+  const ring = svg('svg', { viewBox: '0 0 120 120', class: 'pie-svg', role: 'img', 'aria-label': title + ': ' + centerValue + ' ' + centerLabel });
+  ring.append(svg('circle', { cx: 60, cy: 60, r, fill: 'none', class: 'pie-track', 'stroke-width': 16 }));
+  let off = 0;
+  live.forEach((x, i) => {
+    x.color = x.color || pieColors[i % pieColors.length];
+    const len = x.value / total * c, seg = svg('circle', { cx: 60, cy: 60, r, fill: 'none', stroke: x.color, 'stroke-width': 16, 'stroke-dasharray': len.toFixed(2) + ' ' + (c - len).toFixed(2), 'stroke-dashoffset': (-off).toFixed(2), transform: 'rotate(-90 60 60)' });
+    seg.append(svg('title', {}, x.label + ': ' + x.text)); ring.append(seg); off += len;
+    const row = element('div'), sw = element('i'); sw.style.background = x.color;
+    row.append(sw, element('span', x.label), element('b', x.text)); legend.append(row);
+  });
+  if (!live.length) legend.append(element('p', 'Nothing to show yet', { class: 'sub' }));
+  ring.append(svg('text', { x: 60, y: 58, 'text-anchor': 'middle', class: 'pie-num', 'font-size': centerValue.length > 5 ? 13 : centerValue.length > 3 ? 16 : 20 }, centerValue), svg('text', { x: 60, y: 73, 'text-anchor': 'middle', class: 'tb-sub', 'font-size': 8 }, centerLabel));
+  body.append(ring, legend); card.append(body);
+  if (note) card.append(element('p', note, { class: 'sub' }));
+  return card;
+}
+
+function renderPies(routed, others, extra) {
+  const online = routed.filter(d => d.up && d.present !== false).length, offline = routed.length - online, lanOnly = others.length + extra;
+  const total = routed.length + lanOnly;
+  const devices = donutCard('Devices', [
+    { label: 'Routed · online', value: online, text: String(online), color: '#2fb800' }, { label: 'Routed · offline', value: offline, text: String(offline), color: '#e0201b' },
+    { label: 'LAN only', value: lanOnly, text: String(lanOnly), color: '#9aa1ab' }], String(total), total === 1 ? 'device' : 'devices', 'Routed devices go through GameBond; LAN-only devices are seen by the scanner but not routed.');
+  // Clients by vendor: the scanner's inventory knows the vendor for a MAC; anything it cannot name is "Unknown".
+  const byMac = new Map((deviceInventory?.devices || []).map(x => [macKey(x.mac), x.vendor || '']));
+  const counts = new Map();
+  for (const d of [...routed, ...others]) {
+    const v = (d.vendor || byMac.get(macKey(d.mac)) || '').trim() || 'Unknown';
+    counts.set(v, (counts.get(v) || 0) + 1);
+  }
+  let vendors = [...counts].sort((a, b) => b[1] - a[1]);
+  if (vendors.length > 7) vendors = [...vendors.slice(0, 6), ['Other', vendors.slice(6).reduce((a, x) => a + x[1], 0)]];
+  const clients = donutCard('Clients', vendors.map(([label, value]) => ({ label, value, text: String(value) })), String(total), total === 1 ? 'client' : 'clients', 'Grouped by the vendor the scanner reports for each MAC address.');
+  // Traffic by class, from each device's port totals since the client started. Classes come from the remote
+  // port alone; the tunnel does not inspect packets.
+  const cat = new Map();
+  for (const u of Object.values(current?.device_usage || {})) for (const c of u.categories || []) cat.set(c.category, (cat.get(c.category) || 0) + (c.up_bytes || 0) + (c.down_bytes || 0));
+  const classes = [...cat].sort((a, b) => b[1] - a[1]), sum = classes.reduce((a, x) => a + x[1], 0);
+  const dpi = donutCard('Traffic by type', classes.map(([label, value]) => ({ label, value, text: bytes(value) })), bytes(sum), 'traffic', 'Classified by remote port, not by inspecting packets. Counts routed devices since the client started.');
+  topoPies.replaceChildren(devices, clients, dpi);
+}
+
+// Smooth path through points (Catmull-Rom to cubic Bezier), kept inside [minY, maxY] so a curve never dips below the axis.
+function smoothPath(pts, minY, maxY) {
+  if (pts.length < 2) return pts.length ? 'M' + pts[0][0].toFixed(1) + ' ' + pts[0][1].toFixed(1) : '';
+  const clamp = y => Math.min(maxY, Math.max(minY, y)), f = v => v.toFixed(1);
+  let d = 'M' + f(pts[0][0]) + ' ' + f(pts[0][1]);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    d += 'C' + f(p1[0] + (p2[0] - p0[0]) / 6) + ' ' + f(clamp(p1[1] + (p2[1] - p0[1]) / 6)) + ' ' + f(p2[0] - (p3[0] - p1[0]) / 6) + ' ' + f(clamp(p2[1] - (p3[1] - p1[1]) / 6)) + ' ' + f(p2[0]) + ' ' + f(p2[1]);
+  }
+  return d;
+}
+
+let chartSeq = 0;
+// Throughput as a soft gradient area (the thin line above it is the busiest minute in each bin) with the device's
+// TCP handshake latency as a smooth line on the right-hand axis, in the style of the UniFi activity graphs.
+function throughputChart(history, latency, minutes, dir) {
+  const width = 520, height = 160, left = 44, right = 34, bottom = 18, bins = Math.min(minutes, 60), binMin = minutes / bins;
+  const nowMin = Math.floor(Date.now() / 60000), start = nowMin - minutes + 1, mk = () => new Array(bins).fill(0);
+  const sum = mk(), peak = mk(), lat = mk(), latN = mk(), idx = t => { const m = Math.floor(t / 60) - start; return m < 0 || m >= minutes ? -1 : Math.min(bins - 1, Math.floor(m / binMin)); };
+  for (const [t, u, d] of history) { const i = idx(t); if (i < 0) continue; const v = dir === 'down' ? d : u; sum[i] += v; peak[i] = Math.max(peak[i], v * 8 / 60); }
+  for (const [t, r] of latency) { const i = idx(t); if (i < 0) continue; lat[i] += r / 10; latN[i]++; }
+  const avg = sum.map(v => v * 8 / (binMin * 60)), ms = lat.map((v, i) => latN[i] ? v / latN[i] : null);
+  const top = Math.max(1e5, ...peak, ...avg) * 1.1, latTop = Math.max(10, ...ms.filter(v => v != null)) * 1.2, plot = height - bottom, usable = plot - 14, bw = (width - left - right) / bins;
+  const color = dir === 'down' ? '#2fb800' : '#0f7ae5', gid = 'tg' + (++chartSeq), when = i => new Date((start + i * binMin) * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const s = svg('svg', { class: 'topo-svg', viewBox: '0 0 ' + width + ' ' + height, role: 'img', 'aria-label': (dir === 'down' ? 'Download' : 'Upload') + ' throughput and latency' });
+  s.style.maxWidth = '720px';
+  const defs = svg('defs'), grad = svg('linearGradient', { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
+  grad.append(svg('stop', { offset: '0%', 'stop-color': color, 'stop-opacity': 0.5 }), svg('stop', { offset: '100%', 'stop-color': color, 'stop-opacity': 0.03 })); defs.append(grad); s.append(defs);
+  for (let g = 0; g <= 4; g++) { const y = plot - g / 4 * usable; s.append(svg('line', { class: 'gl', x1: left, y1: y, x2: width - right, y2: y })); }
+  s.append(svg('text', { class: 'tb-sub', x: 2, y: plot - usable + 3, 'font-size': 10 }, fmtBps(top)), svg('text', { class: 'tb-sub', x: 2, y: plot + 3, 'font-size': 10 }, '0'),
+    svg('text', { class: 'tb-sub', x: width, y: plot - usable + 3, 'font-size': 10, 'text-anchor': 'end' }, Math.round(latTop) + ' ms'), svg('text', { class: 'tb-sub', x: width, y: plot + 3, 'font-size': 10, 'text-anchor': 'end' }, '0'),
+    svg('text', { class: 'tb-sub', x: left, y: height - 4, 'font-size': 10 }, minutes >= 60 ? '-' + (minutes / 60) + ' h' : '-' + minutes + ' min'), svg('text', { class: 'tb-sub', x: width - right, y: height - 4, 'font-size': 10, 'text-anchor': 'end' }, 'now'));
+  const cx = i => left + (i + 0.5) * bw, yOf = v => plot - v / top * usable;
+  const areaPts = avg.map((v, i) => [cx(i), yOf(v)]), area = smoothPath(areaPts, plot - usable, plot);
+  s.append(svg('path', { d: area + 'L' + cx(bins - 1).toFixed(1) + ' ' + plot + 'L' + cx(0).toFixed(1) + ' ' + plot + 'Z', fill: 'url(#' + gid + ')' }));
+  s.append(svg('path', { d: area, fill: 'none', stroke: color, 'stroke-width': 1.6, 'stroke-linejoin': 'round' }));
+  if (peak.some((v, i) => v > avg[i] * 1.05)) s.append(svg('path', { d: smoothPath(peak.map((v, i) => [cx(i), yOf(v)]), plot - usable, plot), fill: 'none', stroke: color, 'stroke-opacity': 0.4, 'stroke-width': 1, 'stroke-dasharray': '3 3' }));
+  // Latency: runs of consecutive samples (a gap of up to two quiet bins is bridged) become smooth lines; a lone sample is a dot.
+  const runs = []; let last = -99;
+  ms.forEach((v, i) => { if (v == null) return; const pt = [cx(i), plot - v / latTop * usable]; if (i - last <= 3 && runs.length) runs[runs.length - 1].push(pt); else runs.push([pt]); last = i; });
+  for (const run of runs) s.append(run.length > 1 ? svg('path', { d: smoothPath(run, plot - usable, plot), fill: 'none', stroke: '#f5a300', 'stroke-width': 1.6, 'stroke-linejoin': 'round' }) : svg('circle', { cx: run[0][0], cy: run[0][1], r: 2, fill: '#f5a300' }));
+  for (let i = 0; i < bins; i++) { // one hover target per bin with the exact numbers
+    const hit = svg('rect', { x: left + i * bw, y: 0, width: bw, height: plot, fill: 'transparent' });
+    hit.append(svg('title', {}, when(i) + '\navg ' + fmtBps(avg[i]) + ' · max ' + fmtBps(peak[i]) + '\n' + (ms[i] != null ? 'latency ' + ms[i].toFixed(0) + ' ms' : 'latency: no TCP handshakes'))); s.append(hit);
+  }
+  return s;
+}
+
 function renderTopology() {
   if (!current || current.state === 'unavailable' && !current.transport) { topoHead.textContent = 'Status unavailable'; return; }
   const paths = current?.transport?.paths || [], { routed, others, extra } = topologyDevices();
   updateLinkRates(paths);
   updateExitRates(current?.exit?.servers || []);
+  renderPies(routed, others, extra);
   const [health, headline] = overallHealth(paths);
   topoHead.replaceChildren();
   if (health === 'good') { topoHead.append('Everything is ', element('b', 'great', { class: 'good' }), '!'); } else topoHead.append(element('b', headline, { class: health }));
@@ -209,9 +333,9 @@ function renderTopology() {
 
   topoMap.replaceChildren();
   const exit = current?.exit, standbys = (exit?.servers || []).filter(x => !x.active);
-  const rowGap = 64, rows = Math.max(paths.length, routed.length + others.length, 2, standbys.length ? Math.ceil(2 + standbys.length * 1.6) : 0), height = 40 + rows * rowGap;
+  const rowGap = 72, rows = Math.max(paths.length, routed.length + others.length, 2, standbys.length ? Math.ceil(2 + standbys.length * 1.6) : 0), height = 40 + rows * rowGap;
   topoMap.setAttribute('viewBox', '0 0 1060 ' + height);
-  const midY = height / 2 - 24, serverX = 10, linkX = 215, pcX = 420, hubX = 625, devX = 850, w = 180, h = 46;
+  const midY = height / 2 - 24, serverX = 10, linkX = 215, pcX = 420, hubX = 625, devX = 850, w = 180, h = 46, dh = 62; // dh: routed-device nodes carry a third line (active ports)
   const onBackup = !!exit?.on_backup;
   const eh = 72, ey = midY + h / 2 - eh / 2, eg = eh + 12; // exit nodes carry rate and total lines, so they are taller
   const exitLines = x => {
@@ -251,7 +375,9 @@ function renderTopology() {
       const y = placed.get(d.key);
       topoMap.append(mapLine(hubX + w, hy + h / 2, devX, y + h / 2, false, null, { down: d.usage?.down_bps || 0, up: d.usage?.up_bps || 0 }));
       const sub = d.usage ? '↓ ' + fmtBps(d.usage.down_bps) + '  ↑ ' + fmtBps(d.usage.up_bps) : d.ip;
-      topoMap.append(nodeBox(devX, y, w, h, d.name, sub, d.up && d.present !== false ? 'good' : 'poor', () => { selectedDevice = d.key; renderTopology(); }, selectedDevice === d.key));
+      const ap = activePorts(d.usage);
+      // Taller than the other nodes but centred on the same row, so the connector still meets its middle.
+      topoMap.append(nodeBox(devX, y - (dh - h) / 2, w, dh, d.name, sub, d.up && d.present !== false ? 'good' : 'poor', () => { selectedDevice = d.key; renderTopology(); }, selectedDevice === d.key, ap.line, ap.tip));
     }
   }
   for (const d of others) {
@@ -275,15 +401,47 @@ function renderAdapterCard(hub) {
   const gauges = element('div', null, { class: 'gauges' });
   gauges.append(gauge('Download', hub.down, Math.max(peakDown, hub.down), '#2fb800'), gauge('Upload', hub.upBps, Math.max(peakUp, hub.upBps), '#0f7ae5'));
   const now = element('div'); now.append(element('h3', 'Combined usage'), gauges);
-  const table = element('table'); table.innerHTML = '<thead><tr><th>Device</th><th>IP</th><th>Down now</th><th>Up now</th><th>Total down</th><th>Total up</th></tr></thead>';
+  const table = element('table'); table.innerHTML = '<thead><tr><th>Device</th><th>IP</th><th>Down now</th><th>Up now</th><th>Total down</th><th>Total up</th><th>7 days</th><th>30 days</th></tr></thead>';
   const body = element('tbody'); table.append(body);
   for (const d of hub.devices) {
     const tr = element('tr'), u = d.usage;
     cell(tr, d.name); cell(tr, d.ip); cell(tr, u ? fmtBps(u.down_bps) : '—'); cell(tr, u ? fmtBps(u.up_bps) : '—'); cell(tr, u ? bytes(u.down_bytes) : '—'); cell(tr, u ? bytes(u.up_bytes) : '—');
+    cell(tr, u?.usage_week ? bytes(u.usage_week.down + u.usage_week.up) : '—'); cell(tr, u?.usage_month ? bytes(u.usage_month.down + u.usage_month.up) : '—');
     tr.style.cursor = 'pointer'; tr.onclick = () => { selectedDevice = d.key; renderTopology(); }; body.append(tr);
   }
   const list = element('div'); list.append(element('h3', 'Devices behind it'), table);
   const grid = element('div', null, { class: 'dev-grid' }); grid.append(now, list); card.append(grid); topoCard.append(card);
+}
+
+// usageSection: how much data a device moved in the last day, week and month (rolling windows of hours), and a bar
+// per day for the last 30 days. Hidden when the client does not report it yet.
+function usageSection(u) {
+  if (!u.usage_week || !u.usage_month || !u.usage_daily) return null;
+  const box = element('div'); box.append(element('h3', 'Data usage'));
+  const tiles = element('div', null, { class: 'usage-tiles' });
+  for (const [label, w] of [['Last 24 hours', u.usage_day || { up: 0, down: 0 }], ['Last 7 days', u.usage_week], ['Last 30 days', u.usage_month]]) {
+    const t = element('div', null, { class: 'usage-tile' });
+    t.append(element('small', label), element('b', bytes((w.down || 0) + (w.up || 0))), element('span', '↓ ' + bytes(w.down || 0) + ' · ↑ ' + bytes(w.up || 0)));
+    tiles.append(t);
+  }
+  box.append(tiles);
+  const days = u.usage_daily, width = 620, height = 150, left = 44, bottom = 18, plot = height - bottom, usable = plot - 12, bw = (width - left - 4) / days.length;
+  const top = Math.max(1e6, ...days.map(d => d[0] + d[1])) * 1.1;
+  const s = svg('svg', { class: 'topo-svg', viewBox: '0 0 ' + width + ' ' + height, role: 'img', 'aria-label': 'Data used per day over the last 30 days' });
+  s.style.maxWidth = '720px';
+  for (let g = 0; g <= 3; g++) { const y = plot - g / 3 * usable; s.append(svg('line', { class: 'gl', x1: left, y1: y, x2: width - 4, y2: y }), svg('text', { class: 'tb-sub', x: left - 4, y: y + 3, 'font-size': 10, 'text-anchor': 'end' }, g ? bytes(top * g / 3) : '0')); }
+  s.append(svg('text', { class: 'tb-sub', x: left, y: height - 4, 'font-size': 10 }, '-30 d'), svg('text', { class: 'tb-sub', x: width - 4, y: height - 4, 'font-size': 10, 'text-anchor': 'end' }, 'now'));
+  days.forEach((d, k) => { // index 0 is the most recent 24 hours, so draw right to left
+    const i = days.length - 1 - k, x = left + i * bw, hd = d[1] / top * usable, hu = d[0] / top * usable;
+    if (hd >= 0.5) s.append(svg('rect', { x: x + 1, y: plot - hd, width: Math.max(1, bw - 2), height: hd, rx: 1.5, fill: '#2fb800', 'fill-opacity': 0.8 }));
+    if (hu >= 0.5) s.append(svg('rect', { x: x + 1, y: plot - hd - hu, width: Math.max(1, bw - 2), height: hu, rx: 1.5, fill: '#0f7ae5', 'fill-opacity': 0.8 }));
+    const hit = svg('rect', { x, y: 0, width: bw, height: plot, fill: 'transparent' });
+    hit.append(svg('title', {}, (k === 0 ? 'Last 24 hours' : k === 1 ? '24 to 48 hours ago' : (k * 24) + ' to ' + ((k + 1) * 24) + ' hours ago') + '\n↓ ' + bytes(d[1]) + ' · ↑ ' + bytes(d[0]))); s.append(hit);
+  });
+  const lg = element('div', null, { class: 'tp-legend' });
+  lg.innerHTML = '<span><i style="background:#2fb800;opacity:.8"></i>Download</span><span><i style="background:#0f7ae5;opacity:.8"></i>Upload</span>';
+  box.append(s, lg, element('p', 'Counts what this device moved through the tunnel; each bar is one 24-hour block counted back from now. Totals are kept for 35 days.', { class: 'sub' }));
+  return box;
 }
 
 const palette = ['#0f7ae5', '#2fb800', '#f5a300', '#9b59d0', '#e0201b', '#00a5b8', '#8c6d46', '#7b8089'];
@@ -324,18 +482,25 @@ function renderDeviceCard(d) {
     row.append(dot, element('span', r.service), bar, element('span', bytes(part), { title: '↓ ' + bytes(r.down_bytes) + ' ↑ ' + bytes(r.up_bytes) })); apps.append(row);
   });
   grid.append(apps); card.append(grid);
+  const usageBox = usageSection(u); if (usageBox) card.append(usageBox);
 
   const hist = element('div'); hist.append(element('h3', 'History'));
   const range = element('div', null, { class: 'range' });
   for (const [label, minutes] of [['1 h', 60], ['6 h', 360], ['24 h', 1440]]) {
     const b = element('button', label, { class: 'seg' + (usageRange === minutes ? ' active' : '') }); b.onclick = () => { usageRange = minutes; renderTopology(); }; range.append(b);
   }
-  hist.append(range, historyChart(u.history || [], usageRange)); card.append(hist);
+  const panel = (name, dir) => {
+    const p = element('div', null, { class: 'tp-panel' }), color = dir === 'down' ? '#2fb800' : '#0f7ae5', lg = element('div', null, { class: 'tp-legend' });
+    lg.innerHTML = '<span><i style="background:' + color + ';opacity:.6"></i>Average</span><span><i style="background:none;border-top:1px dashed ' + color + ';height:0;vertical-align:3px"></i>Busiest minute</span><span><i style="background:#f5a300"></i>Latency (TCP handshake)</span>';
+    p.append(element('h4', name), throughputChart(u.history || [], u.latency || [], usageRange, dir), lg); return p;
+  };
+  hist.append(range, panel('Download throughput & latency', 'down'), panel('Upload throughput & latency', 'up'),
+    element('p', (u.latency || []).length ? 'Latency is the round trip from this device to the hosts it connects to, timed from TCP handshakes crossing the tunnel (median per minute).' : 'No TCP connections from this device were timed yet, so there is no latency line.', { class: 'sub' })); card.append(hist);
 
-  const ports = element('div'); ports.append(element('h3', 'Ports (remote side)'));
-  const pt = element('table'); pt.innerHTML = '<thead><tr><th>Proto</th><th>Port</th><th>Service</th><th>Down</th><th>Up</th><th>Packets</th></tr></thead>';
+  const ports = element('div'); ports.append(element('h3', 'Ports (remote side) · ' + (u.active_ports || 0) + ' active'));
+  const pt = element('table'); pt.innerHTML = '<thead><tr><th>Proto</th><th>Port</th><th>Service</th><th>Now</th><th>Down</th><th>Up</th><th>Packets</th></tr></thead>';
   const pb = element('tbody'); pt.append(pb);
-  for (const r of (u.ports || []).slice(0, 12)) { const tr = element('tr'); cell(tr, String(r.proto).toUpperCase()); cell(tr, r.port || '—'); cell(tr, r.service || '—'); cell(tr, bytes(r.down_bytes)); cell(tr, bytes(r.up_bytes)); cell(tr, (r.packets || 0).toLocaleString()); pb.append(tr); }
+  for (const r of (u.ports || []).slice(0, 12)) { const tr = element('tr'); cell(tr, String(r.proto).toUpperCase()); cell(tr, r.port || '—'); cell(tr, r.service || '—'); cell(tr, r.active ? 'active' : ago(r.last_seen)).className = r.active ? 'port-active' : ''; cell(tr, bytes(r.down_bytes)); cell(tr, bytes(r.up_bytes)); cell(tr, (r.packets || 0).toLocaleString()); pb.append(tr); }
   ports.append(pt);
   const hosts = element('p', 'Top remote hosts: ' + ((u.remotes || []).slice(0, 5).map(r => r.ip + ' (' + bytes(r.bytes) + ')').join(', ') || '—'), { class: 'sub' });
   ports.append(hosts, element('p', 'Services are inferred from the remote port; the port table counts traffic since the client started, history persists for 24 hours.', { class: 'sub' }));
@@ -363,28 +528,6 @@ function donut(rows, total) {
   return s;
 }
 // Minute triples [unix, up, down] -> bars of Mbps over the last `minutes`.
-function historyChart(history, minutes) {
-  const width = 520, height = 150, left = 36, bottom = 18, bins = Math.min(minutes, 60), binMinutes = minutes / bins;
-  const nowMin = Math.floor(Date.now() / 60000), start = nowMin - minutes + 1, up = new Array(bins).fill(0), down = new Array(bins).fill(0);
-  for (const [t, u, d] of history) {
-    const m = Math.floor(t / 60) - start; if (m < 0 || m >= minutes) continue;
-    const i = Math.min(bins - 1, Math.floor(m / binMinutes)); up[i] += u; down[i] += d;
-  }
-  const secs = binMinutes * 60, upM = up.map(v => v * 8 / secs), downM = down.map(v => v * 8 / secs);
-  const top = Math.max(1e5, ...upM, ...downM) * 1.1, plot = height - bottom, bw = (width - left) / bins;
-  const s = svg('svg', { class: 'topo-svg', viewBox: '0 0 ' + width + ' ' + height, role: 'img', 'aria-label': 'Usage history' });
-  s.style.maxWidth = '720px';
-  s.append(svg('line', { class: 'ax', x1: left, y1: plot, x2: width, y2: plot }), svg('text', { class: 'tb-sub', x: 2, y: 12, 'font-size': 10 }, fmtBps(top)), svg('text', { class: 'tb-sub', x: 2, y: plot, 'font-size': 10 }, '0'),
-    svg('text', { class: 'tb-sub', x: left, y: height - 4, 'font-size': 10 }, minutes >= 60 ? '-' + (minutes / 60) + ' h' : '-' + minutes + ' min'), svg('text', { class: 'tb-sub', x: width, y: height - 4, 'font-size': 10, 'text-anchor': 'end' }, 'Now'));
-  for (let i = 0; i < bins; i++) {
-    for (const [v, color] of [[downM[i], '#2fb800'], [upM[i], '#0f7ae5']]) {
-      const bh = v / top * (plot - 14); if (bh < 0.5) continue;
-      const bar = svg('rect', { x: left + i * bw + 0.5, y: plot - bh, width: Math.max(1, bw - 1), height: bh, fill: color, 'fill-opacity': 0.55 });
-      bar.append(svg('title', {}, fmtBps(v))); s.append(bar);
-    }
-  }
-  return s;
-}
 
 setInterval(() => { if (scannerSub === 'topology' && $('scanner').classList.contains('active')) renderTopology(); }, 1000);
 const selectTabBeforeTopology = selectTab;

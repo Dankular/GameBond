@@ -27,9 +27,10 @@ import (
 	"time"
 
 	"gamebond.local/nativeedge/adapterwatch"
-	"github.com/Dankular/GameBond.Core/bond"
 	"gamebond.local/nativeedge/carrier"
 	"gamebond.local/nativeedge/client"
+	"gamebond.local/nativeedge/errhist"
+	"gamebond.local/nativeedge/lan"
 	"gamebond.local/nativeedge/linkpolicy"
 	"gamebond.local/nativeedge/omr"
 	"gamebond.local/nativeedge/procjob"
@@ -37,6 +38,7 @@ import (
 	"gamebond.local/nativeedge/status"
 	"gamebond.local/nativeedge/ttyrelay"
 	"gamebond.local/nativeedge/uplink"
+	"github.com/Dankular/GameBond.Core/bond"
 )
 
 // fileConfig is the subset of configs/local-client.json this daemon reads.
@@ -46,8 +48,8 @@ type fileConfig struct {
 	Peer           []any                        `json:"peer"`
 	PeerBackups    [][]any                      `json:"peer_backups"`     // standby exit servers [[host, port], ...]
 	ExitFailoverMS int                          `json:"exit_failover_ms"` // silence before standbys are probed; 0 = 2000
-	ExitAutoBest   *bool                        `json:"exit_auto_best"`  // move to a clearly faster exit; default on
-	ReverseDNS     reverseDNSConfig             `json:"reverse_dns"`     // keep a DNS name pointed at the active exit node
+	ExitAutoBest   *bool                        `json:"exit_auto_best"`   // move to a clearly faster exit; default on
+	ReverseDNS     reverseDNSConfig             `json:"reverse_dns"`      // keep a DNS name pointed at the active exit node
 	MTU            int                          `json:"mtu"`
 	InitialMbps    float64                      `json:"bonding_initial_rate_mbps"`
 	MaxMbps        float64                      `json:"bonding_max_rate_mbps"`
@@ -69,6 +71,8 @@ type fileConfig struct {
 	AdaptiveQoS    json.RawMessage              `json:"adaptive_qos"`
 	ClientTunnelIP string                       `json:"client_tunnel_ip"`
 	LANDevices     json.RawMessage              `json:"lan_devices"`
+	LocalNetworks  json.RawMessage              `json:"local_networks"`
+	StaticRoutes   json.RawMessage              `json:"static_routes"`
 	OuterTransport json.RawMessage              `json:"outer_transport"` // stream-carrier fallback; null/absent = UDP only
 	SLOProbe       bool                         `json:"slo_probe"`       // in-tunnel echo probe: measured loss and SLOs
 	SLOProbeMS     int                          `json:"slo_probe_ms"`    // probe interval, default 1000
@@ -115,6 +119,31 @@ func load(path string) (fileConfig, []uplink.Spec, netip.AddrPort, error) {
 			}
 		}
 		specs = append(specs, spec)
+	}
+	if len(c.LocalNetworks) > 0 || len(c.StaticRoutes) > 0 {
+		clientIP, err := netip.ParseAddr(c.ClientTunnelIP)
+		if err != nil || !clientIP.Is4() {
+			return c, nil, netip.AddrPort{}, fmt.Errorf("local networks need a valid client_tunnel_ip")
+		}
+		legacy, err := lan.LoadDevices(c.LANDevices, clientIP, c.InterfaceIDs, c.InterfaceIndex)
+		if err != nil {
+			return c, nil, netip.AddrPort{}, err
+		}
+		var deviceAdapters []string
+		var deviceIndices []int
+		for _, device := range legacy {
+			if device.InterfaceID != "" {
+				deviceAdapters = append(deviceAdapters, device.InterfaceID)
+			} else if device.InterfaceName != "" {
+				deviceAdapters = append(deviceAdapters, "name:"+device.InterfaceName)
+			}
+			if device.InterfaceIndex > 0 {
+				deviceIndices = append(deviceIndices, device.InterfaceIndex)
+			}
+		}
+		if _, err := lan.LoadLocalConfig(c.LocalNetworks, c.StaticRoutes, c.InterfaceIDs, deviceAdapters, c.InterfaceIndex, deviceIndices); err != nil {
+			return c, nil, netip.AddrPort{}, err
+		}
 	}
 	return c, specs, netip.AddrPortFrom(addr, uint16(port)), nil
 }
@@ -314,6 +343,17 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			})
 		}
 	}
+	var netProbe *netProbes
+	if *statusPath != "" {
+		netProbe = newNetProbes(filepath.Dir(*statusPath), bridge.Respond)
+		afterReady := bridge.OnEvent
+		bridge.OnEvent = func(m map[string]any) {
+			if netProbe.onEvent(m) {
+				return
+			}
+			afterReady(m)
+		}
+	}
 	mtu := cfg.MTU
 	if mtu == 0 {
 		mtu = 1280
@@ -348,7 +388,32 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 		lanMgr.out = func(m map[string]any) { b, _ := json.Marshal(m); fmt.Println(string(b)) }
 		defer lanMgr.close()
 	}
+	var localMgr *localNetworkManager
+	if len(cfg.LocalNetworks) > 0 || len(cfg.StaticRoutes) > 0 {
+		clientIP, perr := localClientAddress(cfg.ClientTunnelIP)
+		if perr != nil {
+			return perr
+		}
+		deviceAdapters, deviceIndices, perr := localDeviceAdapterKeys(cfg.LANDevices, clientIP, cfg.InterfaceIDs, cfg.InterfaceIndex)
+		if perr != nil {
+			return localConfigError(perr)
+		}
+		if localMgr, err = newLocalNetworkManager(cfg.LocalNetworks, cfg.StaticRoutes, cfg.InterfaceIDs, deviceAdapters, cfg.InterfaceIndex, deviceIndices, cfg.MTU); err != nil {
+			return localConfigError(err)
+		}
+		if localMgr != nil {
+			if *statusPath != "" {
+				localMgr.useLeaseTable(filepath.Join(filepath.Dir(*statusPath), "local-network-leases.json"))
+			}
+			localMgr.router.SetOutbound(bridge.Send)
+			localMgr.start(ctx)
+			defer localMgr.close()
+		}
+	}
 	routed := &routedUplink{deliver: func(p []byte) {
+		if localMgr != nil && localMgr.dispatchTunnel(p) {
+			return
+		}
 		if !lanMgr.dispatch(p) {
 			bridge.Deliver(p)
 		}
@@ -429,6 +494,10 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			}
 			return nil
 		}, logOut)
+	}
+	errHist := errhist.New()
+	if *statusPath != "" {
+		errHist.Load(errhist.SavePath(*statusPath))
 	}
 	rdns, rerr := newReverseDNS(filepath.Dir(*statusPath), cfg.ReverseDNS)
 	if rerr != nil {
@@ -596,10 +665,25 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			if err := capture.flush(); err != nil {
 				fmt.Fprintln(logOut, "application history write failed:", err)
 			}
+			osErrors, osOK := osUDPReceiveErrors()
+			errHist.Observe(errorCounters(s, osErrors, osOK))
+			errHist.Links(linkHealth(s))
+			errHist.Health(linkCounts(s))
+			if netProbe != nil {
+				netProbe.poll()
+			}
+			if *statusPath != "" && tick%60 == 0 {
+				if err := errHist.Save(errhist.SavePath(*statusPath)); err != nil {
+					fmt.Fprintln(logOut, "error history write failed:", err)
+				}
+			}
 			if *statusPath != "" {
-				doc := statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture, c.DFEnforced(), alarms)
+				doc := statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, localMgr, capture, c.DFEnforced(), alarms)
 				doc["slo"] = sr.status()
 				doc["reverse_dns"] = rdns.status()
+				doc["error_history"] = errHist.View()
+				doc["internet_ping"] = netProbe.pingStatus()
+				doc["speedtest"] = netProbe.speedStatus()
 				if err := status.WriteJSON(*statusPath, doc); err != nil {
 					fmt.Fprintln(logOut, "status write failed:", err)
 				}
@@ -683,7 +767,7 @@ func main() {
 
 // statusDocument is the Python-compatible subset of userspace-status.json the
 // control tooling reads: identity, state, peer, per-path transport and counters.
-func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState, l *lanManager, capture *appCapture, df []bool, alarms []bond.Alarm) map[string]any {
+func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s client.Snapshot, b *stackio.Bridge, o *omrState, l *lanManager, localMgr *localNetworkManager, capture *appCapture, df []bool, alarms []bond.Alarm) map[string]any {
 	state := "connecting"
 	if s.Ready > 0 {
 		state = "running"
@@ -700,10 +784,10 @@ func statusDocument(cfg fileConfig, peer netip.AddrPort, created time.Time, s cl
 	doc := map[string]any{"pid": os.Getpid(), "created": float64(created.UnixNano()) / 1e9, "updated_at": float64(time.Now().UnixNano()) / 1e9,
 		"state": state, "error": nil, "peer": []any{peer.Addr().String(), peer.Port()}, "backend": "go",
 		"transport": map[string]any{"paths": paths, "receive": s.Receiver, "send": s.Sender, "reorder": s.Reorder, "queue": s.Queue, "loop": s.Loop, "outages": s.Outages},
-		"versions": map[string]any{"client": s.ClientVersion, "server": s.ServerVersion, "server_state": s.ServerState},
-		"runtime": runtimeStats(), "stack_write": b.Out.Timing(),
-		"packets":   map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
-		"dish":      dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "device_usage": l.usageStatus(), "lan_access": l.accessStatus(), "alarms": alarms, "loss_causes": lossCauses(s), "exit": exitStatusDoc(s.Exit)}
+		"versions":  map[string]any{"client": s.ClientVersion, "server": s.ServerVersion, "server_state": s.ServerState},
+		"runtime":   runtimeStats(), "stack_write": b.Out.Timing(),
+		"packets": map[string]any{"outbound": b.Outbound.Load(), "injected": b.Injected.Load(), "dropped": b.Dropped.Load(), "malformed": b.Malformed.Load()},
+		"dish":    dishStatusDoc(), "qos": s.QoS, "link_usage": map[string]any{}, "omr": o.status(), "lan_devices": l.status(), "local_networks": localMgr.status(), "device_usage": l.usageStatus(), "lan_access": l.accessStatus(), "alarms": alarms, "loss_causes": lossCauses(s), "exit": exitStatusDoc(s.Exit)}
 	if capture != nil {
 		capture.status(doc)
 	}
