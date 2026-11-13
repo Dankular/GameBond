@@ -27,6 +27,8 @@ type Portal struct {
 	Security     map[string]any   // the settings last saved through /api/security
 	SecurityFail string           // when set, saving security settings is refused with this message
 	Actions      []map[string]any // security actions requested
+	Overview     map[string]any   // when set, served by GET /api/security with "settings" replaced by the saved ones
+	Catalog      map[string]any   // when set, served by GET /api/security/catalog
 }
 
 // New returns a portal with a password and a starting configuration.
@@ -101,6 +103,17 @@ func (p *Portal) Handler() http.Handler {
 			reply(200, map[string]any{"ok": true, "error": nil})
 		case "/api/security":
 			if r.Method == http.MethodGet {
+				if p.Overview != nil {
+					out := map[string]any{}
+					for k, v := range p.Overview {
+						out[k] = v
+					}
+					if p.Security != nil {
+						out["settings"] = p.Security
+					}
+					reply(200, out)
+					return
+				}
 				reply(200, map[string]any{"settings": p.Security, "ids": map[string]any{"mode": "off"}})
 				return
 			}
@@ -111,6 +124,10 @@ func (p *Portal) Handler() http.Handler {
 			p.Security, _ = body["settings"].(map[string]any)
 			reply(200, map[string]any{"ok": true, "error": nil})
 		case "/api/security/catalog":
+			if p.Catalog != nil {
+				reply(200, p.Catalog)
+				return
+			}
 			reply(200, map[string]any{"categories": []any{map[string]any{"id": "ads"}}})
 		case "/api/security/action":
 			p.Actions = append(p.Actions, body)
