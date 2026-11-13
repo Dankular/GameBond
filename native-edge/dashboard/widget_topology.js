@@ -13,6 +13,7 @@ topoStyle.textContent = '.subtabs{display:flex;gap:6px;margin:8px 0 12px}.subtab
   + '.svc-row{display:grid;grid-template-columns:14px minmax(90px,1.2fr) 2fr 60px;gap:6px;align-items:center;margin:3px 0}.svc-row i{width:10px;height:10px;border-radius:50%;display:inline-block}.svc-bar{height:5px;border-radius:3px;background:#e8edf3;overflow:hidden}.svc-bar div{height:100%}'
   + '.range{display:flex;gap:4px;justify-content:flex-end;margin-bottom:4px}.range .seg.active{background:#0f7ae5;color:#fff}.notice{background:#f4f6f9;border-radius:8px;padding:10px 12px;color:#505762}';
 topoStyle.textContent += '.tf{fill:none;stroke-linecap:round;stroke-dasharray:5 11;pointer-events:none;stroke-width:calc(2px + 2.5px*var(--i))}.tf.down{stroke:#2fb800;--c:47,184,0}.tf.up{stroke:#0f7ae5;--c:15,122,229}.tf-halo{fill:none;stroke-linecap:round;pointer-events:none;stroke-width:calc(4px + 10px*var(--i));opacity:calc(.08 + .22*var(--i));filter:blur(calc(1px + 3px*var(--i)))}.tf-halo.down{stroke:#2fb800}.tf-halo.up{stroke:#0f7ae5}@keyframes tf-fwd{from{stroke-dashoffset:16}to{stroke-dashoffset:0}}@keyframes tf-rev{from{stroke-dashoffset:0}to{stroke-dashoffset:16}}@keyframes tf-glow{0%,100%{opacity:calc(.5 + .25*var(--i));filter:drop-shadow(0 0 calc(1px + 3px*var(--i)) rgb(var(--c)))}50%{opacity:1;filter:drop-shadow(0 0 calc(3px + 9px*var(--i)) rgb(var(--c)))}}@keyframes tf-halo-pulse{0%,100%{opacity:calc(.05 + .15*var(--i))}50%{opacity:calc(.12 + .35*var(--i))}}@media (prefers-reduced-motion:reduce){.tf,.tf-halo{animation:none!important}}';
+topoStyle.textContent += '.port-active{color:#00a66c;font-weight:600}';
 topoStyle.textContent += '.tb-rect{fill:#fff;stroke:#cfd5dd}.tb-title{fill:#393b43}.tb-sub{fill:#7b8089}.tl{stroke:#aab2bd}.tl-label{fill:#505762}.g-bg{fill:#f4f6f9;stroke:#cfd5dd}.d-track{stroke:#e8edf3}.ax{stroke:#cfd5dd}';
 document.head.append(topoStyle);
 
@@ -115,11 +116,30 @@ function overallHealth(paths) {
   return ['fair', down.map(p => 'Link ' + (p.slot + 1)).join(', ') + (down.length > 1 ? ' are' : ' is') + ' down; running on the other line'];
 }
 
-function nodeBox(x, y, w, h, title, subtitle, state, onActivate, selected, extraLine) {
+// activePorts summarises what a routed device is talking on right now: the remote-side ports that carried
+// a packet within the last few seconds (the client marks them active). It reports only what the tunnel sees.
+function activePorts(usage) {
+  if (!usage) return { line: '', tip: '' };
+  const act = (usage.ports || []).filter(r => r.active && r.port);
+  if (!act.length) return { line: 'No active ports', tip: 'No ports carried traffic in the last 10 seconds' };
+  const label = r => String(r.port), parts = [];
+  let line = 'Ports ';
+  for (const r of act) {
+    const next = (parts.length ? line + ' ' : line) + label(r), more = act.length - parts.length - 1;
+    if (next.length + (more > 0 ? 3 + String(more).length : 0) > 32 && parts.length) break;
+    line = next; parts.push(r);
+  }
+  if (act.length > parts.length) line += ' +' + (act.length - parts.length);
+  const tip = act.map(r => String(r.proto).toUpperCase() + ' ' + r.port + (r.service ? ' ' + r.service : '') + ' · ↓ ' + bytes(r.down_bytes) + ' ↑ ' + bytes(r.up_bytes)).join('\n');
+  return { line, tip: 'Active remote ports (traffic in the last 10 seconds)\n' + tip };
+}
+
+function nodeBox(x, y, w, h, title, subtitle, state, onActivate, selected, extraLine, tip) {
   const g = svg('g', { class: 'topo-node' + (selected ? ' sel' : ''), transform: 'translate(' + x + ',' + y + ')' });
   const color = state === 'good' ? '#2fb800' : state === 'poor' ? '#e0201b' : state === 'fair' ? '#f5a300' : '#9aa1ab';
   g.append(svg('rect', { class: 'tb-rect', width: w, height: h, rx: 8 }), svg('circle', { cx: 12, cy: 14, r: 4, fill: color }),
     svg('text', { class: 'tb-title', x: 22, y: 18, 'font-size': 12 }, String(title).slice(0, 27)), svg('text', { class: 'tb-sub', x: 12, y: 36, 'font-size': 11 }, String(subtitle || '').slice(0, 26)));
+  if (tip) g.append(svg('title', {}, tip));
   (Array.isArray(extraLine) ? extraLine : extraLine ? [extraLine] : []).forEach((t, i) => g.append(svg('text', { class: 'tb-sub', x: 12, y: 51 + i * 13, 'font-size': 10 }, String(t).slice(0, 32))));
   if (onActivate) {
     g.setAttribute('tabindex', '0'); g.setAttribute('role', 'button'); g.setAttribute('aria-label', title + (subtitle ? ', ' + subtitle : ''));
@@ -209,9 +229,9 @@ function renderTopology() {
 
   topoMap.replaceChildren();
   const exit = current?.exit, standbys = (exit?.servers || []).filter(x => !x.active);
-  const rowGap = 64, rows = Math.max(paths.length, routed.length + others.length, 2, standbys.length ? Math.ceil(2 + standbys.length * 1.6) : 0), height = 40 + rows * rowGap;
+  const rowGap = 72, rows = Math.max(paths.length, routed.length + others.length, 2, standbys.length ? Math.ceil(2 + standbys.length * 1.6) : 0), height = 40 + rows * rowGap;
   topoMap.setAttribute('viewBox', '0 0 1060 ' + height);
-  const midY = height / 2 - 24, serverX = 10, linkX = 215, pcX = 420, hubX = 625, devX = 850, w = 180, h = 46;
+  const midY = height / 2 - 24, serverX = 10, linkX = 215, pcX = 420, hubX = 625, devX = 850, w = 180, h = 46, dh = 62; // dh: routed-device nodes carry a third line (active ports)
   const onBackup = !!exit?.on_backup;
   const eh = 72, ey = midY + h / 2 - eh / 2, eg = eh + 12; // exit nodes carry rate and total lines, so they are taller
   const exitLines = x => {
@@ -251,7 +271,9 @@ function renderTopology() {
       const y = placed.get(d.key);
       topoMap.append(mapLine(hubX + w, hy + h / 2, devX, y + h / 2, false, null, { down: d.usage?.down_bps || 0, up: d.usage?.up_bps || 0 }));
       const sub = d.usage ? '↓ ' + fmtBps(d.usage.down_bps) + '  ↑ ' + fmtBps(d.usage.up_bps) : d.ip;
-      topoMap.append(nodeBox(devX, y, w, h, d.name, sub, d.up && d.present !== false ? 'good' : 'poor', () => { selectedDevice = d.key; renderTopology(); }, selectedDevice === d.key));
+      const ap = activePorts(d.usage);
+      // Taller than the other nodes but centred on the same row, so the connector still meets its middle.
+      topoMap.append(nodeBox(devX, y - (dh - h) / 2, w, dh, d.name, sub, d.up && d.present !== false ? 'good' : 'poor', () => { selectedDevice = d.key; renderTopology(); }, selectedDevice === d.key, ap.line, ap.tip));
     }
   }
   for (const d of others) {
@@ -332,10 +354,10 @@ function renderDeviceCard(d) {
   }
   hist.append(range, historyChart(u.history || [], usageRange)); card.append(hist);
 
-  const ports = element('div'); ports.append(element('h3', 'Ports (remote side)'));
-  const pt = element('table'); pt.innerHTML = '<thead><tr><th>Proto</th><th>Port</th><th>Service</th><th>Down</th><th>Up</th><th>Packets</th></tr></thead>';
+  const ports = element('div'); ports.append(element('h3', 'Ports (remote side) · ' + (u.active_ports || 0) + ' active'));
+  const pt = element('table'); pt.innerHTML = '<thead><tr><th>Proto</th><th>Port</th><th>Service</th><th>Now</th><th>Down</th><th>Up</th><th>Packets</th></tr></thead>';
   const pb = element('tbody'); pt.append(pb);
-  for (const r of (u.ports || []).slice(0, 12)) { const tr = element('tr'); cell(tr, String(r.proto).toUpperCase()); cell(tr, r.port || '—'); cell(tr, r.service || '—'); cell(tr, bytes(r.down_bytes)); cell(tr, bytes(r.up_bytes)); cell(tr, (r.packets || 0).toLocaleString()); pb.append(tr); }
+  for (const r of (u.ports || []).slice(0, 12)) { const tr = element('tr'); cell(tr, String(r.proto).toUpperCase()); cell(tr, r.port || '—'); cell(tr, r.service || '—'); cell(tr, r.active ? 'active' : ago(r.last_seen)).className = r.active ? 'port-active' : ''; cell(tr, bytes(r.down_bytes)); cell(tr, bytes(r.up_bytes)); cell(tr, (r.packets || 0).toLocaleString()); pb.append(tr); }
   ports.append(pt);
   const hosts = element('p', 'Top remote hosts: ' + ((u.remotes || []).slice(0, 5).map(r => r.ip + ' (' + bytes(r.bytes) + ')').join(', ') || '—'), { class: 'sub' });
   ports.append(hosts, element('p', 'Services are inferred from the remote port; the port table counts traffic since the client started, history persists for 24 hours.', { class: 'sub' }));

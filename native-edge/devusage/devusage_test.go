@@ -121,3 +121,80 @@ func TestPortTableIsBounded(t *testing.T) {
 		t.Fatalf("%d ports tracked", n)
 	}
 }
+
+func portRows(d map[string]any) map[uint16]row {
+	out := map[uint16]row{}
+	for _, r := range d["ports"].([]row) {
+		out[r.Port] = r
+	}
+	return out
+}
+
+func TestPortsReportRecency(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	tr.Record(dev, true, pkt(dev, srv, 6, 50000, 443, 1000))
+	tr.Record(dev, true, pkt(dev, srv, 17, 40000, 3478, 100))
+	*now = start.Add(30 * time.Second)
+	tr.Record(dev, true, pkt(dev, srv, 17, 40000, 3478, 100))
+	d := snap(tr)
+	rows := portRows(d)
+	if !rows[3478].Active || rows[443].Active {
+		t.Fatalf("3478 should be active and 443 idle: %+v", rows)
+	}
+	if rows[443].LastSeen != start.Unix() || rows[3478].LastSeen != now.Unix() {
+		t.Fatalf("last seen: %+v", rows)
+	}
+	if d["active_ports"].(int) != 1 {
+		t.Fatalf("active_ports = %v", d["active_ports"])
+	}
+	if first := d["ports"].([]row)[0]; first.Port != 3478 {
+		t.Fatalf("active ports must sort first even with fewer bytes: %+v", d["ports"])
+	}
+	*now = now.Add(activeWindow + time.Second)
+	if d := snap(tr); d["active_ports"].(int) != 0 {
+		t.Fatalf("nothing sent for %v: %v", activeWindow, d["active_ports"])
+	}
+}
+
+// A small port that just started must survive the display cut even when twenty busier idle ports exist.
+func TestActivePortIsNeverCutFromTheList(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	for port := 1000; port < 1030; port++ {
+		tr.Record(dev, true, pkt(dev, srv, 6, 1, uint16(port), 1400))
+	}
+	*now = start.Add(time.Minute)
+	tr.Record(dev, true, pkt(dev, srv, 17, 1, 3478, 60))
+	d := snap(tr)
+	if rows := portRows(d); !rows[3478].Active || len(d["ports"].([]row)) != 20 {
+		t.Fatalf("active port missing or list not bounded: %d rows", len(d["ports"].([]row)))
+	}
+}
+
+func TestEvictionPrefersIdlePorts(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	for port := 1; port <= maxPorts; port++ {
+		tr.Record(dev, true, pkt(dev, srv, 6, 1, uint16(port), 1000))
+	}
+	*now = start.Add(time.Minute)
+	for port := 1; port <= 10; port++ { // ten ports stay active, with the fewest bytes
+		tr.Record(dev, true, pkt(dev, srv, 6, 1, uint16(port), 50))
+	}
+	tr.Record(dev, true, pkt(dev, srv, 6, 1, 9000, 40)) // forces an eviction
+	tr.Record(dev, true, pkt(dev, srv, 6, 1, 9001, 40)) // and another
+	tr.mu.Lock()
+	ports := tr.devs[dev].Ports
+	for _, port := range []uint16{1, 5, 10, 9000, 9001} {
+		if ports[portKey{"tcp", port}] == nil {
+			tr.mu.Unlock()
+			t.Fatalf("active port %d was evicted", port)
+		}
+	}
+	n := len(ports)
+	tr.mu.Unlock()
+	if n > maxPorts {
+		t.Fatalf("%d ports tracked", n)
+	}
+}

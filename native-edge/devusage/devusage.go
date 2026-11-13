@@ -18,6 +18,8 @@ const (
 	maxPorts       = 64 // per device; the smallest entry is evicted past this
 	maxRemotes     = 256
 	rateWindow     = 5 * time.Second
+	// activeWindow is how recently a port must have carried a packet to count as active.
+	activeWindow = 10 * time.Second
 )
 
 // Service names a well-known remote port. It is a label inferred from the port, not deep inspection.
@@ -71,6 +73,7 @@ type portKey struct {
 type portStat struct {
 	Up, Down uint64
 	Packets  uint64
+	Last     time.Time // when the port last carried a packet
 }
 
 type device struct {
@@ -164,12 +167,13 @@ func (t *Tracker) Record(dev [4]byte, outbound bool, p []byte) {
 	ps := d.Ports[k]
 	if ps == nil {
 		if len(d.Ports) >= maxPorts {
-			evict(d.Ports)
+			evict(d.Ports, now)
 		}
 		ps = &portStat{}
 		d.Ports[k] = ps
 	}
 	ps.Packets++
+	ps.Last = now
 	if _, seen := d.Remotes[remote]; seen || len(d.Remotes) < maxRemotes {
 		d.Remotes[remote] += size
 	}
@@ -188,12 +192,19 @@ func (t *Tracker) Record(dev [4]byte, outbound bool, p []byte) {
 	}
 }
 
-func evict(m map[portKey]*portStat) {
+// evict drops the smallest port that is no longer active; only when every port is active does it drop
+// the smallest overall, so a port that has just started is not the first thing to disappear.
+func evict(m map[portKey]*portStat, now time.Time) {
 	var worst portKey
-	least := ^uint64(0)
-	for k, v := range m {
-		if s := v.Up + v.Down; s < least {
-			least, worst = s, k
+	least, found := ^uint64(0), false
+	for pass := 0; pass < 2 && !found; pass++ {
+		for k, v := range m {
+			if pass == 0 && now.Sub(v.Last) <= activeWindow {
+				continue
+			}
+			if s := v.Up + v.Down; s < least {
+				least, worst, found = s, k, true
+			}
 		}
 	}
 	delete(m, worst)
@@ -220,6 +231,10 @@ type row struct {
 	Up      uint64 `json:"up_bytes"`
 	Down    uint64 `json:"down_bytes"`
 	Packets uint64 `json:"packets"`
+	// Only set on port rows: when the port last carried a packet (unix seconds) and whether that was
+	// within activeWindow of the snapshot.
+	LastSeen int64 `json:"last_seen,omitempty"`
+	Active   bool  `json:"active,omitempty"`
 }
 
 func (d *device) view(now time.Time) map[string]any {
@@ -230,9 +245,21 @@ func (d *device) view(now time.Time) map[string]any {
 	}
 	ports := make([]row, 0, len(d.Ports))
 	for k, v := range d.Ports {
-		ports = append(ports, row{k.Proto, k.Port, Service(k.Proto, k.Port), v.Up, v.Down, v.Packets})
+		ports = append(ports, row{k.Proto, k.Port, Service(k.Proto, k.Port), v.Up, v.Down, v.Packets, v.Last.Unix(), now.Sub(v.Last) <= activeWindow})
 	}
-	sort.Slice(ports, func(i, j int) bool { return ports[i].Up+ports[i].Down > ports[j].Up+ports[j].Down })
+	// Active ports first, then by traffic.
+	sort.Slice(ports, func(i, j int) bool {
+		if ports[i].Active != ports[j].Active {
+			return ports[i].Active
+		}
+		return ports[i].Up+ports[i].Down > ports[j].Up+ports[j].Down
+	})
+	active := 0
+	for _, r := range ports {
+		if r.Active {
+			active++
+		}
+	}
 	// Per-service totals for the "apps" breakdown; unlabelled ports group by protocol.
 	// Built from every port, before the port list is cut for display.
 	byService := map[string]*row{}
@@ -253,8 +280,9 @@ func (d *device) view(now time.Time) map[string]any {
 		services = append(services, s)
 	}
 	sort.Slice(services, func(i, j int) bool { return services[i].Up+services[i].Down > services[j].Up+services[j].Down })
-	if len(ports) > 20 {
-		ports = ports[:20]
+	// The list is cut for display, but never through an active port (up to a sanity cap).
+	if limit := min(max(20, active), 40); len(ports) > limit {
+		ports = ports[:limit]
 	}
 	type remote struct {
 		IP    string `json:"ip"`
@@ -278,7 +306,7 @@ func (d *device) view(now time.Time) map[string]any {
 		"first_seen": d.First.Unix(), "last_seen": d.Last.Unix(),
 		"up_bytes": d.Up, "down_bytes": d.Down, "up_packets": d.PktUp, "down_packets": d.PktDn,
 		"up_bps": upBps, "down_bps": downBps, "peak_up_bps": max(d.peakUp, upBps), "peak_down_bps": max(d.peakDown, downBps),
-		"ports": ports, "services": services, "remotes": remotes, "history": history,
+		"ports": ports, "active_ports": active, "services": services, "remotes": remotes, "history": history,
 	}
 }
 
