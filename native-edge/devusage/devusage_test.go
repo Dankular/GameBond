@@ -198,3 +198,127 @@ func TestEvictionPrefersIdlePorts(t *testing.T) {
 		t.Fatalf("%d ports tracked", n)
 	}
 }
+
+// tcp is pkt with TCP flags set (the flag byte is the 14th byte of the TCP header).
+func tcp(src, dst [4]byte, sport, dport uint16, flags byte) []byte {
+	p := pkt(src, dst, 6, sport, dport, 60)
+	p[33] = flags
+	return p
+}
+
+const (
+	flagSYN = 0x02
+	flagACK = 0x10
+)
+
+func latencyOf(d map[string]any) [][2]uint64 { return d["latency"].([][2]uint64) }
+
+func TestHandshakeRTTIsMeasuredPerDevice(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	for i, ms := range []int{40, 44, 300} { // the median ignores one slow outlier
+		sport := uint16(50000 + i)
+		tr.Record(dev, true, tcp(dev, srv, sport, 443, flagSYN))
+		*now = now.Add(time.Duration(ms) * time.Millisecond)
+		tr.Record(dev, false, tcp(srv, dev, 443, sport, flagSYN|flagACK))
+	}
+	d := snap(tr)
+	l := latencyOf(d)
+	if len(l) != 1 || l[0][1] < 435 || l[0][1] > 445 {
+		t.Fatalf("expected one minute with a ~44 ms median (440 tenths), got %v", l)
+	}
+	if ms := d["rtt_ms"].(float64); ms < 43.5 || ms > 44.5 {
+		t.Fatalf("rtt_ms = %v", ms)
+	}
+	*now = now.Add(3 * time.Minute)
+	if ms := snap(tr)["rtt_ms"].(float64); ms != 0 {
+		t.Fatalf("a stale latency must read zero, got %v", ms)
+	}
+}
+
+func TestRetransmittedSynGivesNoSample(t *testing.T) {
+	tr, now := clocked(time.Unix(1_700_000_000, 0))
+	tr.Record(dev, true, tcp(dev, srv, 50000, 443, flagSYN))
+	*now = now.Add(time.Second) // the SYN was lost; the retry is what gets answered
+	tr.Record(dev, true, tcp(dev, srv, 50000, 443, flagSYN))
+	*now = now.Add(40 * time.Millisecond)
+	tr.Record(dev, false, tcp(srv, dev, 443, 50000, flagSYN|flagACK))
+	if l := latencyOf(snap(tr)); len(l) != 0 {
+		t.Fatalf("a retransmitted SYN must not be timed: %v", l)
+	}
+}
+
+func TestOnlyMatchingSynAckIsTimed(t *testing.T) {
+	tr, now := clocked(time.Unix(1_700_000_000, 0))
+	tr.Record(dev, false, tcp(srv, dev, 443, 50000, flagSYN|flagACK)) // answer to nothing
+	tr.Record(dev, true, tcp(dev, srv, 50000, 443, flagSYN))
+	*now = now.Add(20 * time.Millisecond)
+	tr.Record(dev, false, tcp(srv, dev, 80, 50000, flagSYN|flagACK))  // wrong remote port
+	tr.Record(dev, false, tcp(srv, dev, 443, 50001, flagSYN|flagACK)) // wrong local port
+	tr.Record(dev, false, tcp(srv, dev, 443, 50000, flagACK))         // not a SYN-ACK
+	if l := latencyOf(snap(tr)); len(l) != 0 {
+		t.Fatalf("unrelated packets produced a sample: %v", l)
+	}
+	tr.Record(dev, false, tcp(srv, dev, 443, 50000, flagSYN|flagACK))
+	if l := latencyOf(snap(tr)); len(l) != 1 {
+		t.Fatalf("the real answer was not timed: %v", l)
+	}
+}
+
+func TestPendingHandshakesAreBounded(t *testing.T) {
+	tr, now := clocked(time.Unix(1_700_000_000, 0))
+	for port := 1; port <= 5000; port++ { // a SYN flood from one device must not grow memory
+		tr.Record(dev, true, tcp(dev, srv, uint16(port), 443, flagSYN))
+	}
+	*now = now.Add(2 * synTimeout)
+	tr.Record(dev, true, tcp(dev, srv, 6000, 443, flagSYN))
+	tr.mu.Lock()
+	n := len(tr.devs[dev].syns)
+	tr.mu.Unlock()
+	if n > maxSyns {
+		t.Fatalf("%d pending handshakes", n)
+	}
+	tr.mu.Lock()
+	_, ok := tr.devs[dev].syns[synKey{srv, 443, 6000}]
+	tr.mu.Unlock()
+	if !ok {
+		t.Fatal("expired entries should make room for a new handshake")
+	}
+}
+
+func TestLatencySurvivesSaveAndLoad(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	tr, now := clocked(start)
+	tr.Record(dev, true, tcp(dev, srv, 50000, 443, flagSYN))
+	*now = now.Add(35 * time.Millisecond)
+	tr.Record(dev, false, tcp(srv, dev, 443, 50000, flagSYN|flagACK))
+	path := filepath.Join(t.TempDir(), "usage.json")
+	if err := tr.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t2, _ := clocked(*now)
+	t2.Load(path)
+	if l := latencyOf(snap(t2)); len(l) != 1 || l[0][1] < 345 || l[0][1] > 355 {
+		t.Fatalf("latency not restored: %v", l)
+	}
+}
+
+func TestCategoriesGroupPortsAndAreSortedByTraffic(t *testing.T) {
+	for _, c := range []struct {
+		proto string
+		port  uint16
+		want  string
+	}{{"tcp", 443, "Web"}, {"udp", 443, "Web"}, {"udp", 53, "DNS"}, {"udp", 3478, "Gaming"}, {"udp", 3080, "Gaming"}, {"tcp", 993, "Mail"}, {"tcp", 22, "Remote access"}, {"udp", 51820, "VPN"}, {"tcp", 40000, "Other"}, {"icmp", 0, "Network services"}} {
+		if got := Category(c.proto, c.port); got != c.want {
+			t.Errorf("Category(%s,%d) = %q, want %q", c.proto, c.port, got, c.want)
+		}
+	}
+	tr, _ := clocked(time.Unix(1_700_000_000, 0))
+	tr.Record(dev, true, pkt(dev, srv, 6, 1, 443, 1000))
+	tr.Record(dev, false, pkt(srv, dev, 6, 443, 1, 1400))
+	tr.Record(dev, true, pkt(dev, srv, 17, 1, 3478, 200))
+	cats := snap(tr)["categories"].([]*categoryRow)
+	if len(cats) != 2 || cats[0].Category != "Web" || cats[0].Up != 1000 || cats[0].Down != 1400 || cats[1].Category != "Gaming" {
+		t.Fatalf("categories: %+v", cats)
+	}
+}

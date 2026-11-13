@@ -13,7 +13,11 @@ topoStyle.textContent = '.subtabs{display:flex;gap:6px;margin:8px 0 12px}.subtab
   + '.svc-row{display:grid;grid-template-columns:14px minmax(90px,1.2fr) 2fr 60px;gap:6px;align-items:center;margin:3px 0}.svc-row i{width:10px;height:10px;border-radius:50%;display:inline-block}.svc-bar{height:5px;border-radius:3px;background:#e8edf3;overflow:hidden}.svc-bar div{height:100%}'
   + '.range{display:flex;gap:4px;justify-content:flex-end;margin-bottom:4px}.range .seg.active{background:#0f7ae5;color:#fff}.notice{background:#f4f6f9;border-radius:8px;padding:10px 12px;color:#505762}';
 topoStyle.textContent += '.tf{fill:none;stroke-linecap:round;stroke-dasharray:5 11;pointer-events:none;stroke-width:calc(2px + 2.5px*var(--i))}.tf.down{stroke:#2fb800;--c:47,184,0}.tf.up{stroke:#0f7ae5;--c:15,122,229}.tf-halo{fill:none;stroke-linecap:round;pointer-events:none;stroke-width:calc(4px + 10px*var(--i));opacity:calc(.08 + .22*var(--i));filter:blur(calc(1px + 3px*var(--i)))}.tf-halo.down{stroke:#2fb800}.tf-halo.up{stroke:#0f7ae5}@keyframes tf-fwd{from{stroke-dashoffset:16}to{stroke-dashoffset:0}}@keyframes tf-rev{from{stroke-dashoffset:0}to{stroke-dashoffset:16}}@keyframes tf-glow{0%,100%{opacity:calc(.5 + .25*var(--i));filter:drop-shadow(0 0 calc(1px + 3px*var(--i)) rgb(var(--c)))}50%{opacity:1;filter:drop-shadow(0 0 calc(3px + 9px*var(--i)) rgb(var(--c)))}}@keyframes tf-halo-pulse{0%,100%{opacity:calc(.05 + .15*var(--i))}50%{opacity:calc(.12 + .35*var(--i))}}@media (prefers-reduced-motion:reduce){.tf,.tf-halo{animation:none!important}}';
-topoStyle.textContent += '.port-active{color:#00a66c;font-weight:600}';
+topoStyle.textContent += '.port-active{color:#00a66c;font-weight:600}'
+  + '.topo-pies{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:14px 0}.pie-card{border:1px solid #e1e5eb;border-radius:10px;padding:10px 14px;min-width:0}.pie-card h3{margin:0 0 6px;font-size:12px;text-transform:uppercase;color:#7b8089}'
+  + '.pie-body{display:flex;gap:14px;align-items:center}.pie-svg{width:128px;height:128px;flex:none}.pie-track{stroke:#e8edf3}.pie-num{fill:#393b43;font-weight:600}.pie-legend{flex:1;min-width:0;font-size:12px}'
+  + '.pie-legend div{display:grid;grid-template-columns:12px minmax(0,1fr) auto;gap:6px;align-items:center;margin:2px 0}.pie-legend i{width:9px;height:9px;border-radius:2px;display:inline-block}.pie-legend span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pie-legend b{font-weight:500;color:#505762}'
+  + '.pie-card .sub{color:#7b8089;font-size:11px;margin:6px 0 0}.tp-panel{margin:6px 0 10px}.tp-panel h4{margin:0 0 2px;font-size:12px;color:#505762;font-weight:600}.tp-legend{display:flex;gap:14px;flex-wrap:wrap;color:#7b8089;font-size:11px;margin:2px 0}.tp-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}';
 topoStyle.textContent += '.tb-rect{fill:#fff;stroke:#cfd5dd}.tb-title{fill:#393b43}.tb-sub{fill:#7b8089}.tl{stroke:#aab2bd}.tl-label{fill:#505762}.g-bg{fill:#f4f6f9;stroke:#cfd5dd}.d-track{stroke:#e8edf3}.ax{stroke:#cfd5dd}';
 document.head.append(topoStyle);
 
@@ -61,7 +65,8 @@ const topoHead = element('div', null, { class: 'topo-head', role: 'status' });
 const topoStats = element('div', null, { class: 'topo-stats' });
 const topoMap = svg('svg', { class: 'topo-svg', viewBox: '0 0 1060 360', role: 'group', 'aria-label': 'Network topology' });
 const topoCard = element('div');
-topoPane.append(topoHead, topoStats, topoMap, topoCard);
+const topoPies = element('div', null, { class: 'topo-pies' });
+topoPane.append(topoHead, topoStats, topoMap, topoPies, topoCard);
 
 let selectedDevice = null, usageRange = 60;
 const linkRates = new Map(); // slot -> { at, tx, rx, txBps, rxBps }
@@ -213,11 +218,94 @@ function mapLine(x1, y1, x2, y2, dashed, label, flow) {
   return g;
 }
 
+const pieColors = ['#0f7ae5', '#2fb800', '#f5a300', '#9b59d0', '#e0201b', '#00a5b8', '#8c6d46', '#7b8089'];
+// A donut with a legend, like the UniFi dashboard's Devices / Clients / Deep Packet Inspection rings.
+// slices: [{ label, value, text }]; the centre shows the total.
+function donutCard(title, slices, centerValue, centerLabel, note) {
+  const card = element('div', null, { class: 'pie-card' }), body = element('div', null, { class: 'pie-body' }), legend = element('div', null, { class: 'pie-legend' });
+  card.append(element('h3', title));
+  const live = slices.filter(x => x.value > 0), total = live.reduce((a, x) => a + x.value, 0), r = 44, c = 2 * Math.PI * r;
+  const ring = svg('svg', { viewBox: '0 0 120 120', class: 'pie-svg', role: 'img', 'aria-label': title + ': ' + centerValue + ' ' + centerLabel });
+  ring.append(svg('circle', { cx: 60, cy: 60, r, fill: 'none', class: 'pie-track', 'stroke-width': 16 }));
+  let off = 0;
+  live.forEach((x, i) => {
+    x.color = x.color || pieColors[i % pieColors.length];
+    const len = x.value / total * c, seg = svg('circle', { cx: 60, cy: 60, r, fill: 'none', stroke: x.color, 'stroke-width': 16, 'stroke-dasharray': len.toFixed(2) + ' ' + (c - len).toFixed(2), 'stroke-dashoffset': (-off).toFixed(2), transform: 'rotate(-90 60 60)' });
+    seg.append(svg('title', {}, x.label + ': ' + x.text)); ring.append(seg); off += len;
+    const row = element('div'), sw = element('i'); sw.style.background = x.color;
+    row.append(sw, element('span', x.label), element('b', x.text)); legend.append(row);
+  });
+  if (!live.length) legend.append(element('div', 'Nothing to show yet'));
+  ring.append(svg('text', { x: 60, y: 58, 'text-anchor': 'middle', class: 'pie-num', 'font-size': centerValue.length > 5 ? 13 : centerValue.length > 3 ? 16 : 20 }, centerValue), svg('text', { x: 60, y: 73, 'text-anchor': 'middle', class: 'tb-sub', 'font-size': 8 }, centerLabel));
+  body.append(ring, legend); card.append(body);
+  if (note) card.append(element('p', note, { class: 'sub' }));
+  return card;
+}
+
+function renderPies(routed, others, extra) {
+  const online = routed.filter(d => d.up && d.present !== false).length, offline = routed.length - online, lanOnly = others.length + extra;
+  const total = routed.length + lanOnly;
+  const devices = donutCard('Devices', [
+    { label: 'Routed · online', value: online, text: String(online), color: '#2fb800' }, { label: 'Routed · offline', value: offline, text: String(offline), color: '#e0201b' },
+    { label: 'LAN only', value: lanOnly, text: String(lanOnly), color: '#9aa1ab' }], String(total), total === 1 ? 'device' : 'devices', 'Routed devices go through GameBond; LAN-only devices are seen by the scanner but not routed.');
+  // Clients by vendor: the scanner's inventory knows the vendor for a MAC; anything it cannot name is "Unknown".
+  const byMac = new Map((deviceInventory?.devices || []).map(x => [macKey(x.mac), x.vendor || '']));
+  const counts = new Map();
+  for (const d of [...routed, ...others]) {
+    const v = (d.vendor || byMac.get(macKey(d.mac)) || '').trim() || 'Unknown';
+    counts.set(v, (counts.get(v) || 0) + 1);
+  }
+  let vendors = [...counts].sort((a, b) => b[1] - a[1]);
+  if (vendors.length > 7) vendors = [...vendors.slice(0, 6), ['Other', vendors.slice(6).reduce((a, x) => a + x[1], 0)]];
+  const clients = donutCard('Clients', vendors.map(([label, value]) => ({ label, value, text: String(value) })), String(total), total === 1 ? 'client' : 'clients', 'Grouped by the vendor the scanner reports for each MAC address.');
+  // Traffic by class, from each device's port totals since the client started. Classes come from the remote
+  // port alone; the tunnel does not inspect packets.
+  const cat = new Map();
+  for (const u of Object.values(current?.device_usage || {})) for (const c of u.categories || []) cat.set(c.category, (cat.get(c.category) || 0) + (c.up_bytes || 0) + (c.down_bytes || 0));
+  const classes = [...cat].sort((a, b) => b[1] - a[1]), sum = classes.reduce((a, x) => a + x[1], 0);
+  const dpi = donutCard('Traffic by type', classes.map(([label, value]) => ({ label, value, text: bytes(value) })), bytes(sum), 'traffic', 'Classified by remote port, not by inspecting packets. Counts routed devices since the client started.');
+  topoPies.replaceChildren(devices, clients, dpi);
+}
+
+// Throughput bars (light: busiest minute in the bin, dark: average) with the device's TCP handshake latency as a
+// line on the right-hand axis, like the UniFi "Download/Upload throughput & latency" panels.
+function throughputChart(history, latency, minutes, dir) {
+  const width = 520, height = 150, left = 44, right = 34, bottom = 18, bins = Math.min(minutes, 60), binMin = minutes / bins;
+  const nowMin = Math.floor(Date.now() / 60000), start = nowMin - minutes + 1, mk = () => new Array(bins).fill(0);
+  const sum = mk(), peak = mk(), lat = mk(), latN = mk(), idx = t => { const m = Math.floor(t / 60) - start; return m < 0 || m >= minutes ? -1 : Math.min(bins - 1, Math.floor(m / binMin)); };
+  for (const [t, u, d] of history) { const i = idx(t); if (i < 0) continue; const v = dir === 'down' ? d : u; sum[i] += v; peak[i] = Math.max(peak[i], v * 8 / 60); }
+  for (const [t, r] of latency) { const i = idx(t); if (i < 0) continue; lat[i] += r / 10; latN[i]++; }
+  const avg = sum.map(v => v * 8 / (binMin * 60)), ms = lat.map((v, i) => latN[i] ? v / latN[i] : null);
+  const top = Math.max(1e5, ...peak, ...avg) * 1.1, latTop = Math.max(10, ...ms.filter(v => v != null)) * 1.2, plot = height - bottom, usable = plot - 14, bw = (width - left - right) / bins;
+  const s = svg('svg', { class: 'topo-svg', viewBox: '0 0 ' + width + ' ' + height, role: 'img', 'aria-label': (dir === 'down' ? 'Download' : 'Upload') + ' throughput and latency' });
+  s.style.maxWidth = '720px';
+  s.append(svg('line', { class: 'ax', x1: left, y1: plot, x2: width - right, y2: plot }), svg('text', { class: 'tb-sub', x: 2, y: 12, 'font-size': 10 }, fmtBps(top)), svg('text', { class: 'tb-sub', x: 2, y: plot, 'font-size': 10 }, '0'),
+    svg('text', { class: 'tb-sub', x: width, y: 12, 'font-size': 10, 'text-anchor': 'end' }, Math.round(latTop) + ' ms'), svg('text', { class: 'tb-sub', x: width, y: plot, 'font-size': 10, 'text-anchor': 'end' }, '0'),
+    svg('text', { class: 'tb-sub', x: left, y: height - 4, 'font-size': 10 }, minutes >= 60 ? '-' + (minutes / 60) + ' h' : '-' + minutes + ' min'), svg('text', { class: 'tb-sub', x: width - right, y: height - 4, 'font-size': 10, 'text-anchor': 'end' }, 'now'));
+  const color = dir === 'down' ? '#2fb800' : '#0f7ae5', when = i => new Date((start + i * binMin) * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  let path = '', lastI = -99;
+  const dots = [];
+  for (let i = 0; i < bins; i++) {
+    const x = left + i * bw, hp = peak[i] / top * usable, ha = avg[i] / top * usable;
+    if (hp >= 0.5) s.append(svg('rect', { x: x + 0.5, y: plot - hp, width: Math.max(1, bw - 1), height: hp, fill: color, 'fill-opacity': 0.28 }));
+    if (ha >= 0.5) s.append(svg('rect', { x: x + 0.5, y: plot - ha, width: Math.max(1, bw - 1), height: ha, fill: color, 'fill-opacity': 0.8 }));
+    if (ms[i] != null) { const px = (x + bw / 2).toFixed(1), py = (plot - ms[i] / latTop * usable).toFixed(1); path += (i - lastI <= 3 ? 'L' : 'M') + px + ' ' + py + ' '; dots.push([px, py]); lastI = i; } // bridge up to two quiet bins
+  }
+  if (path) s.append(svg('path', { d: path, fill: 'none', stroke: '#f5a300', 'stroke-width': 1.8, 'stroke-linejoin': 'round' }));
+  for (const [px, py] of dots) s.append(svg('circle', { cx: px, cy: py, r: 2, fill: '#f5a300' }));
+  for (let i = 0; i < bins; i++) { // one hover target per bin with the exact numbers
+    const hit = svg('rect', { x: left + i * bw, y: 0, width: bw, height: plot, fill: 'transparent' });
+    hit.append(svg('title', {}, when(i) + '\navg ' + fmtBps(avg[i]) + ' · max ' + fmtBps(peak[i]) + '\n' + (ms[i] != null ? 'latency ' + ms[i].toFixed(0) + ' ms' : 'latency: no TCP handshakes'))); s.append(hit);
+  }
+  return s;
+}
+
 function renderTopology() {
   if (!current || current.state === 'unavailable' && !current.transport) { topoHead.textContent = 'Status unavailable'; return; }
   const paths = current?.transport?.paths || [], { routed, others, extra } = topologyDevices();
   updateLinkRates(paths);
   updateExitRates(current?.exit?.servers || []);
+  renderPies(routed, others, extra);
   const [health, headline] = overallHealth(paths);
   topoHead.replaceChildren();
   if (health === 'good') { topoHead.append('Everything is ', element('b', 'great', { class: 'good' }), '!'); } else topoHead.append(element('b', headline, { class: health }));
@@ -352,7 +440,13 @@ function renderDeviceCard(d) {
   for (const [label, minutes] of [['1 h', 60], ['6 h', 360], ['24 h', 1440]]) {
     const b = element('button', label, { class: 'seg' + (usageRange === minutes ? ' active' : '') }); b.onclick = () => { usageRange = minutes; renderTopology(); }; range.append(b);
   }
-  hist.append(range, historyChart(u.history || [], usageRange)); card.append(hist);
+  const panel = (name, dir) => {
+    const p = element('div', null, { class: 'tp-panel' }), color = dir === 'down' ? '#2fb800' : '#0f7ae5', lg = element('div', null, { class: 'tp-legend' });
+    lg.innerHTML = '<span><i style="background:' + color + ';opacity:.8"></i>Average</span><span><i style="background:' + color + ';opacity:.28"></i>Busiest minute</span><span><i style="background:#f5a300"></i>Latency (TCP handshake)</span>';
+    p.append(element('h4', name), throughputChart(u.history || [], u.latency || [], usageRange, dir), lg); return p;
+  };
+  hist.append(range, panel('Download throughput & latency', 'down'), panel('Upload throughput & latency', 'up'),
+    element('p', (u.latency || []).length ? 'Latency is the round trip from this device to the hosts it connects to, timed from TCP handshakes crossing the tunnel (median per minute).' : 'No TCP connections from this device were timed yet, so there is no latency line.', { class: 'sub' })); card.append(hist);
 
   const ports = element('div'); ports.append(element('h3', 'Ports (remote side) · ' + (u.active_ports || 0) + ' active'));
   const pt = element('table'); pt.innerHTML = '<thead><tr><th>Proto</th><th>Port</th><th>Service</th><th>Now</th><th>Down</th><th>Up</th><th>Packets</th></tr></thead>';
@@ -385,28 +479,6 @@ function donut(rows, total) {
   return s;
 }
 // Minute triples [unix, up, down] -> bars of Mbps over the last `minutes`.
-function historyChart(history, minutes) {
-  const width = 520, height = 150, left = 36, bottom = 18, bins = Math.min(minutes, 60), binMinutes = minutes / bins;
-  const nowMin = Math.floor(Date.now() / 60000), start = nowMin - minutes + 1, up = new Array(bins).fill(0), down = new Array(bins).fill(0);
-  for (const [t, u, d] of history) {
-    const m = Math.floor(t / 60) - start; if (m < 0 || m >= minutes) continue;
-    const i = Math.min(bins - 1, Math.floor(m / binMinutes)); up[i] += u; down[i] += d;
-  }
-  const secs = binMinutes * 60, upM = up.map(v => v * 8 / secs), downM = down.map(v => v * 8 / secs);
-  const top = Math.max(1e5, ...upM, ...downM) * 1.1, plot = height - bottom, bw = (width - left) / bins;
-  const s = svg('svg', { class: 'topo-svg', viewBox: '0 0 ' + width + ' ' + height, role: 'img', 'aria-label': 'Usage history' });
-  s.style.maxWidth = '720px';
-  s.append(svg('line', { class: 'ax', x1: left, y1: plot, x2: width, y2: plot }), svg('text', { class: 'tb-sub', x: 2, y: 12, 'font-size': 10 }, fmtBps(top)), svg('text', { class: 'tb-sub', x: 2, y: plot, 'font-size': 10 }, '0'),
-    svg('text', { class: 'tb-sub', x: left, y: height - 4, 'font-size': 10 }, minutes >= 60 ? '-' + (minutes / 60) + ' h' : '-' + minutes + ' min'), svg('text', { class: 'tb-sub', x: width, y: height - 4, 'font-size': 10, 'text-anchor': 'end' }, 'Now'));
-  for (let i = 0; i < bins; i++) {
-    for (const [v, color] of [[downM[i], '#2fb800'], [upM[i], '#0f7ae5']]) {
-      const bh = v / top * (plot - 14); if (bh < 0.5) continue;
-      const bar = svg('rect', { x: left + i * bw + 0.5, y: plot - bh, width: Math.max(1, bw - 1), height: bh, fill: color, 'fill-opacity': 0.55 });
-      bar.append(svg('title', {}, fmtBps(v))); s.append(bar);
-    }
-  }
-  return s;
-}
 
 setInterval(() => { if (scannerSub === 'topology' && $('scanner').classList.contains('active')) renderTopology(); }, 1000);
 const selectTabBeforeTopology = selectTab;
