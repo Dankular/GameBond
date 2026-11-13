@@ -47,6 +47,7 @@ type fileConfig struct {
 	PeerBackups    [][]any                      `json:"peer_backups"`     // standby exit servers [[host, port], ...]
 	ExitFailoverMS int                          `json:"exit_failover_ms"` // silence before standbys are probed; 0 = 2000
 	ExitAutoBest   *bool                        `json:"exit_auto_best"`  // move to a clearly faster exit; default on
+	ReverseDNS     reverseDNSConfig             `json:"reverse_dns"`     // keep a DNS name pointed at the active exit node
 	MTU            int                          `json:"mtu"`
 	InitialMbps    float64                      `json:"bonding_initial_rate_mbps"`
 	MaxMbps        float64                      `json:"bonding_max_rate_mbps"`
@@ -429,6 +430,13 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			return nil
 		}, logOut)
 	}
+	rdns, rerr := newReverseDNS(filepath.Dir(*statusPath), cfg.ReverseDNS)
+	if rerr != nil {
+		return rerr
+	}
+	if rdns != nil {
+		go rdns.run(ctx, c.Snapshot, func(m string) { fmt.Fprintln(logOut, m) })
+	}
 	bridge.Uplink = routed
 	omrStatus := &omrState{mode: serverMode}
 	var meter *linkpolicy.Meter
@@ -591,6 +599,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 			if *statusPath != "" {
 				doc := statusDocument(cfg, peer, created, s, bridge, omrStatus, lanMgr, capture, c.DFEnforced(), alarms)
 				doc["slo"] = sr.status()
+				doc["reverse_dns"] = rdns.status()
 				if err := status.WriteJSON(*statusPath, doc); err != nil {
 					fmt.Fprintln(logOut, "status write failed:", err)
 				}

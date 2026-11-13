@@ -30,6 +30,13 @@ func proxyStack() error {
 	}
 	bridgeDevices(device)
 	startStreamTransport(stack)
+	// Inbound reverse proxy: ports the exit forwards to this stack reach the same port on loopback.
+	// GAMEBOND_REVERSE=0 turns it off.
+	if os.Getenv("GAMEBOND_REVERSE") != "0" {
+		if err := enableReverse(stack, defaultReversePolicy()); err != nil {
+			return err
+		}
+	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return err

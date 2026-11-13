@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"gamebond.local/nativeedge/client"
@@ -25,6 +26,7 @@ type scheduler struct {
 	links  int
 	backup bool
 	quick  bool
+	only   string
 	rng    *rand.Rand
 	log    func(map[string]any)
 	n      int
@@ -95,6 +97,19 @@ func (s *scheduler) catalogue() []fault {
 				time.Sleep(500 * time.Millisecond)
 			}
 		}})
+	}
+	if s.only != "" {
+		keep := map[string]bool{}
+		for _, c := range strings.Split(s.only, ",") {
+			keep[strings.TrimSpace(c)] = true
+		}
+		var kept []fault
+		for _, f := range fs {
+			if keep[f.class] {
+				kept = append(kept, f)
+			}
+		}
+		fs = kept
 	}
 	return fs
 }

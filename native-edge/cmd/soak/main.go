@@ -39,6 +39,7 @@ var (
 	outFlag     = flag.String("out", "", "output directory (default .runtime/soak/run-<time>)")
 	linksFlag   = flag.Int("links", 2, "emulated links")
 	quickFlag   = flag.Bool("quick", false, "short faults and gaps, for a smoke test")
+	onlyFlag    = flag.String("only", "", "comma-separated fault classes to run (default: all)")
 	seedFlag    = flag.Int64("seed", 1, "random seed")
 	afterFlag   = flag.Duration("exit-failover", 700*time.Millisecond, "client exit_failover_ms")
 	gameEvery   = flag.Duration("game-every", 20*time.Millisecond, "game probe interval (100 B, priority, duplicated)")
@@ -190,7 +191,7 @@ func run() error {
 	}
 	time.Sleep(10 * time.Second)
 
-	sched := &scheduler{ctx: ctx, net: net, c: c, st: st, links: *linksFlag, backup: len(servers) > 1, quick: *quickFlag, rng: rand.New(rand.NewSource(*seedFlag)), log: logEv}
+	sched := &scheduler{ctx: ctx, net: net, c: c, st: st, links: *linksFlag, backup: len(servers) > 1, quick: *quickFlag, only: *onlyFlag, rng: rand.New(rand.NewSource(*seedFlag)), log: logEv}
 	sched.run()
 	cancel()
 	time.Sleep(2 * time.Second)
