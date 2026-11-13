@@ -51,6 +51,9 @@ var widgetSecurity []byte
 //go:embed widget_setup.js
 var widgetSetup []byte
 
+//go:embed widget_endpoint.js
+var widgetEndpoint []byte
+
 func (s *Server) widgetPage(w http.ResponseWriter, r *http.Request) {
 	if !s.authorised(r) {
 		http.NotFound(w, r)
@@ -71,6 +74,7 @@ func (s *Server) widgetPage(w http.ResponseWriter, r *http.Request) {
 	page = bytes.ReplaceAll(page, []byte("__CLOUDFLARE_SCRIPT__"), widgetCloudflare)
 	page = bytes.ReplaceAll(page, []byte("__SECURITY_SCRIPT__"), widgetSecurity)
 	page = bytes.ReplaceAll(page, []byte("__SETUP_SCRIPT__"), widgetSetup)
+	page = bytes.ReplaceAll(page, []byte("__ENDPOINT_SCRIPT__"), widgetEndpoint)
 	w.Write(bytes.ReplaceAll(page, []byte("__TOKEN__"), []byte(s.token)))
 }
 

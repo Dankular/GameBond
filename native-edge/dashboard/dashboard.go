@@ -72,6 +72,8 @@ type Server struct {
 	cfAPI string // Cloudflare API base; empty is the real one (tests point it at a fake)
 	scan  scanController
 
+	endpoint endpointState
+
 	secMu     sync.Mutex // guards the cached portal client below
 	secClient *serveradmin.Client
 	secKey    string
@@ -100,6 +102,7 @@ func Start(o Options) (*Server, string, error) {
 	mux.HandleFunc("/api/lan-devices", s.guard(s.lanDevices))
 	mux.HandleFunc("/api/lan-access", s.guard(s.lanAccess))
 	mux.HandleFunc("/api/server-sync", s.guard(s.serverSyncAPI))
+	mux.HandleFunc("/api/endpoint", s.guard(s.endpointAPI))
 	mux.HandleFunc("/api/security", s.guard(s.securityAPI))
 	mux.HandleFunc("/api/security/", s.guard(s.securityAPI))
 	mux.HandleFunc("/api/speedtest", s.guard(s.speedtestAPI))
