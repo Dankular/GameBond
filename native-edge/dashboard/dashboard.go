@@ -65,6 +65,7 @@ type Server struct {
 	l     net.Listener
 	srv   *http.Server
 	mu    sync.Mutex // serialises config edits
+	sync  serverSyncState
 	scan  scanController
 }
 
@@ -90,6 +91,8 @@ func Start(o Options) (*Server, string, error) {
 	mux.HandleFunc("/api/app-policy", s.guard(s.appPolicy))
 	mux.HandleFunc("/api/lan-devices", s.guard(s.lanDevices))
 	mux.HandleFunc("/api/lan-access", s.guard(s.lanAccess))
+	mux.HandleFunc("/api/server-sync", s.guard(s.serverSyncAPI))
+	mux.HandleFunc("/api/server-admin", s.guard(s.serverAdminAPI))
 	mux.HandleFunc("/api/omr", s.guard(s.omrConfig))
 	mux.HandleFunc("/api/omr-check", s.guard(s.omrCheck))
 	mux.HandleFunc("/api/networks", s.guard(s.networks))

@@ -7,105 +7,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
+
+	"gamebond.local/nativeedge/serveradmin/fakeportal"
 )
-
-// fakePortal follows the real portal's rules: a session cookie and CSRF token from /api/login, 401 without
-// them, validation before writing, and 202 for a restart.
-type fakePortal struct {
-	mu        sync.Mutex
-	password  string
-	config    string
-	token     string
-	expireOne bool // the next authenticated call answers 401 once
-	writes    int
-	restarts  int
-	rejectAs  string // when set, validation fails with this message
-	logins    int
-}
-
-func (p *fakePortal) handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		reply := func(code int, v any) {
-			b, _ := json.Marshal(v)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(code)
-			w.Write(b)
-		}
-		body := map[string]any{}
-		if r.Method == http.MethodPost {
-			if r.Header.Get("Content-Length") == "" && r.ContentLength < 0 {
-				reply(400, map[string]any{"error": "invalid request body"})
-				return
-			}
-			raw, _ := io.ReadAll(r.Body)
-			if json.Unmarshal(raw, &body) != nil {
-				reply(400, map[string]any{"error": "invalid request body"})
-				return
-			}
-		}
-		if r.URL.Path == "/api/login" {
-			if body["password"] != p.password {
-				reply(401, map[string]any{"error": "invalid password"})
-				return
-			}
-			p.logins++
-			p.token = fmt.Sprintf("tok%d", p.logins)
-			w.Header().Add("Set-Cookie", "gb_session="+p.token+"; Path=/; Secure; HttpOnly; SameSite=Strict")
-			reply(200, map[string]any{"ok": true, "csrf": "csrf" + p.token})
-			return
-		}
-		c, err := r.Cookie("gb_session")
-		if err != nil || c.Value != p.token || p.token == "" || p.expireOne {
-			p.expireOne = false
-			p.token = ""
-			reply(401, map[string]any{"error": "login required"})
-			return
-		}
-		if r.Method == http.MethodPost && r.Header.Get("X-CSRF-Token") != "csrf"+p.token {
-			reply(403, map[string]any{"error": "bad CSRF token"})
-			return
-		}
-		switch r.URL.Path {
-		case "/api/config":
-			if r.Method == http.MethodGet {
-				reply(200, map[string]any{"text": p.config})
-				return
-			}
-			if p.rejectAs != "" {
-				reply(422, map[string]any{"ok": false, "error": p.rejectAs})
-				return
-			}
-			p.config = body["text"].(string)
-			p.writes++
-			reply(200, map[string]any{"ok": true, "error": nil})
-		case "/api/config/validate":
-			if p.rejectAs != "" {
-				reply(200, map[string]any{"ok": false, "error": p.rejectAs})
-				return
-			}
-			reply(200, map[string]any{"ok": true, "error": nil})
-		case "/api/restart":
-			p.restarts++
-			reply(202, map[string]any{"ok": true})
-		default:
-			reply(404, map[string]any{"error": "not found"})
-		}
-	})
-}
 
 const baseConfig = `{"role":"server","mtu":1280,"reorder_timeout_ms":30.5,"queues":{"5":{"priority":true}},"lan_tunnel_ips":["10.77.0.3"],"admin":{"enabled":true}}`
 
-func start(t *testing.T) (*fakePortal, *httptest.Server, string) {
-	p := &fakePortal{password: "correct horse battery", config: baseConfig}
-	srv := httptest.NewTLSServer(p.handler())
+func start(t *testing.T) (*fakeportal.Portal, *httptest.Server, string) {
+	p := fakeportal.New("correct horse battery", baseConfig)
+	srv := httptest.NewTLSServer(p.Handler())
 	t.Cleanup(srv.Close)
 	sum := sha256.Sum256(srv.Certificate().Raw)
 	return p, srv, hex.EncodeToString(sum[:])
@@ -113,7 +26,7 @@ func start(t *testing.T) (*fakePortal, *httptest.Server, string) {
 
 func TestEnsureTunnelIPsWritesValidatedMergedConfig(t *testing.T) {
 	p, srv, pin := start(t)
-	c, err := NewClient(srv.URL, p.password, pin)
+	c, err := NewClient(srv.URL, p.Password, pin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,12 +34,12 @@ func TestEnsureTunnelIPsWritesValidatedMergedConfig(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
-	ips, _ := TunnelIPs(p.config)
+	ips, _ := TunnelIPs(p.Config)
 	if strings.Join(ips, ",") != "10.77.0.3,10.77.0.4,10.77.0.10" {
 		t.Fatalf("lan_tunnel_ips = %v", ips)
 	}
 	var doc map[string]json.RawMessage
-	json.Unmarshal([]byte(p.config), &doc)
+	json.Unmarshal([]byte(p.Config), &doc)
 	compact := func(raw json.RawMessage) string {
 		var buf bytes.Buffer
 		if err := json.Compact(&buf, raw); err != nil {
@@ -135,36 +48,36 @@ func TestEnsureTunnelIPsWritesValidatedMergedConfig(t *testing.T) {
 		return buf.String()
 	}
 	if string(doc["reorder_timeout_ms"]) != "30.5" || string(doc["mtu"]) != "1280" || compact(doc["queues"]) != `{"5":{"priority":true}}` || compact(doc["admin"]) != `{"enabled":true}` {
-		t.Fatalf("other settings were not carried over: %s", p.config)
+		t.Fatalf("other settings were not carried over: %s", p.Config)
 	}
-	if p.restarts != 0 {
+	if p.Restarts != 0 {
 		t.Fatal("writing the configuration must not restart the server")
 	}
-	if changed, err := c.EnsureTunnelIPs(t.Context(), []string{"10.77.0.4"}); err != nil || changed || p.writes != 1 {
-		t.Fatalf("a second identical request must write nothing: changed=%v err=%v writes=%d", changed, err, p.writes)
+	if changed, err := c.EnsureTunnelIPs(t.Context(), []string{"10.77.0.4"}); err != nil || changed || p.Writes != 1 {
+		t.Fatalf("a second identical request must write nothing: changed=%v err=%v writes=%d", changed, err, p.Writes)
 	}
 }
 
 func TestRestartIsExplicit(t *testing.T) {
 	p, srv, pin := start(t)
-	c, _ := NewClient(srv.URL, p.password, pin)
-	if err := c.Restart(t.Context()); err != nil || p.restarts != 1 {
-		t.Fatalf("restart: %v (%d)", err, p.restarts)
+	c, _ := NewClient(srv.URL, p.Password, pin)
+	if err := c.Restart(t.Context()); err != nil || p.Restarts != 1 {
+		t.Fatalf("restart: %v (%d)", err, p.Restarts)
 	}
 }
 
 func TestCertificatePin(t *testing.T) {
 	p, srv, pin := start(t)
 	wrong := strings.Repeat("ab", 32)
-	c, _ := NewClient(srv.URL, p.password, wrong)
+	c, _ := NewClient(srv.URL, p.Password, wrong)
 	if err := c.Login(t.Context()); err == nil || !strings.Contains(err.Error(), "pinned") {
 		t.Fatalf("a wrong pin must be refused: %v", err)
 	}
-	c, _ = NewClient(srv.URL, p.password, strings.ToUpper(pin[:2])+":"+pin[2:4]+pin[4:]) // colons and case are tolerated
+	c, _ = NewClient(srv.URL, p.Password, strings.ToUpper(pin[:2])+":"+pin[2:4]+pin[4:]) // colons and case are tolerated
 	if err := c.Login(t.Context()); err != nil {
 		t.Fatalf("the right pin must work: %v", err)
 	}
-	c, _ = NewClient(srv.URL, p.password, "") // self-signed and unpinned: the system roots do not vouch for it
+	c, _ = NewClient(srv.URL, p.Password, "") // self-signed and unpinned: the system roots do not vouch for it
 	if err := c.Login(t.Context()); err == nil {
 		t.Fatal("an unpinned self-signed certificate must be refused")
 	}
@@ -183,28 +96,28 @@ func TestWrongPasswordNeverEchoed(t *testing.T) {
 
 func TestSessionExpiryLogsInAgain(t *testing.T) {
 	p, srv, pin := start(t)
-	c, _ := NewClient(srv.URL, p.password, pin)
+	c, _ := NewClient(srv.URL, p.Password, pin)
 	if _, err := c.Config(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	p.mu.Lock()
-	p.expireOne = true
-	p.mu.Unlock()
+	p.Lock()
+	p.ExpireOne = true
+	p.Unlock()
 	if _, err := c.Config(t.Context()); err != nil {
 		t.Fatalf("an expired session should be renewed once: %v", err)
 	}
-	if p.logins != 2 {
-		t.Fatalf("logins = %d", p.logins)
+	if p.Logins != 2 {
+		t.Fatalf("logins = %d", p.Logins)
 	}
 }
 
 func TestRejectedConfigurationIsReportedAndNotWritten(t *testing.T) {
 	p, srv, pin := start(t)
-	p.rejectAs = "ValueError: lan_tunnel_ips must be distinct"
-	c, _ := NewClient(srv.URL, p.password, pin)
+	p.RejectAs = "ValueError: lan_tunnel_ips must be distinct"
+	c, _ := NewClient(srv.URL, p.Password, pin)
 	_, err := c.EnsureTunnelIPs(t.Context(), []string{"10.77.0.9"})
-	if err == nil || !strings.Contains(err.Error(), "must be distinct") || p.writes != 0 {
-		t.Fatalf("err=%v writes=%d", err, p.writes)
+	if err == nil || !strings.Contains(err.Error(), "must be distinct") || p.Writes != 0 {
+		t.Fatalf("err=%v writes=%d", err, p.Writes)
 	}
 }
 

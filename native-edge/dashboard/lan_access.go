@@ -3,10 +3,12 @@ package dashboard
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
 	"path/filepath"
+	"strings"
 
 	"gamebond.local/nativeedge/lan"
 )
@@ -34,12 +36,13 @@ func (s *Server) lanAccess(w http.ResponseWriter, r *http.Request) {
 			MAC    string `json:"mac"`
 			Name   string `json:"name"`
 			Mode   string `json:"mode"`
+			IP     string `json:"ip"` // optional fixed address for accept; empty picks the next free one
 		}
 		if err != nil || json.Unmarshal(raw, &req) != nil {
 			reply(w, 400, map[string]any{"error": "invalid request"})
 			return
 		}
-		if err := s.applyAccess(accessPath, pendingPath, cfg, req.Action, req.MAC, req.Name, req.Mode); err != nil {
+		if err := s.applyAccess(accessPath, pendingPath, cfg, req.Action, req.MAC, req.Name, req.Mode, req.IP); err != nil {
 			reply(w, 422, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
@@ -61,7 +64,7 @@ func (s *Server) accessView(accessPath, pendingPath string, cfg map[string]any) 
 	return map[string]any{"mode": a.Mode, "accepted": a.Accepted, "blocked": a.Blocked, "pending": live}
 }
 
-func (s *Server) applyAccess(accessPath, pendingPath string, cfg map[string]any, action, mac, name, mode string) error {
+func (s *Server) applyAccess(accessPath, pendingPath string, cfg map[string]any, action, mac, name, mode string, fixedIP ...string) error {
 	if action == "mode" {
 		if mode != lan.AccessClosed && mode != lan.AccessAsk && mode != lan.AccessAuto {
 			return errors.New("mode must be closed, ask or auto")
@@ -106,6 +109,15 @@ func (s *Server) applyAccess(accessPath, pendingPath string, cfg map[string]any,
 			if i := indexOf(a.Accepted, norm); i >= 0 {
 				ip = a.Accepted[i].IP
 			}
+			if want := ""; len(fixedIP) > 0 {
+				want = strings.TrimSpace(fixedIP[0])
+				if want != "" {
+					if err := checkFixedIP(client, want, taken, norm, a.Accepted); err != nil {
+						return err
+					}
+					ip = want
+				}
+			}
 			if ip == "" {
 				if ip = lan.NextFreeIP(client, taken); ip == "" {
 					return errors.New("no free tunnel address left")
@@ -131,4 +143,34 @@ func indexOf(list []lan.AccessEntry, mac string) int {
 		}
 	}
 	return -1
+}
+
+// checkFixedIP vets an address an operator chose for a device: a usable host address of the tunnel subnet that no
+// other device holds. The server accepts 10.77.0.3 to 10.77.0.254, so the same range is required here.
+func checkFixedIP(client netip.Addr, want string, taken []string, mac string, accepted []lan.AccessEntry) error {
+	ip, err := netip.ParseAddr(want)
+	if err != nil || !ip.Is4() || ip.String() != want {
+		return fmt.Errorf("%q is not an IPv4 address", want)
+	}
+	c, w := client.As4(), ip.As4()
+	if c[0] != w[0] || c[1] != w[1] || c[2] != w[2] || w[3] < 3 || w[3] > 254 || ip == client {
+		return fmt.Errorf("%s is not usable: pick an address from %d.%d.%d.3 to %d.%d.%d.254 other than the client's", want, c[0], c[1], c[2], c[0], c[1], c[2])
+	}
+	for _, e := range accepted {
+		if e.IP == want && e.MAC != mac {
+			return fmt.Errorf("%s is already used by %s", want, e.MAC)
+		}
+	}
+	for _, t := range taken {
+		if t == want {
+			held := false
+			for _, e := range accepted {
+				held = held || (e.IP == want && e.MAC == mac)
+			}
+			if !held {
+				return fmt.Errorf("%s is already used by another device", want)
+			}
+		}
+	}
+	return nil
 }
