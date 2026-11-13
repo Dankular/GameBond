@@ -136,11 +136,35 @@ function flowIntensity(bps) {
 // One direction of a connection: dashes travel along it, a glow pulses over them, and a soft halo
 // sits underneath. Speed, thickness and glow all grow with the traffic. The animation phase comes
 // from the wall clock so a redraw does not restart it.
+//
+// Traffic spikes would make the glow jump, so each connection keeps a displayed intensity that eases
+// toward the measured one every frame: quickly when traffic rises (tau 0.5 s), slowly when it falls
+// (tau 1.6 s). The map is redrawn on every status update; the frame loop below keeps the live
+// elements of the latest redraw moving between the redraws.
+const flowState = new Map(); // key -> { cur, target, els, seen }
+let flowFrame = 0, flowLast = 0, flowLoop = false;
+function flowTick(now) {
+  const dt = Math.min(0.25, (now - (flowLast || now)) / 1000);
+  flowLast = now;
+  for (const [key, st] of flowState) {
+    const tau = st.target > st.cur ? 0.5 : 1.6;
+    st.cur += (st.target - st.cur) * (1 - Math.exp(-dt / tau));
+    if (Math.abs(st.target - st.cur) < 0.002) st.cur = st.target;
+    for (const el of st.els) el.style.setProperty('--i', st.cur.toFixed(3));
+    if (Date.now() - st.seen > 10000) flowState.delete(key);
+  }
+  requestAnimationFrame(flowTick);
+}
 function flowLayer(g, x1, y1, x2, y2, bps, forward) {
-  const i = flowIntensity(bps);
-  if (!i) return;
+  const key = [x1, y1, x2, y2, forward].join(',');
+  let st = flowState.get(key);
+  if (!st) { st = { cur: 0, target: 0, els: [], seen: 0 }; flowState.set(key, st); }
+  st.target = flowIntensity(bps); st.seen = Date.now(); st.els = [];
+  if (!flowLoop) { flowLoop = true; requestAnimationFrame(flowTick); }
+  const i = st.cur;
+  if (i < 0.02 && !st.target) return; // faded out and idle: nothing to draw
   const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1, off = (forward ? 3 : -3), ox = -dy / len * off, oy = dx / len * off;
-  const dur = 1.8 - 1.45 * i, t = (Date.now() / 1000), cls = forward ? 'down' : 'up';
+  const dur = 1.8 - 1.45 * Math.max(i, 0.05), t = (Date.now() / 1000), cls = forward ? 'down' : 'up';
   const attrs = { x1: x1 + ox, y1: y1 + oy, x2: x2 + ox, y2: y2 + oy };
   const halo = svg('line', { ...attrs, class: 'tf-halo ' + cls });
   halo.style.setProperty('--i', i.toFixed(3));
@@ -152,6 +176,7 @@ function flowLayer(g, x1, y1, x2, y2, bps, forward) {
   line.style.animationDelay = '-' + (t % dur).toFixed(3) + 's, -' + (t % (dur * 3)).toFixed(3) + 's';
   const title = svg('title'); title.textContent = (forward ? 'Download ' : 'Upload ') + fmtBps(bps);
   line.append(title);
+  st.els = [halo, line];
   g.append(halo, line);
 }
 // flow = { down, up } in bps; down runs from (x1,y1) to (x2,y2), up the other way.
