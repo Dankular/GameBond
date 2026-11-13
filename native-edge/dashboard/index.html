@@ -134,7 +134,7 @@ function renderRedundancy(d, paths) {
     ["Rebuilt from parity (download)", num(down.rebuilt_from_parity)],
     ["Gave up / arrived too late", num(down.holes_given_up) + " / " + num(down.arrived_after_deadline)],
     ["Repairs asked / exhausted", num(down.repairs_asked) + " / " + num(down.repairs_exhausted)],
-    ["Upload: lost on wire", num(up.frames_lost_on_wire) + " frames; " + num(up.resent_at_once) + " resent at once, " + num(up.held_for_sibling_copy) + " held for their copy, " + num(up.unrecoverable_no_cache) + " unrecoverable"],
+    ["Upload: copies lost on a link", num(up.frames_lost_on_wire) + " (per copy). Recovered: " + num(up.held_for_sibling_copy) + " by the other link's copy, " + num(up.resent_at_once) + " by resend. Not recovered: " + num(up.unrecoverable_no_cache)],
     ["Upload recovery", "SACK lost " + num(snd.SackLost) + ", tail probes " + num(snd.TailProbed) + ", repair copies " + num(snd.RepairCopies) + ", throttled " + num(snd.RepairThrottled)],
     ["Reed-Solomon / XOR parity sent", num(snd.ParityRSSent) + " / " + num(snd.ParitySent)],
     ["Dropped inside this PC", num(local.os_udp_receive_errors) + " OS receive errors, " + num(local.socket_send_errors) + " send errors, " + num(local.delivery_queue_full) + " queue full"],

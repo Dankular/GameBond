@@ -23,10 +23,10 @@ type Kind struct {
 
 // Kinds is the fixed list, in display order.
 var Kinds = []Kind{
-	{"lost_on_wire", "Lost on the wire", "Loss", "Frames we sent that never reached the server and had to be resent or given up on."},
+	{"lost_on_wire", "Upload copies lost on a link", "Loss", "A copy one link dropped on the way to the server, counted per copy. Usually recovered by the other link's duplicate or a resend; 'Packets lost' is what the application truly lost."},
 	{"never_arrived", "Never arrived", "Loss", "Packets from the server that did not arrive, even after repair."},
-	{"holes_given_up", "Gaps given up on", "Loss", "The receiver stopped waiting for a missing packet and moved on."},
-	{"arrived_late", "Arrived late", "Loss", "A packet that showed up after its deadline and was too late to use."},
+	{"holes_given_up", "Download gaps given up on", "Loss", "The receiver stopped waiting for a missing packet and moved on; most then arrive late and are still delivered."},
+	{"arrived_late", "Download arrived late (recovered)", "Loss", "A packet that showed up after the wait and was delivered anyway, out of order."},
 	{"repairs_exhausted", "Repair gave up", "Loss", "Repair requests ran out of attempts for a missing packet."},
 	{"socket_send_errors", "Socket send errors", "Local", "The operating system refused to send a datagram."},
 	{"os_udp_receive_errors", "OS receive errors", "Local", "The operating system dropped incoming datagrams before the client read them."},
