@@ -266,8 +266,30 @@ async function openAccess() { await refreshAccess(); showDialog('accessdialog');
 refreshAccess(); setInterval(refreshAccess, 3000);
 document.querySelector('.network-actions').append(action('Network access', openAccess));
 const settingsDialog = modal('settingsdialog', 'Settings'), settingsMenu = element('div'); settingsMenu.className = 'settings-menu'; settingsDialog.append(settingsMenu);
-for (const [label, handler] of [['Application routing', () => $('capturedapps').click()], ['Select networks', () => $('selectnetworks').click()], ['Link roles and limits', () => $('linklimits').click()], ['Connected devices', openDevices], ['Network access', openAccess], ['OpenMPTCProuter', openOMR]]) settingsMenu.append(action(label, () => { settingsDialog.close(); handler(); }));
+for (const [label, handler] of [['Application routing', () => $('capturedapps').click()], ['Select networks', () => $('selectnetworks').click()], ['Local networks and routes', openLocalNetworks], ['Link roles and limits', () => $('linklimits').click()], ['Connected devices', openDevices], ['Network access', openAccess], ['OpenMPTCProuter', openOMR]]) settingsMenu.append(action(label, () => { settingsDialog.close(); handler(); }));
 $('settings').onclick = () => showDialog('settingsdialog');
+
+// Configure isolated local Layer 3 networks and static routes.
+const localDialog = modal('localnetworkdialog', 'Local networks and routes');
+localDialog.append(element('p', 'Configure dedicated IPv4 LAN adapters, DHCP pools or relays, inter-network forwarding, and static routes. Changes apply after reconnecting.'));
+localDialog.append(element('p', 'VLAN trunk mode is unavailable until the packet driver confirms tagged-frame support.'));
+const localAdapters = element('p'); localAdapters.className = 'help'; localDialog.append(localAdapters);
+const localState = element('p', '', { role: 'status' }); localDialog.append(localState);
+const localNetworkText = element('textarea', null, { id: 'localnetworkconfig', spellcheck: 'false', 'aria-label': 'Local networks JSON' });
+const localRouteText = element('textarea', null, { id: 'localrouteconfig', spellcheck: 'false', 'aria-label': 'Static routes JSON' });
+localDialog.append(element('h3', 'Local networks (JSON)'), localNetworkText, element('h3', 'Static routes (JSON)'), localRouteText);
+const localRow = element('div'); localRow.className = 'row';
+const localMessage = element('span', '', { id: 'localnetworkmsg', role: 'status' });
+const localSave = action('Save local routing', async () => {
+  try { await api('local-networks', 'PUT', { local_networks: JSON.parse(localNetworkText.value), static_routes: JSON.parse(localRouteText.value) }); localMessage.textContent = 'Saved; reconnect to apply.'; }
+  catch (e) { localMessage.textContent = e.message; }
+});
+localRow.append(localSave, localMessage); localDialog.append(localRow);
+async function openLocalNetworks() {
+  try { const config = await api('local-networks'); localNetworkText.value = JSON.stringify(config.local_networks || [], null, 2); localRouteText.value = JSON.stringify(config.static_routes || [], null, 2); localAdapters.textContent = 'Adapters: ' + (config.adapters || []).map(a => `${a.name} (${a.id || a.index}; ${a.up ? 'up' : 'offline'})`).join(', '); const rows = config.status?.networks || []; localState.textContent = rows.length ? rows.map(n => `${n.name}: ${n.up ? 'up' : 'down'} - ${n.prefix}`).join(' | ') : 'No configured local networks are running.'; localMessage.textContent = ''; showDialog('localnetworkdialog'); }
+  catch (e) { $('actionmsg').textContent = e.message; }
+}
+
 
 // Stable identities keep an unplugged selection distinct from an adapter that
 // later reuses its interface index, and follow an adapter whose index changed.

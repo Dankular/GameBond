@@ -12,3 +12,10 @@ func openFrameIO(d lan.DeviceConfig) (lan.FrameIO, error) {
 	}
 	return lan.OpenLinux(d.InterfaceName)
 }
+
+func openLocalNetworkFrameIO(n lan.NetworkConfig) (lan.FrameIO, error) {
+	if n.InterfaceName == "" {
+		return nil, errors.New("local network needs interface_name on Linux")
+	}
+	return lan.OpenLinux(n.InterfaceName)
+}
