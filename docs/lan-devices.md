@@ -61,6 +61,55 @@ The device's address must be in the client tunnel `/24`, not `.0`, `.1` (VPS),
 `lan_tunnel_ips`; the server drops any other source. An adapter cannot be both
 a bonded uplink and a device adapter. Up to four devices are supported.
 
+## Local routed networks
+
+For a subnet behind a dedicated adapter, configure `local_networks` in the
+client config or in dashboard **Settings → Local networks and routes**. Each
+network needs a unique name, an adapter identity, and an IPv4 gateway prefix.
+Windows uses `interface_id`; Linux configuration uses `interface_name`.
+Adapters already assigned to a VPN uplink or `lan_devices` are rejected.
+Changes take effect after reconnecting.
+
+Example with a DHCP pool:
+
+```json
+{
+  "local_networks": [{
+    "name": "Office LAN",
+    "interface_id": "{ADAPTER-GUID}",
+    "interface_index": 12,
+    "prefix": "192.168.40.1/24",
+    "dhcp": {
+      "pool_start": "192.168.40.100",
+      "pool_end": "192.168.40.199",
+      "lease_seconds": 86400,
+      "dns": ["1.1.1.1", "8.8.8.8"],
+      "reservations": [{"mac": "02:00:00:00:00:10", "ip": "192.168.40.110", "name": "printer"}]
+    },
+    "forward_to": ["Lab LAN"]
+  }, {
+    "name": "Lab LAN",
+    "interface_id": "{ANOTHER-ADAPTER-GUID}",
+    "interface_index": 13,
+    "prefix": "192.168.50.1/24"
+  }],
+  "static_routes": [{
+    "destination": "10.20.0.0/16",
+    "next_hop": "192.168.40.2",
+    "interface": "Office LAN"
+  }]
+}
+```
+
+Replace the example adapter IDs with actual adapter GUIDs. `dhcp` and `relay`
+are mutually exclusive; relay mode is `"relay":{"servers":["192.168.1.10"]}`.
+Omitting both leaves DHCP to an external server or static client settings.
+`forward_to` allows a bidirectional pair; without it, networks cannot route to
+each other. Static routes use a next hop on the named connected network. DHCP
+leases persist separately from legacy `lan_devices` leases. VLAN IDs are
+currently rejected at runtime until tagged-frame preservation is verified for
+the Windows packet driver.
+
 ## Behavior
 
 - Plain IPv4 forwarding, no NAT on the workstation. The PS5's default gateway

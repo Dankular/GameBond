@@ -388,6 +388,9 @@ func Validate(config map[string]any, opt Options) (*Result, error) {
 	if err := lanDevices(config, role, clientIP); err != nil {
 		return nil, err
 	}
+	if err := localNetworks(config, role, clientIP); err != nil {
+		return nil, err
+	}
 	if err := lanTunnelIPs(config, role, clientIP); err != nil {
 		return nil, err
 	}
@@ -619,6 +622,61 @@ func lanDevices(config map[string]any, role string, client netip.Addr) error {
 	}
 	_, err = lan.LoadDevices(enc, client, ids, idx)
 	return err
+}
+
+func localNetworks(config map[string]any, role string, client netip.Addr) error {
+	networks, err := json.Marshal(config["local_networks"])
+	if err != nil {
+		return err
+	}
+	routes, err := json.Marshal(config["static_routes"])
+	if err != nil {
+		return err
+	}
+	var uplinkIDs []string
+	if raw, ok := config["interface_ids"].([]any); ok {
+		for _, value := range raw {
+			if id, ok := value.(string); ok && id != "" {
+				uplinkIDs = append(uplinkIDs, id)
+			}
+		}
+	}
+	var uplinkIndices []int
+	if raw, ok := config["interface_indices"].([]any); ok {
+		for _, value := range raw {
+			if n, ok := isInt(value); ok && n > 0 && n <= 1<<31-1 {
+				uplinkIndices = append(uplinkIndices, int(n))
+			}
+		}
+	}
+	legacyRaw, err := json.Marshal(config["lan_devices"])
+	if err != nil {
+		return err
+	}
+	legacy, err := lan.LoadDevices(legacyRaw, client, uplinkIDs, uplinkIndices)
+	if err != nil {
+		return err
+	}
+	var deviceAdapters []string
+	var deviceIndices []int
+	for _, device := range legacy {
+		if device.InterfaceID != "" {
+			deviceAdapters = append(deviceAdapters, device.InterfaceID)
+		} else if device.InterfaceName != "" {
+			deviceAdapters = append(deviceAdapters, "name:"+device.InterfaceName)
+		}
+		if device.InterfaceIndex > 0 {
+			deviceIndices = append(deviceIndices, device.InterfaceIndex)
+		}
+	}
+	parsed, err := lan.LoadLocalConfig(networks, routes, uplinkIDs, deviceAdapters, uplinkIndices, deviceIndices)
+	if err != nil {
+		return err
+	}
+	if role != "client" && (len(parsed.Networks) > 0 || len(parsed.Routes) > 0) {
+		return errors.New("local_networks and static_routes belong to the client configuration")
+	}
+	return nil
 }
 
 func lanTunnelIPs(config map[string]any, role string, client netip.Addr) error {

@@ -108,6 +108,7 @@ func Start(o Options) (*Server, string, error) {
 	mux.HandleFunc("/api/omr", s.guard(s.omrConfig))
 	mux.HandleFunc("/api/omr-check", s.guard(s.omrCheck))
 	mux.HandleFunc("/api/networks", s.guard(s.networks))
+	mux.HandleFunc("/api/local-networks", s.guard(s.localNetworks))
 	mux.HandleFunc("/api/scanner", s.guard(s.scannerAPI))
 	mux.HandleFunc("/api/events", s.guard(s.journalAPI))
 	mux.HandleFunc("/api/hardware", s.guard(s.hardware))

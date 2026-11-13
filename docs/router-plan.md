@@ -21,10 +21,10 @@ Linux frame I/O backend is already there; a Linux runtime is not.
 |---|---|---|
 | 1 | Connected devices: DHCP, ARP, own tunnel address, forwarding ([lan-devices.md](lan-devices.md)) | done |
 | 2 | DNS for connected devices: configured names answered in-line | done, this change |
-| 3 | Router config model: LAN, DHCP reservations, DNS, routing policy, forwards; the DNS tab grows into a Router tab | planned |
+| 3 | Local IPv4 router: subnet DHCP pools/relay, inter-network forwarding, and static routes | implemented in the Go client; VLAN trunks remain gated pending Packet Filter frame-preservation evidence |
 | 4 | Port forwards: DNAT on the VPS, managed from the UI (fixes the inbound limit) | planned |
 | 5 | Routing policy by domain, IP or port: via the bond, a chosen uplink, or direct | planned; "direct" needs workstation NAT, which does not exist |
-| 6 | A small subnet behind a switch: DHCP pool, per-host MAC table, `lan_tunnel_ips` as a range | planned |
+| 6 | A small subnet behind a switch: DHCP pool, per-host MAC table, `lan_tunnel_ips` as a range | partially implemented: DHCP pools and local routing exist; server-side `lan_tunnel_ips` range support remains planned |
 
 Order after phase 2 is open: ports before policy is cheaper, policy is the
 larger feature.
