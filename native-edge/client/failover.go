@@ -18,20 +18,41 @@ import (
 //
 // Silence alone does not move the client, because a local outage (both links down for a few seconds)
 // looks identical and a switch resets every bonded TCP stream, which would turn a survivable gap into a
-// dropped connection. Instead the client sends real handshakes to the standbys while the active server
-// is silent and only moves to one that answers. If no standby answers, the problem is on this side
-// and nothing is switched. A standby is promoted with the handshake it just completed, so no traffic
-// waits for a second one.
+// dropped connection. The evidence that the problem is the active server and not this side is a
+// standby that is answering at the same moment.
 //
-// While the active server is healthy the standbys are still probed now and then, so a standby that
-// has stopped working is reported before it is needed.
+// Each standby is therefore kept warm: a real client receiver handshaken with it over the live
+// plain-UDP uplinks, exchanging its own keepalives, ready to take over without another handshake.
+// Two thresholds decide when to move:
+//
+//   - fast: the active server has been silent for a few multiples of the longest gap between its frames
+//     seen lately (floor minFastAfter), and a standby has been heard within aliveWithin. The active
+//     server and the standby share this PC's links, so a standby that is audible while the active
+//     server is not points at the server.
+//   - slow: the active server has been silent for FailoverAfter and a standby is ready, although not
+//     heard in the last instant. Used when the standby evidence is stale.
+//
+// If no standby is ready, nothing is switched however long the silence lasts. A standby that has
+// stopped working is reported while the active server is still healthy, before it is needed.
 
 const (
-	defaultFailoverAfter = 2 * time.Second
+	defaultFailoverAfter = time.Second
 	minFailoverAfter     = 500 * time.Millisecond
+	// minFastAfter is the lowest silence that can trigger the fast path.
+	minFastAfter = 300 * time.Millisecond
+	// aliveWithin is how recently a standby must have sent an authenticated frame to count as audible.
+	aliveWithin = 300 * time.Millisecond
+	// fastFactor scales the longest recent gap between active-server frames into the fast threshold.
+	fastFactor = 4
+	// gapSeconds is how many one-second maxima of that gap are kept; fastSamples is how many must exist
+	// before the fast threshold is trusted.
+	gapSeconds  = 30
+	fastSamples = 3
 )
 
-// Probe timing; variables so tests can shorten them.
+// Probe timing; variables so tests can shorten them. probeFirst delays building the warm standbys at
+// start, probeTimeout is how long a first handshake may take before the standby is called unreachable,
+// and probeEvery is how long an unanswered standby waits before it is rebuilt from scratch.
 var (
 	probeEvery   = 30 * time.Second
 	probeFirst   = 5 * time.Second
@@ -79,18 +100,18 @@ type exitInfo struct {
 }
 
 type candidate struct {
-	addr    netip.AddrPort
-	st      *stack
-	ready   bool
-	readyAt time.Time
+	addr     netip.AddrPort
+	st       *stack
+	ready    bool
+	readyAt  time.Time
+	started  time.Time // when this candidate's handshake began (reset when it is rebuilt)
+	lastAuth time.Time // the last authenticated frame from it
 }
 
-// standby is a set of throwaway client receivers, one per standby server, handshaking over the live
+// standby is the warm set: one client receiver per standby server, kept handshaken over the live
 // plain-UDP uplinks while the real session carries on.
 type standby struct {
-	started  time.Time
-	failover bool // the active server is silent: a ready candidate is promoted
-	cands    []*candidate
+	cands []*candidate
 }
 
 // failoverState is touched only by the loop goroutine, except servers/active which are guarded by mu.
@@ -107,6 +128,15 @@ type failoverState struct {
 	lastSwitch  time.Time
 	lastReason  string
 	silent      time.Duration
+	// fast is the adaptive silence threshold (see the package comment); it equals after until enough
+	// seconds of frames have been seen. gaps holds the longest inter-frame gap of each recent second.
+	fast      time.Duration
+	gapPrev   time.Time
+	gapSec    time.Time
+	gapMax    time.Duration
+	gaps      [gapSeconds]time.Duration
+	gapCount  int
+	searching bool
 	// traffic accumulates the wire bytes each exit has carried; lastTX/lastRX are the active
 	// stack's path totals at the previous sample (a new stack after a switch starts from zero).
 	traffic        map[netip.AddrPort]*[2]uint64
@@ -118,7 +148,6 @@ func (c *Client) serverAddr() netip.AddrPort { return *c.serverPtr.Load() }
 
 func (c *Client) setServer(a netip.AddrPort) { c.serverPtr.Store(&a) }
 
-
 func (c *Client) initFailover(now time.Time) {
 	f := &c.fo
 	f.servers = append([]netip.AddrPort{c.cfg.Server}, c.cfg.Backups...)
@@ -128,6 +157,7 @@ func (c *Client) initFailover(now time.Time) {
 	}
 	f.after = max(f.after, minFailoverAfter)
 	f.lastAuth, f.activeSince = now, now
+	f.fast = f.after
 	f.nextProbe = now.Add(probeFirst)
 	f.info = map[netip.AddrPort]*exitInfo{}
 	for _, s := range f.servers {
@@ -218,6 +248,45 @@ func (c *Client) receiver() *bond.Receiver {
 	return c.recv
 }
 
+// noteAuth records an authenticated frame from the active server and keeps the adaptive threshold.
+func (c *Client) noteAuth(now time.Time) {
+	f := &c.fo
+	if !f.gapPrev.IsZero() {
+		if g := now.Sub(f.gapPrev); g > f.gapMax && g < f.after {
+			f.gapMax = g // a longer silence is an outage, not the line's own rhythm
+		}
+	}
+	f.gapPrev, f.lastAuth = now, now
+	if f.gapSec.IsZero() {
+		f.gapSec = now
+	}
+	if now.Sub(f.gapSec) >= time.Second {
+		f.gaps[f.gapCount%gapSeconds] = f.gapMax
+		f.gapCount++
+		f.gapSec, f.gapMax = now, 0
+		f.fast = f.adaptive()
+	}
+}
+
+// adaptive is fastFactor times the second-largest of the recent one-second maxima (so one stray stall
+// does not dominate), within [minFastAfter, after].
+func (f *failoverState) adaptive() time.Duration {
+	n := min(f.gapCount, gapSeconds)
+	if n < fastSamples {
+		return f.after
+	}
+	var top1, top2 time.Duration
+	for _, g := range f.gaps[:n] {
+		switch {
+		case g > top1:
+			top1, top2 = g, top1
+		case g > top2:
+			top2 = g
+		}
+	}
+	return min(max(fastFactor*top2, minFastAfter), f.after)
+}
+
 // failoverTick runs once per loop pass.
 func (c *Client) failoverTick(now time.Time) error {
 	f := &c.fo
@@ -232,48 +301,67 @@ func (c *Client) failoverTick(now time.Time) error {
 	}
 	if !anyLive {
 		// No adapter is up: the silence is ours, not the server's.
-		f.lastAuth = now
+		f.lastAuth, f.gapPrev = now, time.Time{}
 	}
 	f.silent = now.Sub(f.lastAuth)
-	failover := f.silent >= f.after
-	st := f.standby
-	switch {
-	case st != nil && st.failover && !failover:
-		f.standby = nil // the active server answered again
-	case st != nil && !st.failover && failover:
-		f.standby = nil // start over as a failover search
-	case st == nil && failover && anyLive:
-		f.standby = nil
-		if err := c.startStandby(now, true); err != nil {
-			return err
-		}
-	case st == nil && !failover && anyLive && !now.Before(f.nextProbe):
-		f.nextProbe = now.Add(probeEvery)
-		if err := c.startStandby(now, false); err != nil {
+	f.searching = anyLive && f.silent >= f.fast
+	suspect := f.silent >= max(f.fast/3, 100*time.Millisecond)
+	if f.standby == nil && anyLive && (!now.Before(f.nextProbe) || suspect) {
+		if err := c.startStandby(now); err != nil {
 			return err
 		}
 	}
-	if f.standby != nil {
-		return c.standbyTick(now)
+	if f.standby == nil {
+		return nil
+	}
+	c.standbyTick(now)
+	if !anyLive {
+		return nil
+	}
+	var slow, fast *candidate
+	for _, cand := range f.standby.cands {
+		if !cand.ready {
+			continue
+		}
+		if slow == nil {
+			slow = cand
+		}
+		if fast == nil && now.Sub(cand.lastAuth) <= aliveWithin {
+			fast = cand
+		}
+	}
+	switch {
+	case fast != nil && f.silent >= f.fast:
+		return c.promote(fast, now)
+	case slow != nil && f.silent >= f.after:
+		return c.promote(slow, now)
 	}
 	return nil
 }
 
-func (c *Client) startStandby(now time.Time, failover bool) error {
+func (c *Client) startStandby(now time.Time) error {
 	f := &c.fo
-	st := &standby{started: now, failover: failover}
+	st := &standby{}
 	for i, s := range f.servers {
 		if i == f.active {
 			continue
 		}
-		bs, err := c.buildStack(s, now, true)
+		cand, err := c.newCandidate(s, now)
 		if err != nil {
 			return err
 		}
-		st.cands = append(st.cands, &candidate{addr: s, st: bs})
+		st.cands = append(st.cands, cand)
 	}
 	f.standby = st
 	return nil
+}
+
+func (c *Client) newCandidate(addr netip.AddrPort, now time.Time) (*candidate, error) {
+	bs, err := c.buildStack(addr, now, true)
+	if err != nil {
+		return nil, err
+	}
+	return &candidate{addr: addr, st: bs, started: now}, nil
 }
 
 // standbyInbound feeds a datagram from a standby server to its probe receiver. It reports whether
@@ -289,6 +377,9 @@ func (c *Client) standbyInbound(d inbound, now time.Time) bool {
 		}
 		res, err := cand.st.recv.ReceiveVia(d.local, d.frame, d.endpoint, now, true)
 		if err == nil {
+			if res.Authenticated {
+				cand.lastAuth = now
+			}
 			for _, o := range res.Send {
 				c.writeStandby(o)
 			}
@@ -305,52 +396,38 @@ func (c *Client) writeStandby(d bond.Datagram) {
 	_, _ = c.conns[d.Local].WriteToUDPAddrPort(d.Frame, d.Endpoint)
 }
 
-func (c *Client) standbyTick(now time.Time) error {
+// standbyTick keeps the warm candidates handshaking and their reported state current.
+func (c *Client) standbyTick(now time.Time) {
 	f := &c.fo
-	st := f.standby
-	for _, cand := range st.cands {
+	for _, cand := range f.standby.cands {
 		res, err := cand.st.recv.Tick(now)
-		if err != nil {
-			continue
-		}
-		for _, o := range res.Send {
-			c.writeStandby(o)
-		}
-		if !cand.ready && cand.st.recv.ReadyPaths(now) > 0 {
-			cand.ready, cand.readyAt = true, now
-		}
-	}
-	if st.failover {
-		for _, cand := range st.cands {
-			if cand.ready {
-				return c.promote(cand, now)
+		if err == nil {
+			for _, o := range res.Send {
+				c.writeStandby(o)
 			}
 		}
-		return nil
-	}
-	// A health probe: finished when every candidate answered or the time is up.
-	done := now.Sub(st.started) >= probeTimeout
-	all := true
-	for _, cand := range st.cands {
-		all = all && cand.ready
-	}
-	if !done && !all {
-		return nil
-	}
-	for _, cand := range st.cands {
 		info := f.info[cand.addr]
-		info.checked = now
-		if cand.ready {
-			info.state, info.handshakeMS = "reachable", float64(cand.readyAt.Sub(st.started))/float64(time.Millisecond)
-		} else {
-			info.state = "unreachable"
+		ready := cand.st.recv.ReadyPaths(now) > 0
+		switch {
+		case ready && !cand.ready:
+			cand.ready, cand.readyAt = true, now
+			info.state, info.handshakeMS, info.checked = "reachable", float64(now.Sub(cand.started))/float64(time.Millisecond), now
+		case !ready && cand.ready:
+			cand.ready = false
+			info.state, info.checked = "unreachable", now
+		case !ready && info.state == "unknown" && now.Sub(cand.started) >= probeTimeout:
+			info.state, info.checked = "unreachable", now
+		}
+		if !cand.ready && now.Sub(cand.started) >= probeEvery {
+			// Never answered, or lost: start a fresh handshake rather than wait on an old one.
+			if nc, err := c.newCandidate(cand.addr, now); err == nil {
+				*cand = *nc
+			}
 		}
 	}
-	f.standby = nil
-	return nil
 }
 
-// promote makes a standby that has just completed its handshake the active exit.
+// promote makes a warm standby the active exit.
 func (c *Client) promote(cand *candidate, now time.Time) error {
 	f := &c.fo
 	from := f.servers[f.active]
@@ -379,10 +456,21 @@ func (c *Client) promote(cand *candidate, now time.Time) error {
 	f.active = idx
 	f.lastTX, f.lastRX = 0, 0
 	f.lastAuth, f.activeSince = now, now
-	f.standby = nil
+	f.gapPrev, f.gapMax = time.Time{}, 0
 	f.switches++
 	f.lastSwitch, f.lastReason = time.Now(), reason
-	f.nextProbe = now.Add(probeEvery)
+	// The promoted stack is no longer a standby; the old exit takes its place in the warm set so it is
+	// noticed the moment it answers again.
+	cands := make([]*candidate, 0, len(f.standby.cands))
+	for _, x := range f.standby.cands {
+		if x != cand {
+			cands = append(cands, x)
+		}
+	}
+	if nc, err := c.newCandidate(from, now); err == nil {
+		cands = append(cands, nc)
+	}
+	f.standby.cands = cands
 	c.setServer(cand.addr)
 	if c.cfg.OnSwitch != nil {
 		c.cfg.OnSwitch(from, cand.addr, reason)
@@ -417,7 +505,7 @@ func (c *Client) exitStatus() ExitStatus {
 	}
 	f.lastTX, f.lastRX = tx, rx
 	st := ExitStatus{Active: f.servers[f.active], Primary: f.servers[0], Switches: f.switches, LastSwitch: f.lastSwitch,
-		LastReason: f.lastReason, SilentMS: float64(f.silent) / float64(time.Millisecond), Probing: f.standby != nil && f.standby.failover}
+		LastReason: f.lastReason, SilentMS: float64(f.silent) / float64(time.Millisecond), Probing: f.searching}
 	for i, s := range f.servers {
 		info := f.info[s]
 		e := ExitServer{Addr: s, Active: i == f.active, State: info.state, HandshakeMS: info.handshakeMS, CheckedAt: info.checked, Failures: info.failures}
@@ -431,7 +519,6 @@ func (c *Client) exitStatus() ExitStatus {
 	}
 	return st
 }
-
 
 func (c *Client) outageDirNow() string {
 	c.mu.Lock()

@@ -45,8 +45,12 @@ func sendN(t *testing.T, c *Client, start, n int, into *counted, within time.Dur
 }
 
 func failoverClient(t *testing.T, ctx context.Context, key, session []byte, primary, backup netip.AddrPort, switched chan<- string) *Client {
+	return failoverClientAfter(t, ctx, key, session, primary, backup, switched, 700*time.Millisecond)
+}
+
+func failoverClientAfter(t *testing.T, ctx context.Context, key, session []byte, primary, backup netip.AddrPort, switched chan<- string, after time.Duration) *Client {
 	t.Helper()
-	c, err := New(Config{Key: key, Session: session, Server: primary, Backups: []netip.AddrPort{backup}, FailoverAfter: 700 * time.Millisecond,
+	c, err := New(Config{Key: key, Session: session, Server: primary, Backups: []netip.AddrPort{backup}, FailoverAfter: after,
 		Uplinks:  []uplink.Spec{{Addr: netip.MustParseAddr("127.0.0.1")}, {Addr: netip.MustParseAddr("127.0.0.2")}},
 		Policies: []bond.PathPolicy{{Role: bond.Primary, UploadMbps: 50, DownloadMbps: 50}, {Role: bond.Primary, UploadMbps: 50, DownloadMbps: 50}},
 		Discover: true, Failover: true, Deliver: func([]byte) {},
@@ -153,4 +157,77 @@ func TestBackupsAreRejectedWithCarrierAndDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.closeConns()
+}
+
+// With a warm standby that is audible, the client does not wait out the conservative FailoverAfter:
+// it moves after a few multiples of the active server's own frame gap.
+func TestFastFailoverBeatsTheConfiguredSilence(t *testing.T) {
+	probeFirst, probeEvery, probeTimeout = 100*time.Millisecond, time.Hour, 2*time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	key, session := bytes.Repeat([]byte{9}, 32), bytes.Repeat([]byte{8}, 16)
+	var gotA, gotB counted
+	ctxA, killA := context.WithCancel(ctx)
+	a := loopbackServer(t, ctxA, key, session, gotA.add)
+	b := loopbackServer(t, ctx, key, session, gotB.add)
+	switched := make(chan string, 4)
+	const after = 3 * time.Second
+	c := failoverClientAfter(t, ctx, key, session, a, b, switched, after)
+	waitReady(t, c, 2, 8*time.Second)
+	sendN(t, c, 0, 100, &gotA, 10*time.Second)
+	// let the client learn the line's rhythm (fastSamples seconds of frames)
+	time.Sleep((fastSamples + 2) * time.Second)
+	if ex := c.Snapshot().Exit; len(ex.Servers) != 2 || ex.Servers[1].State != "reachable" || ex.Switches != 0 {
+		t.Fatalf("standby should be warm and nothing switched yet: %+v", ex)
+	}
+	t0 := time.Now()
+	killA()
+	select {
+	case to := <-switched:
+		took := time.Since(t0)
+		if to != b.String() {
+			t.Fatalf("switched to %s, want %s", to, b)
+		}
+		if took > after*2/3 {
+			t.Fatalf("fast path took %v with FailoverAfter=%v", took, after)
+		}
+		t.Logf("failover after %v (limit %v)", took, after)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("no failover: %+v", c.Snapshot().Exit)
+	}
+	waitReady(t, c, 2, 8*time.Second)
+	sendN(t, c, 1000, 100, &gotB, 10*time.Second)
+	// the old exit is back in the warm set, reported unreachable while it is down (the status
+	// snapshot refreshes every 100 ms)
+	var ex ExitStatus
+	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if ex = c.Snapshot().Exit; ex.Switches == 1 {
+			break
+		}
+	}
+	if len(ex.Servers) != 2 || ex.Servers[0].Active || ex.Servers[0].Failures != 1 {
+		t.Fatalf("after failover: %+v", ex)
+	}
+}
+
+func TestAdaptiveThresholdFollowsTheLongestRecentGap(t *testing.T) {
+	f := &failoverState{after: time.Second}
+	if got := f.adaptive(); got != time.Second {
+		t.Fatalf("with no samples want the configured silence, got %v", got)
+	}
+	f.gaps = [gapSeconds]time.Duration{60 * time.Millisecond, 70 * time.Millisecond, 80 * time.Millisecond, 900 * time.Millisecond}
+	f.gapCount = 4
+	// the single 900 ms stall is ignored (second largest is 80 ms): 4 x 80 = 320 ms
+	if got := f.adaptive(); got != 320*time.Millisecond {
+		t.Fatalf("got %v want 320ms", got)
+	}
+	f.gaps = [gapSeconds]time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}
+	f.gapCount = 3
+	if got := f.adaptive(); got != minFastAfter {
+		t.Fatalf("floor: got %v want %v", got, minFastAfter)
+	}
+	f.gaps = [gapSeconds]time.Duration{400 * time.Millisecond, 500 * time.Millisecond, 600 * time.Millisecond}
+	if got := f.adaptive(); got != time.Second {
+		t.Fatalf("cap: got %v want 1s", got)
+	}
 }

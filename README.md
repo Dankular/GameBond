@@ -197,7 +197,14 @@ transport are in the [GameBond.Core](https://github.com/Dankular/GameBond.Core) 
 - **The tray raises Windows notifications** for no connection, reduced redundancy, exit server silent or changed, transport alarms and a delivery objective at risk. Each is raised once after it has held for a set time and followed by a recovery notice.
 - **The topology map shows traffic per exit server** (rate and total, kept per exit across failovers) and every connection animates in the direction of its traffic: moving dashes, a pulsing glow and a halo that grow with the rate. The glow eases toward each new level (quickly up, slowly down) so throughput spikes fade in and out instead of jumping, and the dashes travel faster the more traffic there is (a crawl for a trickle, a rush at line rate), their speed following the same easing. Needs the daemon restarted to report exit traffic.
 
-### Failover (working tree, not committed)
+### Faster exit failover
+
+- **Warm standbys.** Each standby exit is kept handshaken over the live uplinks (about 8 kbit/s inbound each, measured on loopback), so a promotion needs no new handshake. If one stops answering it is reported straight away, and one that never answers is rebuilt every 30 s. After a switch the old exit joins the warm set, so its return is noticed.
+- **Fast path.** If the active exit is silent for 4 times the longest gap between its frames over the last seconds (never under 300 ms) and a standby has been heard within 300 ms, the client switches at once. The standby being audible while the active exit is not is the evidence that the fault is the server and not this PC, because both share the same links. The configured `exit_failover_ms` is now the slow path, used when the standby evidence is stale; its default is 1 s (was 2 s).
+- **Suspicion rebuilds the standby early.** If a standby is missing (after an adapter change, say) it is rebuilt as soon as the active exit has been silent for a third of the fast threshold.
+- **Core v0.1.18** brings the 150 ms BFD detection (3 x 50 ms, widening to the line own jitter). Client and server must both run it: each judges the other by its frame rate.
+
+### Failover, first version (committed earlier)
 
 **Backup exit server with automatic failover (built and deployed to this PC)**
 - **`peer_backups`** in the client config lists up to three standby exit servers, each `[host, port]`; `peer` stays the

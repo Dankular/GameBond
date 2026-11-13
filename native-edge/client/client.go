@@ -62,7 +62,7 @@ type Config struct {
 	// Backups are standby exit servers tried, in order, when Server stops answering (see failover.go).
 	// They cannot be combined with Outer.
 	Backups []netip.AddrPort
-	// FailoverAfter is how long the active server may be silent before standbys are probed; 0 means 2 s.
+	// FailoverAfter is how long the active server may be silent before the slow failover path may move to a standby; 0 means 1 s. The fast path adapts below it.
 	FailoverAfter time.Duration
 	// OnSwitch is called on the loop goroutine after the active server changed.
 	OnSwitch func(from, to netip.AddrPort, reason string)
@@ -377,7 +377,7 @@ func (c *Client) Run(ctx context.Context) error {
 				return err
 			}
 			if res.Authenticated {
-				c.fo.lastAuth = hrclock.Now()
+				c.noteAuth(hrclock.Now())
 			}
 			if d.rx != nil {
 				if res.Authenticated {

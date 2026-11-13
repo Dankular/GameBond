@@ -1,5 +1,5 @@
-github.com/Dankular/GameBond.Core v0.1.17 h1:rjAWLN5ZvGpYC+7KwrJgmhvE2WQovaleJ2j20S59CGI=
-github.com/Dankular/GameBond.Core v0.1.17/go.mod h1:r5Z9FqwRuaKd2HqHYzgYQyuaBkKbyIuW+AaybWX9L4w=
+github.com/Dankular/GameBond.Core v0.1.18 h1:0HFZpWHRnlaQaFqA0EkGpg1gGp+vo8pJjRkSUlDv0+M=
+github.com/Dankular/GameBond.Core v0.1.18/go.mod h1:r5Z9FqwRuaKd2HqHYzgYQyuaBkKbyIuW+AaybWX9L4w=
 github.com/dustin/go-humanize v1.1.0 h1:dbKTrvD0klcbBV/h4AWJdMuZogJACoMlvWIWZ5b2xWg=
 github.com/dustin/go-humanize v1.1.0/go.mod h1:hc1CvRkJMsgxqjmjMQF3QNRAZBwY8AXBAzKYoSX9sFI=
 github.com/ebitengine/purego v0.11.2 h1:WWiTx8rD8zYdOwSj8O/NiNbsOvSAgJMTlyV1XlbUSeU=
