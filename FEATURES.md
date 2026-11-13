@@ -54,6 +54,49 @@ one. "Default" is the value when the flag is absent. Counters appear under
 - Starlink dish telemetry as a degraded-path hint.
 - Optional HTTPS admin portal on the server ([admin-portal.md](docs/admin-portal.md)).
 
+## Layer 2 gateway features (planned)
+
+These features target a separately supervised Linux gateway control plane. The current tunnel server remains isolated from host networking. A feature will be marked supported only when its provider reports host capability and verifies the effective state.
+
+### Switching and network isolation
+
+- Virtual Network Override.
+- Jumbo Frames.
+- Port Isolation.
+- MAC-Based Port Restriction.
+- MAC Address Blocking.
+- MAC-Based ACLs & Device Isolation.
+- IP-Based ACLs & Network Isolation.
+
+### Resilience and aggregation
+
+- LACP Port Aggregation.
+- MC-LAG (requires a compatible peer/provider).
+- STP & RSTP.
+- Loop Protection.
+- Redundancy.
+- Shadow Mode (VRRP) Gateway Failover.
+
+### Multicast and media
+
+- IGMP Snooping.
+- Advanced IGMP Configuration (Querier, Fast Leave, Router Port).
+- Voice VLAN.
+- LLDP-MED.
+- Pro AV Profiles: Play, Dante, Q-SYS, NDI, SDVoE, Shure, AES67, Crestron.
+
+### Access and traffic control
+
+- DHCP Snooping & Guarding.
+- 802.1X Control.
+- Egress Rate Limit.
+- Flow Control.
+- QoS (DSCP).
+- Storm Control.
+- Multicast & Broadcast Rate Limiting.
+- Port Mirroring.
+
+
 ## Where the code lives
 
 `native-edge/bond/`: `sender.go`, `receiver.go`, `reorder.go`, `repair.go`,
@@ -105,7 +148,7 @@ One gateway per attached device (PS5, laptop, phone, access point) on its own ad
 
 ### Not provided
 
-No port forwarding, inbound firewall rules, DNS server or resolver, UPnP, VLANs, or IPv6 forwarding. DNS settings were removed from the widget.
+The current tunnel gateway does not provide port forwarding, inbound firewall rules, a DNS server or resolver, UPnP, VLANs, or IPv6 forwarding. DNS settings were removed from the widget. VLAN and other Layer 2 controls are listed above as planned Linux gateway work; they are not available in the current tunnel gateway.
 - Predicted-arrival scheduling: among paths that can send now, a path that would deliver clearly sooner (more than 20 ms or four times the jitter) takes the packet outright; closer paths still share by weighted fair split.
 - Passive ACK-stall detection: a path that is sending but has had no accepted acknowledgement for three round trips (at least 60 ms) counts as at risk, so redundancy starts in tens of milliseconds without waiting for the probe clock. Status shows the reorder timeouts as adapted to the paths' RTT difference (`transport.reorder.TimeoutMS`, `UDPTimeoutMS`).
 - Transport health alarms (`alarms` in the status file, and in the log on change): `feedback_rejected` when 20% or more of feedback frames are refused for three seconds running, and `feedback_timeout` when half of a link's packets expire unacknowledged for three seconds running. Both describe failures that leave loss and RTT looking normal while the rate controller starves.

@@ -54,6 +54,18 @@ reconciled before implementation overlaps its configuration or runtime.
   interfaces must be dedicated to the aggregate and rejected if already assigned to WAN,
   LAN, or another managed feature.
 
+### Layer 2 switching and port controls
+
+- Managed Linux bridges, VLAN-filtered virtual networks, port membership, and device-to-network overrides, with stable network IDs and interface ownership validation.
+- Jumbo Frames, Port Isolation, MAC-Based Port Restriction, MAC Address Blocking, MAC-Based ACLs and Device Isolation, and IP-Based ACLs and Network Isolation.
+- STP and RSTP, Loop Protection, and Redundancy coordination over the configured bridge, bond, and gateway failover mechanisms.
+- LACP Port Aggregation. MC-LAG is available only through a detected compatible peer/provider; generic Linux bonding is not presented as MC-LAG.
+- Shadow Mode (VRRP) Gateway Failover using a supervised VRRP provider. Conntrack/session continuity is not implied.
+- IGMP Snooping and Advanced IGMP Configuration (Querier, Fast Leave, Router Port), with per-VLAN support reported only when the active kernel/provider exposes it.
+- DHCP Snooping and Guarding, 802.1X Control, Voice VLAN, and LLDP-MED, each capability-gated by host and provider support.
+- Egress Rate Limit, Flow Control, QoS (DSCP), Storm Control, Multicast and Broadcast Rate Limiting, and Port Mirroring, with the enforcement layer and effective state visible.
+- Pro AV Profiles for Play, Dante, Q-SYS, NDI, SDVoE, Shure, AES67, and Crestron. Each profile is an individually researched preset; it does not imply certification or tested interoperability.
+
 ### Forwarding, services, and security
 
 - Advanced NAT: SNAT, DNAT, masquerade, NAT pools, and 1-to-1 mappings, with conflict
@@ -67,9 +79,6 @@ reconciled before implementation overlaps its configuration or runtime.
   configured RADIUS peers. The integrated service and RadSec client/server roles must be
   explicit in the final contract; credentials and private keys are never returned by the
   management API.
-- Virtual Network Override: an administrator may explicitly assign an eligible device
-  or traffic identity to a selected virtual network, subject to authorization and
-  network isolation policy.
 
 ### Traffic management and visibility
 
@@ -111,8 +120,12 @@ reconciled before implementation overlaps its configuration or runtime.
    stable identities. Validation rejects conflicting interface ownership and invalid
    references before apply.
 4. **Management surface:** the existing authenticated admin portal gains configuration
-   and operational views. Secrets are write-only. Apply reports validation errors,
-   progress, effective state, and rollback outcome.
+   and operational views. For host-managed Layer 2 features, an optional Compose overlay
+   mounts only the host daemon's bounded Unix API socket directory read-only and grants
+   its dedicated group; the edge container receives no host `NET_ADMIN` capability or
+   host network mode. The daemon validates every request independently. Secrets are
+   write-only. Apply reports validation errors, progress, effective state, and rollback
+   outcome.
 5. **Observability:** health/outage history, traffic flows, MAC table occupancy, DHCP,
    NAT, routing neighbors/routes, HA role, LACP members, and QoS counters use a common
    timestamped status/event model with bounded storage.
@@ -141,14 +154,16 @@ shows a prerequisite.
 1. **Control-plane foundation and reporting:** capability inventory, common network
    model, safe validate/apply/rollback, authenticated configuration/status integration,
    WAN quality/outage history, all traffic flows, and MAC table limits/occupancy.
-2. **Forwarding and policy:** customizable DHCP, advanced NAT, policy-based WAN/VPN
+2. **Layer 2 switching and port controls:** bridge/VLAN primitives, then each Layer 2
+   capability in a separate integration, including provider-gated hardware/peer features
+   and individually validated Pro AV presets.
+3. **Forwarding and policy:** customizable DHCP, advanced NAT, policy-based WAN/VPN
    routing, and QoS mapped to the Linux traffic-control layer.
-3. **Redundancy and aggregation:** VRRP shadow/standby mode, health tracking, LACP
+4. **Redundancy and aggregation:** VRRP shadow/standby mode, health tracking, LACP
    configuration and state, and LTE backup as an additional managed WAN.
-4. **Dynamic routing:** OSPF and BGP neighbors, route filters, route visibility, and
+5. **Dynamic routing:** OSPF and BGP neighbors, route filters, route visibility, and
    controlled interaction with policy routing and VPN routes.
-5. **LAN services and identity:** mDNS, IGMP proxy, integrated RADIUS, RadSec, and
-   virtual-network override with isolation and authorization rules.
+6. **LAN services and identity:** mDNS, IGMP proxy, integrated RADIUS, and RadSec.
 
 The first implementation phase must prove the host/container boundary and safe apply
 mechanism before any feature mutates live host networking. The existing local-network
