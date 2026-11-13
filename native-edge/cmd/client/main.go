@@ -46,6 +46,7 @@ type fileConfig struct {
 	Peer           []any                        `json:"peer"`
 	PeerBackups    [][]any                      `json:"peer_backups"`     // standby exit servers [[host, port], ...]
 	ExitFailoverMS int                          `json:"exit_failover_ms"` // silence before standbys are probed; 0 = 2000
+	ExitAutoBest   *bool                        `json:"exit_auto_best"`  // move to a clearly faster exit; default on
 	MTU            int                          `json:"mtu"`
 	InitialMbps    float64                      `json:"bonding_initial_rate_mbps"`
 	MaxMbps        float64                      `json:"bonding_max_rate_mbps"`
@@ -155,6 +156,9 @@ func exitStatusDoc(e client.ExitStatus) map[string]any {
 		m := map[string]any{"address": x.Addr.Addr().String(), "port": x.Addr.Port(), "active": x.Active, "state": x.State, "failures": x.Failures, "wire_tx_bytes": x.WireTX, "wire_rx_bytes": x.WireRX}
 		if !x.CheckedAt.IsZero() {
 			m["checked_at"] = float64(x.CheckedAt.UnixNano()) / 1e9
+		}
+		if x.RTTMS > 0 {
+			m["rtt_ms"] = x.RTTMS
 		}
 		if x.State == "reachable" {
 			m["handshake_ms"] = x.HandshakeMS
@@ -403,7 +407,7 @@ func session(parent context.Context, ready func(), logOut, relayOnly io.Writer) 
 	if err != nil {
 		return err
 	}
-	clientCfg := client.Config{Backups: backups, FailoverAfter: time.Duration(cfg.ExitFailoverMS) * time.Millisecond,
+	clientCfg := client.Config{AutoBestExit: cfg.ExitAutoBest == nil || *cfg.ExitAutoBest, Backups: backups, FailoverAfter: time.Duration(cfg.ExitFailoverMS) * time.Millisecond,
 		OnSwitch: func(from, to netip.AddrPort, reason string) {
 			b, _ := json.Marshal(map[string]any{"status": "exit_failover", "from": from.String(), "to": to.String(), "reason": reason})
 			fmt.Println(string(b))

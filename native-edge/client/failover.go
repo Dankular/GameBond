@@ -59,6 +59,63 @@ var (
 	probeTimeout = 3 * time.Second
 )
 
+// Lowest-latency selection. Every exit is measured continuously (the active one from its live paths,
+// a standby from its warm probe paths). The fastest exit is chosen at three moments only, never because
+// latency drifted during normal use:
+//
+//   - failover: the fastest ready standby is promoted;
+//   - startup: once the warm standbys are measured, a clearly faster one replaces the configured exit;
+//   - reconnection: the same check after every link came back, or after the active exit went silent
+//     and returned.
+//
+// The check is armed by those events, waits evalDelay for the measurements to settle, runs once, and
+// is dropped after evalGiveUp if some exit never produced a reading. A planned move resets bonded
+// TCP streams like a failover, so it needs a real gain: the larger of betterMinGain and
+// betterMinRatio of the active RTT. Variables so tests can shorten them.
+var (
+	evalDelay      = 8 * time.Second
+	evalGiveUp     = 45 * time.Second
+	betterMinGain  = 10.0 // ms
+	betterMinRatio = 0.2
+	rttEvery       = 500 * time.Millisecond
+)
+
+const rttAlpha = 0.2
+
+// pathRTT is the RTT an exit offers: the best ready path, since the fastest copy wins. 0 if unknown.
+func pathRTT(paths []bond.PathSnapshot) float64 {
+	best := 0.0
+	for _, p := range paths {
+		if p.Ready && p.RTTMilliseconds > 0 && (best == 0 || p.RTTMilliseconds < best) {
+			best = p.RTTMilliseconds
+		}
+	}
+	return best
+}
+
+func smooth(cur, sample float64) float64 {
+	if sample <= 0 {
+		return cur
+	}
+	if cur <= 0 {
+		return sample
+	}
+	return cur + rttAlpha*(sample-cur)
+}
+
+// faster reports whether a should be preferred to b: a known RTT beats an unknown one, then lower wins.
+func faster(a, b *candidate) bool {
+	switch {
+	case b == nil:
+		return true
+	case a.rtt <= 0:
+		return false
+	case b.rtt <= 0:
+		return true
+	}
+	return a.rtt < b.rtt
+}
+
 // ExitServer is one configured exit as the status document reports it.
 type ExitServer struct {
 	Addr   netip.AddrPort
@@ -75,6 +132,8 @@ type ExitServer struct {
 	// WireTX and WireRX are the bytes this exit has carried since the client started, headers
 	// included. A standby carries nothing but its probes, which are not counted.
 	WireTX, WireRX uint64
+	// RTTMS is the smoothed round-trip time to this exit over its best path; 0 when not measured.
+	RTTMS float64
 }
 
 // ExitStatus describes the exit servers and the failovers so far.
@@ -97,9 +156,12 @@ type exitInfo struct {
 	handshakeMS float64
 	checked     time.Time
 	failures    uint64
+	rtt         float64 // last smoothed RTT seen for this exit (kept when it stops being measured)
 }
 
 type candidate struct {
+	rtt      float64   // smoothed RTT over the best ready path; 0 until measured
+	rttAt    time.Time // when it was last sampled
 	addr     netip.AddrPort
 	st       *stack
 	ready    bool
@@ -137,6 +199,13 @@ type failoverState struct {
 	gaps      [gapSeconds]time.Duration
 	gapCount  int
 	searching bool
+	// activeRTT is the smoothed RTT of the active exit, sampled at activeRTTAt.
+	activeRTT   float64
+	activeRTTAt time.Time
+	// evalAt is when the armed lowest-latency check may run (zero: not armed); evalEnd is when it is
+	// dropped. wasLive and wasSearching remember the last pass to spot a reconnection.
+	evalAt, evalEnd       time.Time
+	wasLive, wasSearching bool
 	// traffic accumulates the wire bytes each exit has carried; lastTX/lastRX are the active
 	// stack's path totals at the previous sample (a new stack after a switch starts from zero).
 	traffic        map[netip.AddrPort]*[2]uint64
@@ -158,6 +227,8 @@ func (c *Client) initFailover(now time.Time) {
 	f.after = max(f.after, minFailoverAfter)
 	f.lastAuth, f.activeSince = now, now
 	f.fast = f.after
+	f.wasLive = true
+	f.evalAt, f.evalEnd = now.Add(probeFirst+evalDelay), now.Add(probeFirst+evalGiveUp)
 	f.nextProbe = now.Add(probeFirst)
 	f.info = map[netip.AddrPort]*exitInfo{}
 	for _, s := range f.servers {
@@ -305,6 +376,11 @@ func (c *Client) failoverTick(now time.Time) error {
 	}
 	f.silent = now.Sub(f.lastAuth)
 	f.searching = anyLive && f.silent >= f.fast
+	// A reconnection: every link came back, or the active exit went silent and answered again.
+	if (anyLive && !f.wasLive) || (!f.searching && f.wasSearching) {
+		f.evalAt, f.evalEnd = now.Add(evalDelay), now.Add(evalGiveUp)
+	}
+	f.wasLive, f.wasSearching = anyLive, f.searching
 	suspect := f.silent >= max(f.fast/3, 100*time.Millisecond)
 	if f.standby == nil && anyLive && (!now.Before(f.nextProbe) || suspect) {
 		if err := c.startStandby(now); err != nil {
@@ -318,25 +394,78 @@ func (c *Client) failoverTick(now time.Time) error {
 	if !anyLive {
 		return nil
 	}
+	c.sampleActiveRTT(now)
+	// The lowest-latency ready standby is chosen; "fast" ones are also audible this instant.
 	var slow, fast *candidate
 	for _, cand := range f.standby.cands {
 		if !cand.ready {
 			continue
 		}
-		if slow == nil {
+		if faster(cand, slow) {
 			slow = cand
 		}
-		if fast == nil && now.Sub(cand.lastAuth) <= aliveWithin {
+		if now.Sub(cand.lastAuth) <= aliveWithin && faster(cand, fast) {
 			fast = cand
 		}
 	}
+	failReason := func(to *candidate) string {
+		return fmt.Sprintf("no reply from %s for %d ms; %s answered", f.servers[f.active].Addr(), f.silent.Milliseconds(), to.addr.Addr())
+	}
 	switch {
 	case fast != nil && f.silent >= f.fast:
-		return c.promote(fast, now)
+		return c.promote(fast, now, failReason(fast), true)
 	case slow != nil && f.silent >= f.after:
-		return c.promote(slow, now)
+		return c.promote(slow, now, failReason(slow), true)
+	}
+	if c.cfg.AutoBestExit && f.silent < f.fast && !f.evalAt.IsZero() && !now.Before(f.evalAt) {
+		best, done := c.betterExit(now)
+		if done {
+			f.evalAt = time.Time{}
+		}
+		if best != nil {
+			reason := fmt.Sprintf("%s is faster: %.0f ms against %.0f ms on %s", best.addr.Addr(), best.rtt, f.activeRTT, f.servers[f.active].Addr())
+			return c.promote(best, now, reason, false)
+		}
 	}
 	return nil
+}
+
+// sampleActiveRTT keeps the smoothed RTT of the active exit.
+func (c *Client) sampleActiveRTT(now time.Time) {
+	f := &c.fo
+	if now.Sub(f.activeRTTAt) < rttEvery || c.sender == nil {
+		return
+	}
+	f.activeRTTAt = now
+	if r := pathRTT(c.sender.Paths(now)); r > 0 {
+		f.activeRTT = smooth(f.activeRTT, r)
+		f.info[f.servers[f.active]].rtt = f.activeRTT
+	}
+}
+
+// betterExit runs the armed lowest-latency check. done says the check is over (decided, or given up
+// waiting for readings); best is the standby to move to, if any.
+func (c *Client) betterExit(now time.Time) (best *candidate, done bool) {
+	f := &c.fo
+	if now.After(f.evalEnd) {
+		return nil, true
+	}
+	if f.activeRTT <= 0 {
+		return nil, false
+	}
+	margin := max(betterMinGain, betterMinRatio*f.activeRTT)
+	for _, cand := range f.standby.cands {
+		if !cand.ready {
+			continue // may still come up before evalEnd
+		}
+		if cand.rtt <= 0 {
+			return nil, false // still being measured
+		}
+		if f.activeRTT-cand.rtt >= margin && faster(cand, best) {
+			best = cand
+		}
+	}
+	return best, true
 }
 
 func (c *Client) startStandby(now time.Time) error {
@@ -418,6 +547,13 @@ func (c *Client) standbyTick(now time.Time) {
 		case !ready && info.state == "unknown" && now.Sub(cand.started) >= probeTimeout:
 			info.state, info.checked = "unreachable", now
 		}
+		if cand.ready && now.Sub(cand.rttAt) >= rttEvery {
+			cand.rttAt = now
+			if r := pathRTT(cand.st.sender.Paths(now)); r > 0 {
+				cand.rtt = smooth(cand.rtt, r)
+				info.rtt = cand.rtt
+			}
+		}
 		if !cand.ready && now.Sub(cand.started) >= probeEvery {
 			// Never answered, or lost: start a fresh handshake rather than wait on an old one.
 			if nc, err := c.newCandidate(cand.addr, now); err == nil {
@@ -427,14 +563,13 @@ func (c *Client) standbyTick(now time.Time) {
 	}
 }
 
-// promote makes a warm standby the active exit.
-func (c *Client) promote(cand *candidate, now time.Time) error {
+// promote makes a warm standby the active exit. failed says the old exit stopped answering; false is
+// a planned move to a faster exit, which leaves the old one healthy.
+func (c *Client) promote(cand *candidate, now time.Time, reason string, failed bool) error {
 	f := &c.fo
 	from := f.servers[f.active]
-	silent := f.silent
-	reason := fmt.Sprintf("no reply from %s for %d ms; %s answered", from.Addr(), silent.Milliseconds(), cand.addr.Addr())
 	old := c.receiver()
-	old.NoteComponent("exit-node", false, reason)
+	old.NoteComponent("exit-node", !failed, reason)
 	dir := c.outageDirNow()
 	if dir != "" {
 		old.CloseOutageLog()
@@ -450,10 +585,13 @@ func (c *Client) promote(cand *candidate, now time.Time) error {
 			idx = i
 		}
 	}
-	f.info[from].failures++
-	f.info[from].state = "unreachable"
-	f.info[from].checked = now
+	if failed {
+		f.info[from].failures++
+		f.info[from].state = "unreachable"
+		f.info[from].checked = now
+	}
 	f.active = idx
+	f.activeRTT, f.activeRTTAt, f.evalAt = cand.rtt, time.Time{}, time.Time{}
 	f.lastTX, f.lastRX = 0, 0
 	f.lastAuth, f.activeSince = now, now
 	f.gapPrev, f.gapMax = time.Time{}, 0
@@ -508,7 +646,7 @@ func (c *Client) exitStatus() ExitStatus {
 		LastReason: f.lastReason, SilentMS: float64(f.silent) / float64(time.Millisecond), Probing: f.searching}
 	for i, s := range f.servers {
 		info := f.info[s]
-		e := ExitServer{Addr: s, Active: i == f.active, State: info.state, HandshakeMS: info.handshakeMS, CheckedAt: info.checked, Failures: info.failures}
+		e := ExitServer{Addr: s, Active: i == f.active, State: info.state, HandshakeMS: info.handshakeMS, CheckedAt: info.checked, Failures: info.failures, RTTMS: info.rtt}
 		if e.Active {
 			e.State = "active"
 		}

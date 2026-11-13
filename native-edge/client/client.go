@@ -64,6 +64,9 @@ type Config struct {
 	Backups []netip.AddrPort
 	// FailoverAfter is how long the active server may be silent before the slow failover path may move to a standby; 0 means 1 s. The fast path adapts below it.
 	FailoverAfter time.Duration
+	// AutoBestExit moves to a faster standby exit, and picks the fastest one when failing over. A planned
+	// move resets bonded TCP streams like a failover, so it needs a sustained lead (see betterFor).
+	AutoBestExit bool
 	// OnSwitch is called on the loop goroutine after the active server changed.
 	OnSwitch func(from, to netip.AddrPort, reason string)
 }
