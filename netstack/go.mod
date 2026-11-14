@@ -13,6 +13,6 @@ require (
 	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect
 )
 
-require github.com/Dankular/GameBond.Core v0.1.20
+require github.com/Dankular/GameBond.Core v0.1.22
 
 replace gamebond.local/nativeedge => ../native-edge

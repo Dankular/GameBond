@@ -21,6 +21,7 @@ func errorCounters(s client.Snapshot, osErrors uint64, osOK bool) map[string]uin
 		"handshake_rejected":     s.Receiver.HandshakeRejected,
 		"replay_rejected":        s.Receiver.ReplayTooOld + s.Receiver.ReplayTooFar,
 		"failover_suspected":     s.Sender.FailoverSuspected,
+		"path_stalls":            s.Receiver.PathStalls,
 	}
 	// The mechanisms that absorb those errors, charted over them.
 	c["repair_sent"] = s.Sender.RepairCopies
