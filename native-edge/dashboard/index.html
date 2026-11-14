@@ -130,7 +130,7 @@ function renderRedundancy(d, paths) {
   const payload = snd.PayloadPackets || 0, copies = snd.Copies || 0;
   const rows = [
     ["Duplication", payload ? "every packet: " + (copies / payload).toFixed(2) + " frames per packet (" + num(snd.BulkDuplicates) + " bulk copies, " + num(snd.BulkDupSkipped) + " skipped)" : "–"],
-    ["Truly lost (download)", num(down.never_arrived) + " packets (" + num(down.never_arrived_tcp) + " TCP, " + num(down.never_arrived_udp) + " UDP) of " + num(rec.Delivered) + " delivered = " + pct(down.never_arrived || 0, rec.Delivered || 0)],
+    ["Not recovered (download)", num(down.never_arrived) + " packets (" + num(down.never_arrived_tcp) + " TCP, resent by TCP itself but slowly; " + num(down.never_arrived_udp) + " UDP, gone) of " + num(rec.Delivered) + " delivered = " + pct(down.never_arrived || 0, rec.Delivered || 0)],
     ["Rebuilt from parity (download)", num(down.rebuilt_from_parity)],
     ["Gave up / arrived too late", num(down.holes_given_up) + " / " + num(down.arrived_after_deadline)],
     ["Repairs asked / exhausted", num(down.repairs_asked) + " / " + num(down.repairs_exhausted)],
