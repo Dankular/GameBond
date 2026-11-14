@@ -8,7 +8,7 @@ document.head.append(errStyle);
 
 let errRange = 60;
 // Each group owns a hue range and its types are spread across it, so neighbours in a stack can be told apart.
-const errHue = { Loss: [0, 48], Local: [195, 250], Protocol: [268, 318], Links: [95, 140] };
+const errHue = { Absorbed: [165, 185], Loss: [0, 48], Local: [195, 250], Protocol: [268, 318], Links: [95, 140] };
 function errColor(kinds, i) {
   const k = kinds[i], same = kinds.filter(x => x.group === k.group), n = same.indexOf(k), [lo, hi] = errHue[k.group] || [0, 0];
   const hue = same.length > 1 ? lo + (hi - lo) * n / (same.length - 1) : lo;
@@ -130,10 +130,14 @@ function errorLegend(recKinds, an) {
 }
 
 function errorSection(d) {
-  const eh = d.error_history, body = document.createElement('div'), sub = 'How often each kind of transport error happened, and which type it was, with the recovery that absorbed it. Spikes are marked with a red triangle.';
+  const eh = d.error_history, body = document.createElement('div'), sub = 'How often each kind of transport error happened, and which type it was, with the recovery that absorbed it. Spikes are marked with a red triangle. Absorbed means redundancy covered it and nothing was lost: it is listed in the table but is not counted as a fault.';
   if (!eh || !eh.kinds) { body.append(issueNote('This client build does not record an error history yet.')); return issueSection('Errors over time', sub, ['ok', 'not available'], body); }
   const kinds = eh.kinds, recKinds = eh.recovery_kinds || [], folded = binErrors(eh.minutes, kinds.length, errRange), recFolded = binErrors(eh.recovery, recKinds.length, errRange);
-  const sum = folded.totals.reduce((a, b) => a + b, 0), stab = stabilityBins(eh.stability, errRange), an = analyseErrors(kinds, folded, recKinds, recFolded);
+  // Absorbed events (a copy lost on one link and covered by the other, a gap that arrived late) are listed in the table
+  // but are not faults: the headline, the chart and the spikes count only what was not absorbed.
+  const absorbed = kinds.map(k => k.group === 'Absorbed'), absorbedTotal = folded.totals.reduce((a, b, k) => a + (absorbed[k] ? b : 0), 0);
+  const chartFolded = { ...folded, per: folded.per.map(r => r.map((v, k) => absorbed[k] ? 0 : v)), totals: folded.totals.map((v, k) => absorbed[k] ? 0 : v) };
+  const sum = chartFolded.totals.reduce((a, b) => a + b, 0), stab = stabilityBins(eh.stability, errRange), an = analyseErrors(kinds, chartFolded, recKinds, recFolded);
   const range = document.createElement('div'); range.className = 'range';
   for (const [label, minutes] of [['1 h', 60], ['6 h', 360], ['24 h', 1440]]) {
     const b = document.createElement('button'); b.className = 'seg' + (errRange === minutes ? ' active' : ''); b.textContent = label;
@@ -146,11 +150,11 @@ function errorSection(d) {
     const pct = v => (v / secTotal * 100).toFixed(v / secTotal >= 0.9995 || v === 0 ? 0 : 1) + '%';
     body.append(issueNote('Connection up ' + pct(sec.up + sec.degraded) + ' of the time in this range (all links healthy ' + pct(sec.up) + ', degraded ' + pct(sec.degraded) + ', no healthy link ' + pct(sec.down) + ').'));
   }
-  if (!sum && !an.recTotal.some(v => v > 0)) {
+  if (!sum && !absorbedTotal && !an.recTotal.some(v => v > 0)) {
     const p = document.createElement('p'); p.className = 'err-ok'; p.textContent = 'No errors or recovery activity recorded in this range.'; body.append(p);
     return issueSection('Errors over time', sub, ['ok', 'none'], body);
   }
-  body.append(errorChart(kinds, folded, errRange, an, stab), errorLegend(recKinds, an));
+  body.append(errorChart(kinds, chartFolded, errRange, an, stab), errorLegend(recKinds, an));
   const nv = kinds.findIndex(k => k.key === 'never_arrived'), neverTotal = nv >= 0 ? folded.totals[nv] : 0;
   body.append(issueNote(an.interceptions
     ? 'Errors and recovery coincided in ' + an.interceptions + ' bin' + (an.interceptions === 1 ? '' : 's') + '; ' + an.aligned + ' of them included packets that never arrived'
@@ -172,6 +176,7 @@ function errorSection(d) {
     tr.append(name, issueCell(k.group + (k.routine ? ' (always on)' : ' (recovery)')), issueCell(recFolded.totals[i].toLocaleString(), 'num'), issueCell((recFolded.totals[i] / hours).toFixed(recFolded.totals[i] / hours < 10 ? 1 : 0), 'num'), help); rows.push(tr);
   }
   const table = issueTable(['Type', 'Group', 'Count', 'Per hour', 'What it means'], rows); table.classList.add('err-table'); body.append(table);
-  const badge = sum ? ['warn', sum.toLocaleString() + ' errors in ' + (errRange >= 60 ? errRange / 60 + ' h' : errRange + ' min')] : ['ok', 'no errors'];
+  const span = errRange >= 60 ? errRange / 60 + ' h' : errRange + ' min', soak = absorbedTotal ? ', ' + absorbedTotal.toLocaleString() + ' absorbed by redundancy' : '';
+  const badge = sum ? ['warn', sum.toLocaleString() + ' faults in ' + span + soak] : ['ok', 'no faults in ' + span + soak];
   return issueSection('Errors over time', sub, badge, body);
 }
