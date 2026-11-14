@@ -30,10 +30,10 @@ type Kind struct {
 // Kinds is the fixed list, in display order.
 var Kinds = []Kind{
 	{"lost_on_wire", "Upload copies lost on a link", "Absorbed", "A copy one link dropped on the way to the server, counted per copy. Usually recovered by the other link's duplicate or a resend; a loss only counts as a fault when it appears under Loss (never arrived)."},
-	{"path_stalls", "Link went quiet briefly", "Absorbed", "A link delivered nothing for 150 ms or more but was not declared down and came back by itself. Every packet was already copied onto the other link, so nothing was lost."},
+	{"path_stalls", "Link went quiet briefly", "Absorbed", "A link delivered nothing for 150 ms or more and was heard again within a second. Every packet was already copied onto the other link, so nothing was lost."},
 	{"never_arrived", "Never arrived", "Loss", "Packets from the server that did not arrive, even after repair."},
-	{"holes_given_up", "Download gaps given up on", "Absorbed", "The receiver stopped waiting for a missing packet and moved on; most then arrive late and are still delivered."},
-	{"arrived_late", "Download arrived late (recovered)", "Absorbed", "A packet that showed up after the wait and was delivered anyway, out of order."},
+	{"holes_given_up", "Download delivered ahead of a gap", "Absorbed", "A packet was handed on the moment its first copy arrived, ahead of an earlier one still in flight on the other link. Nothing waits, so nothing stalls; the earlier one normally follows."},
+	{"arrived_late", "Download gap filled by the other copy", "Absorbed", "The earlier packet turned up afterwards from the other link and was delivered, out of order."},
 	{"repairs_exhausted", "Repair gave up", "Loss", "Repair requests ran out of attempts for a missing packet."},
 	{"socket_send_errors", "Socket send errors", "Local", "The operating system refused to send a datagram."},
 	{"os_udp_receive_errors", "OS receive errors", "Local", "The operating system dropped incoming datagrams before the client read them."},

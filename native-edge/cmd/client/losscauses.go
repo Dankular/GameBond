@@ -6,6 +6,15 @@ import "gamebond.local/nativeedge/client"
 // can act on. "upload" is what this side sent and the peer's selective acknowledgement
 // showed dropped on a wire; "download" is what the reorder buffer gave up on; "local"
 // is loss inside this machine, which no amount of redundancy on the wire can fix.
+// heldNet is the copies lost on one link whose packet still got through on the other. A copy is "held" while its
+// sibling is unaccounted for; the packets whose every copy was then lost were resent, so they leave the count.
+func heldNet(held, resent uint64) uint64 {
+	if resent >= held {
+		return 0
+	}
+	return held - resent
+}
+
 func lossCauses(s client.Snapshot) map[string]any {
 	var osErrors any
 	if n, ok := osUDPReceiveErrors(); ok {
@@ -14,7 +23,7 @@ func lossCauses(s client.Snapshot) map[string]any {
 	return map[string]any{
 		"upload": map[string]any{
 			"frames_lost_on_wire": s.Sender.SackLost, "resent_at_once": s.Sender.SackResent,
-			"held_for_sibling_copy": s.Sender.SackHeld, "unrecoverable_no_cache": s.Sender.SackUnrecoverable,
+			"rescued_by_other_copy": heldNet(s.Sender.SackHeld, s.Sender.SackResent), "lost_on_both_links": s.Sender.SackResent, "unrecoverable_no_cache": s.Sender.SackUnrecoverable,
 			"repair_copies_sent": s.Sender.RepairCopies,
 			// The server asked this client to resend an upload packet and it could not: why.
 			"repairs_refused": s.Sender.RepairUnavailableSent, "refused_not_cached": s.Sender.RepairNANotCached,
