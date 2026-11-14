@@ -10,9 +10,11 @@ require (
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect
 )
 
-require github.com/Dankular/GameBond.Core v0.1.22
+require (
+	github.com/Dankular/GameBond.Core v0.1.23
+	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c
+)
 
 replace gamebond.local/nativeedge => ../native-edge
