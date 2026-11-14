@@ -15,6 +15,12 @@ import (
 
 const historyMinutes = 24 * 60
 
+// The last hour is also kept in 5 second slots, so the chart can be zoomed in far below a minute.
+const (
+	fineSeconds = 5
+	fineSlots   = 3600 / fineSeconds
+)
+
 // Kind is one error type. Key is stable (storage and the UI use it), Group is the heading it is
 // listed under, Help says what it means in one sentence.
 type Kind struct {
@@ -94,6 +100,7 @@ type Tracker struct {
 	hasPrev bool
 	linkUp  map[int]bool
 	buckets []bucket
+	fine    []bucket // Minute holds the 5 second slot (unix seconds / 5); in memory only
 	session map[string]uint64
 	dirty   bool
 }
@@ -111,17 +118,25 @@ func (t *Tracker) add(key string, n uint64) {
 	if !isErr && !isRec && key != secUp && key != secDegraded && key != secDown {
 		return
 	}
-	minute := t.now().Unix() / 60
-	if l := len(t.buckets); l == 0 || t.buckets[l-1].Minute != minute {
-		t.buckets = append(t.buckets, bucket{Minute: minute, Counts: map[string]uint32{}})
-		if len(t.buckets) > historyMinutes {
-			t.buckets = t.buckets[len(t.buckets)-historyMinutes:]
-		}
-	}
-	c := t.buckets[len(t.buckets)-1].Counts
-	c[key] = uint32(min(uint64(c[key])+n, 1<<32-1))
+	now := t.now().Unix()
+	t.buckets = bump(t.buckets, now/60, historyMinutes, key, n)
+	t.fine = bump(t.fine, now/fineSeconds, fineSlots, key, n)
 	t.session[key] += n
 	t.dirty = true
+}
+
+// bump adds n to key in the bucket for the given slot, opening a new bucket when the slot has changed and
+// keeping at most limit buckets.
+func bump(list []bucket, slot int64, limit int, key string, n uint64) []bucket {
+	if l := len(list); l == 0 || list[l-1].Minute != slot {
+		list = append(list, bucket{Minute: slot, Counts: map[string]uint32{}})
+		if len(list) > limit {
+			list = list[len(list)-limit:]
+		}
+	}
+	c := list[len(list)-1].Counts
+	c[key] = uint32(min(uint64(c[key])+n, 1<<32-1))
+	return list
 }
 
 // Observe takes the current cumulative counter values by Kind key. The first call only records a
@@ -184,14 +199,29 @@ func (t *Tracker) View() map[string]any {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	cutoff := t.now().Unix()/60 - historyMinutes
-	errTotals, recTotals := make([]uint64, len(Kinds)), make([]uint64, len(Recoveries))
-	rows, recRows, stab := make([][]uint64, 0), make([][]uint64, 0), make([][]uint64, 0)
-	for _, b := range t.buckets {
+	rows, recRows, stab, errTotals, recTotals := fold(t.buckets, 60, cutoff)
+	meta := func(list []Kind, totals []uint64) []map[string]any {
+		out := make([]map[string]any, len(list))
+		for i, k := range list {
+			out[i] = map[string]any{"key": k.Key, "label": k.Label, "group": k.Group, "help": k.Help, "total_24h": totals[i], "session": t.session[k.Key], "routine": routine[k.Key]}
+		}
+		return out
+	}
+	fRows, fRec, fStab, _, _ := fold(t.fine, fineSeconds, t.now().Unix()/fineSeconds-fineSlots)
+	return map[string]any{"kinds": meta(Kinds, errTotals), "minutes": rows, "recovery_kinds": meta(Recoveries, recTotals), "recovery": recRows, "stability": stab,
+		"fine": map[string]any{"seconds": fineSeconds, "minutes": fRows, "recovery": fRec, "stability": fStab}}
+}
+
+// fold turns buckets (each covering unit seconds) newer than cutoff into the row lists of View.
+func fold(buckets []bucket, unit, cutoff int64) (rows, recRows, stab [][]uint64, errTotals, recTotals []uint64) {
+	errTotals, recTotals = make([]uint64, len(Kinds)), make([]uint64, len(Recoveries))
+	rows, recRows, stab = make([][]uint64, 0), make([][]uint64, 0), make([][]uint64, 0)
+	for _, b := range buckets {
 		if b.Minute <= cutoff {
 			continue
 		}
 		er, rr := make([]uint64, 1+len(Kinds)), make([]uint64, 1+len(Recoveries))
-		er[0], rr[0] = uint64(b.Minute*60), uint64(b.Minute*60)
+		er[0], rr[0] = uint64(b.Minute*unit), uint64(b.Minute*unit)
 		var anyErr, anyRec bool
 		for key, n := range b.Counts {
 			if i, ok := index[key]; ok && n > 0 {
@@ -207,17 +237,10 @@ func (t *Tracker) View() map[string]any {
 			recRows = append(recRows, rr)
 		}
 		if up, dg, dn := b.Counts[secUp], b.Counts[secDegraded], b.Counts[secDown]; up+dg+dn > 0 {
-			stab = append(stab, []uint64{uint64(b.Minute * 60), uint64(up), uint64(dg), uint64(dn)})
+			stab = append(stab, []uint64{uint64(b.Minute * unit), uint64(up), uint64(dg), uint64(dn)})
 		}
 	}
-	meta := func(list []Kind, totals []uint64) []map[string]any {
-		out := make([]map[string]any, len(list))
-		for i, k := range list {
-			out[i] = map[string]any{"key": k.Key, "label": k.Label, "group": k.Group, "help": k.Help, "total_24h": totals[i], "session": t.session[k.Key], "routine": routine[k.Key]}
-		}
-		return out
-	}
-	return map[string]any{"kinds": meta(Kinds, errTotals), "minutes": rows, "recovery_kinds": meta(Recoveries, recTotals), "recovery": recRows, "stability": stab}
+	return
 }
 
 type saved struct {

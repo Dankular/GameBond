@@ -6,7 +6,15 @@ errStyle.textContent = '.err-chart{width:100%;max-width:820px;height:auto;displa
   + '.err-ok{color:#00a66c;font-weight:600}.err-band{fill:#f5a300;fill-opacity:.13}.err-band.hot{fill:#e0201b;fill-opacity:.16}.err-hit{fill:#e0201b;stroke:#fff;stroke-width:1}.err-sw-band{background:rgba(245,163,0,.35)}.err-sw-hit{background:#e0201b;border-radius:50%!important}.err-spike{fill:#e0201b}.err-table td.num{text-align:right;font-variant-numeric:tabular-nums}.err-help{color:#7b8490}';
 document.head.append(errStyle);
 
-let errRange = 60;
+// Zoom levels: the window shown and the width of one bar. Windows up to 30 minutes use the 5 second data the
+// client keeps for the last hour; longer ones use the per-minute history (24 hours, all that is stored).
+const errZoom = [
+  { label: '5 min', window: 300, bin: 5 }, { label: '15 min', window: 900, bin: 15 }, { label: '30 min', window: 1800, bin: 30 },
+  { label: '1 h', window: 3600, bin: 60 }, { label: '3 h', window: 10800, bin: 180 }, { label: '6 h', window: 21600, bin: 360 },
+  { label: '12 h', window: 43200, bin: 720 }, { label: 'All (24 h)', window: 86400, bin: 1440 },
+];
+let errRange = 3;
+const binLabel = sec => sec < 60 ? sec + ' s' : sec < 3600 ? sec / 60 + ' min' : sec / 3600 + ' h';
 // Each group owns a hue range and its types are spread across it, so neighbours in a stack can be told apart.
 const errHue = { Absorbed: [165, 185], Loss: [0, 48], Local: [195, 250], Protocol: [268, 318], Links: [95, 140] };
 function errColor(kinds, i) {
@@ -16,15 +24,14 @@ function errColor(kinds, i) {
 }
 
 // binErrors folds the per-minute rows into `bins` buckets over the last `minutes`.
-function binErrors(rows, kindCount, minutes) {
-  const bins = Math.min(minutes, 60), binMin = minutes / bins, start = Math.floor(Date.now() / 60000) - minutes + 1;
+function binErrors(rows, kindCount, z) {
+  const bins = z.window / z.bin, start = Math.floor(Date.now() / 1000 / z.bin) - bins + 1;
   const per = Array.from({ length: bins }, () => new Array(kindCount).fill(0)), totals = new Array(kindCount).fill(0);
   for (const row of rows || []) {
-    const m = Math.floor(row[0] / 60) - start; if (m < 0 || m >= minutes) continue;
-    const i = Math.min(bins - 1, Math.floor(m / binMin));
+    const i = Math.floor(row[0] / z.bin) - start; if (i < 0 || i >= bins) continue;
     for (let k = 0; k < kindCount; k++) { per[i][k] += row[1 + k] || 0; totals[k] += row[1 + k] || 0; }
   }
-  return { per, totals, bins, binMin, start };
+  return { per, totals, bins, binSec: z.bin, startSec: start * z.bin };
 }
 
 // spikeBins: bins that stand well above the usual (at least 5 errors and 3x the median busy bin).
@@ -60,18 +67,18 @@ function analyseErrors(kinds, folded, recKinds, recFolded) {
 }
 
 // stabilityBins folds the per-minute connection-state seconds into the chart's bins.
-function stabilityBins(rows, minutes) {
-  const bins = Math.min(minutes, 60), binMin = minutes / bins, start = Math.floor(Date.now() / 60000) - minutes + 1;
+function stabilityBins(rows, z) {
+  const bins = z.window / z.bin, start = Math.floor(Date.now() / 1000 / z.bin) - bins + 1;
   const out = Array.from({ length: bins }, () => ({ up: 0, degraded: 0, down: 0 }));
   for (const [t, up, dg, dn] of rows || []) {
-    const m = Math.floor(t / 60) - start; if (m < 0 || m >= minutes) continue;
-    const b = out[Math.min(bins - 1, Math.floor(m / binMin))]; b.up += up; b.degraded += dg; b.down += dn;
+    const i = Math.floor(t / z.bin) - start; if (i < 0 || i >= bins) continue;
+    const b = out[i]; b.up += up; b.degraded += dg; b.down += dn;
   }
   return out;
 }
 
-function errorChart(kinds, folded, minutes, an, stab) {
-  const { per, bins, binMin, start } = folded, width = 760, height = 196, left = 34, right = 40, ribbon = 7, bottom = 18 + ribbon + 4, plot = height - bottom, usable = plot - 16, bw = (width - left - right) / bins;
+function errorChart(kinds, folded, windowLabel, an, stab) {
+  const { per, bins, binSec, startSec } = folded, width = 760, height = 196, left = 34, right = 40, ribbon = 7, bottom = 18 + ribbon + 4, plot = height - bottom, usable = plot - 16, bw = (width - left - right) / bins;
   const top = Math.max(5, ...an.errTotal) * 1.1, recTop = Math.max(5, ...an.groups.flatMap(g => g.series)) * 1.1, spikes = spikeBins(an.errTotal);
   const s = svg('svg', { class: 'topo-svg err-chart', viewBox: '0 0 ' + width + ' ' + height, role: 'img', 'aria-label': 'Errors, recovery and connection state over time' });
   for (let g = 0; g <= 4; g++) {
@@ -79,9 +86,9 @@ function errorChart(kinds, folded, minutes, an, stab) {
     s.append(svg('line', { class: 'gl', x1: left, y1: y, x2: width - right, y2: y }), svg('text', { class: 'tb-sub', x: left - 4, y: y + 3, 'font-size': 10, 'text-anchor': 'end' }, String(Math.round(top * g / 4))),
       svg('text', { class: 'tb-sub', x: width - right + 4, y: y + 3, 'font-size': 10 }, String(Math.round(recTop * g / 4))));
   }
-  s.append(svg('text', { class: 'tb-sub', x: left, y: height - 4, 'font-size': 10 }, minutes >= 60 ? '-' + (minutes / 60) + ' h' : '-' + minutes + ' min'), svg('text', { class: 'tb-sub', x: width - right, y: height - 4, 'font-size': 10, 'text-anchor': 'end' }, 'now'),
+  s.append(svg('text', { class: 'tb-sub', x: left, y: height - 4, 'font-size': 10 }, '-' + windowLabel), svg('text', { class: 'tb-sub', x: width - right, y: height - 4, 'font-size': 10, 'text-anchor': 'end' }, 'now'),
     svg('text', { class: 'tb-sub', x: left - 4, y: 9, 'font-size': 9, 'text-anchor': 'end' }, 'errors'), svg('text', { class: 'tb-sub', x: width - right + 4, y: 9, 'font-size': 9 }, 'recovery'));
-  const when = i => new Date((start + i * binMin) * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const when = i => new Date((startSec + i * binSec) * 1000).toLocaleTimeString([], binSec < 60 ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } : { hour: '2-digit', minute: '2-digit' }) + (binSec > 60 ? ' (+' + binLabel(binSec) + ')' : binSec < 60 ? ' (+' + binSec + ' s)' : '');
   // Interception bands first, so the bars and lines sit on top of them.
   for (let i = 0; i < bins; i++) {
     if (!an.intercept[i]) continue;
@@ -132,17 +139,21 @@ function errorLegend(recKinds, an) {
 function errorSection(d) {
   const eh = d.error_history, body = document.createElement('div'), sub = 'How often each kind of transport error happened, and which type it was, with the recovery that absorbed it. Spikes are marked with a red triangle. Absorbed means redundancy covered it and nothing was lost: it is listed in the table but is not counted as a fault.';
   if (!eh || !eh.kinds) { body.append(issueNote('This client build does not record an error history yet.')); return issueSection('Errors over time', sub, ['ok', 'not available'], body); }
-  const kinds = eh.kinds, recKinds = eh.recovery_kinds || [], folded = binErrors(eh.minutes, kinds.length, errRange), recFolded = binErrors(eh.recovery, recKinds.length, errRange);
+  const z = errZoom[errRange], fineData = z.bin < 60 && eh.fine ? eh.fine : null, src = fineData || eh;
+  const kinds = eh.kinds, recKinds = eh.recovery_kinds || [], folded = binErrors(src.minutes, kinds.length, z), recFolded = binErrors(src.recovery, recKinds.length, z);
   // Absorbed events (a copy lost on one link and covered by the other, a gap that arrived late) are listed in the table
   // but are not faults: the headline, the chart and the spikes count only what was not absorbed.
   const absorbed = kinds.map(k => k.group === 'Absorbed'), absorbedTotal = folded.totals.reduce((a, b, k) => a + (absorbed[k] ? b : 0), 0);
   const chartFolded = { ...folded, per: folded.per.map(r => r.map((v, k) => absorbed[k] ? 0 : v)), totals: folded.totals.map((v, k) => absorbed[k] ? 0 : v) };
-  const sum = chartFolded.totals.reduce((a, b) => a + b, 0), stab = stabilityBins(eh.stability, errRange), an = analyseErrors(kinds, chartFolded, recKinds, recFolded);
+  const sum = chartFolded.totals.reduce((a, b) => a + b, 0), stab = stabilityBins(src.stability, z), an = analyseErrors(kinds, chartFolded, recKinds, recFolded);
   const range = document.createElement('div'); range.className = 'range';
-  for (const [label, minutes] of [['1 h', 60], ['6 h', 360], ['24 h', 1440]]) {
-    const b = document.createElement('button'); b.className = 'seg' + (errRange === minutes ? ' active' : ''); b.textContent = label;
-    b.onclick = () => { errRange = minutes; renderIssues(current); }; range.append(b);
-  }
+  // One slider scales the chart from 5 second bars (last 5 minutes) out to the whole stored history.
+  const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = errZoom.length - 1; slider.step = 1; slider.value = errRange; slider.style.cssText = 'width:min(360px,60%);vertical-align:middle';
+  slider.setAttribute('aria-label', 'Time scale');
+  const readout = document.createElement('span'); readout.style.marginLeft = '10px'; readout.textContent = z.label + ' shown, one bar = ' + binLabel(z.bin);
+  slider.oninput = () => { const v = errZoom[+slider.value]; readout.textContent = v.label + ' shown, one bar = ' + binLabel(v.bin); };
+  slider.onchange = () => { errRange = +slider.value; renderIssues(current); };
+  range.append(slider, readout);
   body.append(range);
   // Connection state over the range, from the per-second link health the client recorded.
   const sec = stab.reduce((a, b) => ({ up: a.up + b.up, degraded: a.degraded + b.degraded, down: a.down + b.down }), { up: 0, degraded: 0, down: 0 }), secTotal = sec.up + sec.degraded + sec.down;
@@ -154,13 +165,13 @@ function errorSection(d) {
     const p = document.createElement('p'); p.className = 'err-ok'; p.textContent = 'No errors or recovery activity recorded in this range.'; body.append(p);
     return issueSection('Errors over time', sub, ['ok', 'none'], body);
   }
-  body.append(errorChart(kinds, chartFolded, errRange, an, stab), errorLegend(recKinds, an));
+  body.append(errorChart(kinds, chartFolded, z.label, an, stab), errorLegend(recKinds, an));
   const nv = kinds.findIndex(k => k.key === 'never_arrived'), neverTotal = nv >= 0 ? folded.totals[nv] : 0;
   body.append(issueNote(an.interceptions
     ? 'Errors and recovery coincided in ' + an.interceptions + ' bin' + (an.interceptions === 1 ? '' : 's') + '; ' + an.aligned + ' of them included packets that never arrived'
       + (neverTotal ? ' (' + neverTotal.toLocaleString() + ' in this range)' : '') + '.' + (an.uncovered ? ' ' + an.uncovered + ' bin' + (an.uncovered === 1 ? ' had' : 's had') + ' never-arrived packets with no recovery activity.' : '')
     : 'Errors and recovery did not coincide in any bin' + (neverTotal ? ', yet ' + neverTotal.toLocaleString() + ' packets never arrived (' + an.uncovered + ' bin' + (an.uncovered === 1 ? '' : 's') + ' with no recovery activity).' : '.')));
-  const hours = errRange / 60, order = kinds.map((k, i) => i).filter(i => folded.totals[i] > 0).sort((a, b) => folded.totals[b] - folded.totals[a]);
+  const hours = z.window / 3600, order = kinds.map((k, i) => i).filter(i => folded.totals[i] > 0).sort((a, b) => folded.totals[b] - folded.totals[a]);
   const rows = order.map(i => {
     const tr = document.createElement('tr'), k = kinds[i], name = document.createElement('td'), sw = document.createElement('span');
     sw.className = 'err-sw'; sw.style.background = errColor(kinds, i); name.append(sw, k.label);
@@ -176,7 +187,7 @@ function errorSection(d) {
     tr.append(name, issueCell(k.group + (k.routine ? ' (always on)' : ' (recovery)')), issueCell(recFolded.totals[i].toLocaleString(), 'num'), issueCell((recFolded.totals[i] / hours).toFixed(recFolded.totals[i] / hours < 10 ? 1 : 0), 'num'), help); rows.push(tr);
   }
   const table = issueTable(['Type', 'Group', 'Count', 'Per hour', 'What it means'], rows); table.classList.add('err-table'); body.append(table);
-  const span = errRange >= 60 ? errRange / 60 + ' h' : errRange + ' min', soak = absorbedTotal ? ', ' + absorbedTotal.toLocaleString() + ' absorbed by redundancy' : '';
+  const span = z.window >= 86400 ? '24 h' : z.window >= 3600 ? z.window / 3600 + ' h' : z.window / 60 + ' min', soak = absorbedTotal ? ', ' + absorbedTotal.toLocaleString() + ' absorbed by redundancy' : '';
   const badge = sum ? ['warn', sum.toLocaleString() + ' faults in ' + span + soak] : ['ok', 'no faults in ' + span + soak];
   return issueSection('Errors over time', sub, badge, body);
 }
